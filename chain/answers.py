@@ -1,0 +1,69 @@
+"""answers.json, which the after writes once per run under --debug-dir, failed runs included.
+
+Per CVE, each factor's answer as the reply wrote it, its reading, its level and the level's source; a failed run also
+lists, marked `unrated`, the CVEs of its failing batch already answered, with their answers and readings only.
+"""
+import json
+
+from chain.cdx import FACTORS
+
+
+def load(path):
+    """The document; ValueError when it is not answers.json's shape."""
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    if not isinstance(doc, dict) or not isinstance(doc.get("vulnerabilities"), list):
+        raise ValueError("no vulnerabilities list")
+    for key in ("counters", "defects"):
+        if not isinstance(doc.get(key), dict):
+            raise ValueError(f"no {key} object")
+    for e in doc["vulnerabilities"]:
+        if not isinstance(e, dict) or "vulnId" not in e or not isinstance(e.get("factors"), list):
+            raise ValueError("an entry without vulnId or factors")
+    return doc
+
+
+def entries(doc):
+    """{vulnId: entry} split into the rated and the unrated."""
+    rated = {e["vulnId"]: e for e in doc["vulnerabilities"] if not e.get("unrated")}
+    unrated = {e["vulnId"]: e for e in doc["vulnerabilities"] if e.get("unrated")}
+    return rated, unrated
+
+
+def per_cve(entry):
+    """One entry: whether it is unrated, how its adjustment read, its counters, and per factor {answer, reading,
+    level, source, adjusted}, absent keys as None."""
+    keys = ("answer", "reading", "level", "source", "adjusted")
+    return {"unrated": bool(entry.get("unrated")), "adjustment": entry.get("adjustment"),
+            "counters": entry.get("counters") or [],
+            "factors": {f["factor"]: {k: f.get(k) for k in keys} for f in entry["factors"]}}
+
+
+def check(doc, vex_ratings):
+    """answers.json against the VEX: each rated CVE's 16 levels, in the vector's order, equal its vector's; every
+    CVE the VEX rates has a rated entry, and no rated entry is missing from the VEX. The problems found."""
+    rated, _ = entries(doc)
+    problems = []
+    for vid, r in sorted(vex_ratings.items()):
+        e = rated.get(vid)
+        if e is None:
+            problems.append(f"{vid}: rated in the VEX, no rated entry in answers.json")
+            continue
+        names = tuple(f.get("factor") for f in e["factors"])
+        got = [f.get("level") for f in e["factors"]]
+        if names != FACTORS or got != [r["levels"][f] for f in FACTORS]:
+            problems.append(f"{vid}: answers.json's levels differ from the vector's")
+    problems += [f"{vid}: a rated entry the VEX does not rate" for vid in sorted(set(rated) - set(vex_ratings))]
+    return problems
+
+
+def unrated_shape(doc):
+    """The problems of the unrated entries: each lists only questions answered, with no level and no source."""
+    _, unrated = entries(doc)
+    problems = []
+    for vid, e in sorted(unrated.items()):
+        if not e["factors"]:
+            problems.append(f"{vid}: an unrated entry with no answer")
+        if any("level" in f or "source" in f for f in e["factors"]):
+            problems.append(f"{vid}: an unrated entry with a level or a source")
+    return problems
