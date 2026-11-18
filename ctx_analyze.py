@@ -152,12 +152,12 @@ def main():
     famrows("technical_impact", ["disc_audit", "disc_audit2", "disc_audit3"],
             ["disc_audit_nt", "disc_audit_nt2"])
     print("\n  Irrelevant WAF: vulnerability on the local bug. no-WAF is the SAME local bug")
-    print("       without controls; a WAF at the edge must not lower a local-file exploit:")
+    print("       without controls, each text against its own twin; a WAF at the edge must not lower a")
+    print("       local-file exploit:")
     for m in models:
-        off = ctx.get(("disc_ctrl_off_local", m), {}).get("vulnerability", "?")
-        tel = ctx.get(("disc_ctrl_irrelevant", m), {}).get("vulnerability", "?")
-        nt = ctx.get(("disc_ctrl_irrelevant_nt", m), {}).get("vulnerability", "?")
-        print(f"    {m:22s} no-WAF={off}  WAF(telegraphed)={tel}  WAF(non-telegraphed)={nt}")
+        vu = lambda sid: ctx.get((sid, m), {}).get("vulnerability", "?")
+        print(f"    {m:22s} telegraphed no-WAF={vu('disc_ctrl_off_local')} WAF={vu('disc_ctrl_irrelevant')}  "
+              f"non-telegraphed no-WAF={vu('disc_ctrl_off_local_nt')} WAF={vu('disc_ctrl_irrelevant_nt')}")
 
     print("\n=== LLM vs BASELINE (risk per scenario; divergence = LLM adds value) ===")
     scen = sorted({s for (s, _) in ctx})

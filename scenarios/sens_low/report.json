@@ -17,7 +17,7 @@
             "PURL": "pkg:deb/debian/jsoncfg@3.4.1"
           },
           "Title": "Information disclosure in jsoncfg error handler",
-          "Description": "jsoncfg leaks internal object fields in verbose error responses, exposing stored records to an authenticated user. CVSS 4.3.",
+          "Description": "jsoncfg leaks internal object fields in verbose error responses, exposing to an authenticated user the fields printed in error responses. CVSS 4.3.",
           "PrimaryURL": "https://example.test/CVE-2099-0002",
           "SeveritySource": "nvd",
           "VendorSeverity": {

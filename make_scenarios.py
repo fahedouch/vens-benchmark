@@ -136,12 +136,15 @@ CVES = {
     "infoleak": dict(id="CVE-2099-0002", pkg="jsoncfg", ver="3.4.1", sev="MEDIUM",
                 title="Information disclosure in jsoncfg error handler",
                 desc="jsoncfg leaks internal object fields in verbose error responses, "
-                     "exposing stored records to an authenticated user. CVSS {score}.",
+                     "exposing to an authenticated user the fields printed in error responses. "
+                     "CVSS {score}.",
                 vector="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N", source=WRITTEN),
     "low": dict(id="CVE-2099-0003", pkg="tinylog", ver="0.9.0", sev="LOW",
                 title="Log spoofing via unescaped newline in tinylog",
                 desc="tinylog does not escape newlines, letting a local user forge log "
-                     "lines. Requires local access, no data impact. CVSS {score}.",
+                     "lines. Requires local access. The impact is low and on the log's "
+                     "integrity only, with no confidentiality or availability impact. "
+                     "CVSS {score}.",
                 vector="CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N", source=WRITTEN),
     "payment": dict(id="CVE-2099-0004", pkg="paykit", ver="2.0.0", sev="CRITICAL",
                 title="Auth bypass in paykit payment gateway",
