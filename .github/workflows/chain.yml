@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  VENS_AFTER: fa7fc9aa38306944f01845fd97aa1fc990b597a4  # venslabs/vens 310-step3
+  VENS_AFTER: b7c0435835447027b04d54d4e6befaaee6b0626b  # venslabs/vens 310-step3
   VENS_BEFORE: 43ab10bf980d42b77157e003a27921805a546770  # venslabs/vens main
   DEMO: 7ab1570f8068b16b965571f363726bc051d06d9f  # venslabs/vens-demo, its frozen scan runs/2026-09-23
   # venslabs/vens-demo, its baseline.yml with the attempt record, which tests/test_baseline_yml.py runs

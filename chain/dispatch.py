@@ -76,6 +76,8 @@ STRAY = "stray"
 STARTS = (DISPATCH, RESOLVED)
 ARMS = ("before", "after")
 WORKFLOW = "baseline.yml"
+# baseline.yml's name: GitHub gives a new run this title until its run-name renders.
+WORKFLOW_NAME = "baseline"
 POLLS, POLL_SECONDS = 20, 3
 PER_PAGE, MAX_PAGES = 100, 20
 # GitHub lists at most 1,000 runs of a filtered search (event=...); the pages past it come back empty.
@@ -361,6 +363,19 @@ def _find_run(gh, repo, want_title, since, known, sleep):
     raise DispatchError(f"no new run titled {want_title!r} after {POLLS} polls")
 
 
+def _rendered(gh, repo, run_id, sleep):
+    """The run as the API gives it, read again while its title is still the bare workflow name GitHub shows before
+    the run-name renders; after POLLS reads, the run as last read, for the caller to check."""
+    path = f"repos/{repo}/actions/runs/{run_id}"
+    run = _api(gh, path)
+    for _ in range(POLLS - 1):
+        if run.get("display_title") != WORKFLOW_NAME:
+            break
+        sleep(POLL_SECONDS)
+        run = _api(gh, path)
+    return run
+
+
 class _Status:
     """Each logged run's status from the API, asked once."""
 
@@ -482,7 +497,7 @@ def _dispatch(a, gh, now, sleep):
     m = re.search(rf"/{re.escape(a.repo)}/actions/runs/(\d+)", out)
     known = set(index(lines))
     run_id = int(m.group(1)) if m else _find_run(gh, a.repo, want, since, known, sleep)
-    run = _api(gh, f"repos/{a.repo}/actions/runs/{run_id}")
+    run = _rendered(gh, a.repo, run_id, sleep)
     if run.get("display_title") != want or run.get("run_attempt") != 1:
         raise DispatchError(f"run {run_id} is {run.get('display_title')!r} attempt {run.get('run_attempt')}, not the "
                             f"dispatch {want!r}; its pending line stays until resolved")

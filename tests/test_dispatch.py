@@ -43,7 +43,12 @@ elif args[:1] == ["api"] and "/actions/runs/" in args[1]:
     run = state["runs"].get(args[1].rsplit("/", 1)[1])
     if run is None:
         sys.exit("HTTP 404")
-    print(json.dumps(run))
+    if run.get("bare_reads"):
+        # GitHub's title for a run whose run-name has not rendered yet: the workflow's name
+        run["bare_reads"] -= 1
+        save()
+        run = {{**run, "display_title": "baseline"}}
+    print(json.dumps({{k: v for k, v in run.items() if k != "bare_reads"}}))
 elif args[:2] == ["workflow", "run"]:
     if state.get("workflow_fails"):
         sys.exit("HTTP 502")
@@ -52,13 +57,15 @@ elif args[:2] == ["workflow", "run"]:
     title = (f"baseline · {{f['archived-run']}} · {{f['provider']}}/{{f['model']}} · batch {{f['batch-size']}} · "
              f"x{{f['replicates']}} · vens {{f['vens-ref']}}"
              + (f" · dispatch {{f['dispatch-id']}}" if f.get("dispatch-id") else ""))
+    if state.get("other_title"):
+        title = title.rsplit(" · dispatch ", 1)[0] + " · dispatch 000000000000"
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     first = state["next_id"]
     for _ in range(state.get("copies", 1)):
         rid = state["next_id"]
         state["next_id"] += 1
         state["runs"][str(rid)] = {{"id": rid, "display_title": title, "run_attempt": 1, "status": "queued",
-                                   "conclusion": None, "created_at": now}}
+                                   "conclusion": None, "created_at": now, "bare_reads": state.get("bare_reads", 0)}}
         if state.get("hide_new"):
             state["hidden"] = state.get("hidden", []) + [str(rid)]
     save()
@@ -88,7 +95,7 @@ class Base(unittest.TestCase):
         s.write(self.gh, FAKE_GH.format(python=sys.executable))
         os.chmod(self.gh, 0o755)
         self.state = os.path.join(self.dir, "state.json")
-        self.save({"commits": {"fa7fc9a": s.AFTER_SHA, s.AFTER_SHA: s.AFTER_SHA, "43ab10b": s.BEFORE_SHA},
+        self.save({"commits": {"b7c0435": s.AFTER_SHA, s.AFTER_SHA: s.AFTER_SHA, "43ab10b": s.BEFORE_SHA},
                    "runs": {}, "next_id": 5001, "print_url": True})
         self.log = os.path.join(self.dir, "dispatch-log.jsonl")
         os.environ["FAKE_GH_STATE"] = self.state
@@ -111,7 +118,7 @@ class Base(unittest.TestCase):
             return [json.loads(x) for x in fh]
 
     def args(self, **kw):
-        base = dict(log=self.log, campaign="c1", arm="after", vens_ref="fa7fc9a", provider="openai",
+        base = dict(log=self.log, campaign="c1", arm="after", vens_ref="b7c0435", provider="openai",
                     model=s.MODEL, replicate=1, batch_size=1, archived_run="2026-09-23", repo="venslabs/vens-demo",
                     workflow_ref="main", max_side_by_side=2, run_id=None, retry_cap=4, no_run=False, no_rerun=False,
                     stray=False)
@@ -151,6 +158,9 @@ class Base(unittest.TestCase):
     def actions(self):
         return [l["action"] for l in dispatch.load(self.log)]
 
+    def run_reads(self, run_id):
+        return [c for c in self.calls() if c[:1] == ["api"] and c[1].endswith(f"/actions/runs/{run_id}")]
+
 
 class TestDispatch(Base):
     def test_a_dispatch_logs_a_pending_line_then_its_run(self):
@@ -158,7 +168,7 @@ class TestDispatch(Base):
         self.assertEqual({k: line[k] for k in ("campaign", "arm", "vens_ref", "vens_commit", "provider", "model",
                                                 "batch_size", "replicate", "run_id", "run_attempt", "action",
                                                 "replaces")},
-                         {"campaign": "c1", "arm": "after", "vens_ref": "fa7fc9a", "vens_commit": s.AFTER_SHA,
+                         {"campaign": "c1", "arm": "after", "vens_ref": "b7c0435", "vens_commit": s.AFTER_SHA,
                           "provider": "openai", "model": s.MODEL, "batch_size": 1, "replicate": 1, "run_id": 5001,
                           "run_attempt": 1, "action": "dispatch", "replaces": None})
         self.assertRegex(line["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
@@ -189,6 +199,26 @@ class TestDispatch(Base):
         listings = [c for c in self.calls() if c[:1] == ["api"] and "/actions/workflows/" in c[1]]
         self.assertEqual(len(listings), 2)
 
+    def test_the_title_is_read_again_until_github_renders_it(self):
+        # On 18/11 the run read back right after `gh workflow run` still had the bare workflow name for its title.
+        self.set(bare_reads=1)
+        slept = []
+        line = dispatch.dispatch(self.args(), self.gh, sleep=slept.append)
+        self.assertEqual((line["action"], line["run_id"], self.actions()), ("dispatch", 5001, ["pending", "dispatch"]))
+        self.assertEqual((len(self.run_reads(5001)), slept), (2, [dispatch.POLL_SECONDS]))
+
+    def test_a_title_that_never_renders_leaves_the_line_pending(self):
+        self.set(bare_reads=dispatch.POLLS + 1)
+        with self.assertRaisesRegex(dispatch.DispatchError, "'baseline' attempt 1, not the dispatch"):
+            self.go()
+        self.assertEqual((len(self.run_reads(5001)), self.actions()), (dispatch.POLLS, ["pending"]))
+
+    def test_another_rendered_title_is_refused_without_waiting(self):
+        self.set(other_title=True)
+        with self.assertRaisesRegex(dispatch.DispatchError, "dispatch 000000000000' attempt 1, not the dispatch"):
+            self.go()
+        self.assertEqual((len(self.run_reads(5001)), self.actions()), (1, ["pending"]))
+
     def test_a_replicate_dispatched_twice_is_refused(self):
         self.go()
         with self.assertRaises(Refused):
@@ -210,14 +240,14 @@ class TestConcurrentCommands(Base):
         return sorted(p.wait() for p in procs)
 
     def test_one_replicate_is_not_dispatched_twice(self):
-        cmd = ["--arm", "after", "--vens-ref", "fa7fc9a", "--replicate", "1", "--max-side-by-side", "4"]
+        cmd = ["--arm", "after", "--vens-ref", "b7c0435", "--replicate", "1", "--max-side-by-side", "4"]
         self.assertEqual(self.race(cmd, cmd), [0, 2])
         self.assertEqual(len(self.workflow_runs()), 1)
         self.assertEqual(self.actions(), ["pending", "dispatch"])
 
     def test_the_cap_holds(self):
         self.assertEqual(self.race(
-            ["--arm", "after", "--vens-ref", "fa7fc9a", "--replicate", "1", "--max-side-by-side", "1"],
+            ["--arm", "after", "--vens-ref", "b7c0435", "--replicate", "1", "--max-side-by-side", "1"],
             ["--arm", "before", "--vens-ref", "43ab10b", "--replicate", "1", "--max-side-by-side", "1"]), [0, 2])
         self.assertEqual(len(self.workflow_runs()), 1)
 
@@ -466,7 +496,7 @@ class TestPairingAndCap(Base):
         for bad in ([], ["--max-side-by-side", "0"]):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 dispatch.main(["--gh", self.gh, "dispatch", "--log", self.log, "--campaign", "c1", "--arm", "after",
-                               "--vens-ref", "fa7fc9a", "--provider", "openai", "--model", s.MODEL, "--replicate",
+                               "--vens-ref", "b7c0435", "--provider", "openai", "--model", s.MODEL, "--replicate",
                                "1", *bad])
         self.assertEqual(self.workflow_runs(), [])
 
