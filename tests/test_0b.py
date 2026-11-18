@@ -14,7 +14,7 @@ import warnings
 from chain import attempt, downloads
 from tests import support as s
 
-PHASES = {"0b-phase1": (119, 8806, 10), "0b-phase2": (180, 13320, 3)}
+PHASES = ("0b-phase1", "0b-phase2")
 
 
 def mirror(src, dst):
@@ -67,14 +67,28 @@ class TestAgainst0B(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_counts(self):
-        for phase, (complete, ratings, failed) in PHASES.items():
+    def read0b(self):
+        path = s.env("VB_0B_READ0B")
+        if path is None:
+            self.skipTest("set VB_0B_READ0B to compare with read0b.py's own reading")
+        try:
+            return load_read0b(path)
+        except ImportError as e:
+            self.skipTest(f"read0b.py does not import here: {e}")
+
+    def test_counts_as_read0b_reads_them(self):
+        read0b = self.read0b()
+        for phase in PHASES:
+            theirs = [rec for run in sorted(os.listdir(self.dirs[phase]))
+                      for rec in quiet(read0b.load_dir, os.path.join(self.dirs[phase], run))]
             recs = self.records[phase]
             done = [r for r in recs if r["outcome"] == "complete"]
-            self.assertEqual(len(done), complete, phase)
+            self.assertEqual(len(done), sum(1 for _, _, data, _ in theirs if data is not None), phase)
             self.assertTrue(all(r["scores_usable"] for r in done), phase)
-            self.assertEqual(sum(len(r["ratings"]) for r in done), ratings, phase)
-            self.assertEqual(sum(1 for r in recs if r["outcome"] == "failed"), failed, phase)
+            self.assertEqual(sum(len(r["ratings"]) for r in done),
+                             sum(len(data) for _, _, data, _ in theirs if data is not None), phase)
+            self.assertEqual(sum(1 for r in recs if r["outcome"] == "failed"),
+                             sum(1 for _, _, data, _ in theirs if data is None), phase)
             self.assertEqual([p for r in recs for p in r["problems"]], [], phase)
 
     def test_the_failed_attempts_as_a6_reads_them(self):
@@ -87,13 +101,7 @@ class TestAgainst0B(unittest.TestCase):
             self.assertTrue(all("failure.step" in r["unknown"] for r in failed), phase)
 
     def test_score_t_and_b_as_read0b_reads_them(self):
-        path = s.env("VB_0B_READ0B")
-        if path is None:
-            self.skipTest("set VB_0B_READ0B to compare with read0b.py's own load_vex")
-        try:
-            read0b = load_read0b(path)
-        except ImportError as e:
-            self.skipTest(f"read0b.py does not import here: {e}")
+        read0b = self.read0b()
         for phase in PHASES:
             for rec in (r for r in self.records[phase] if r["outcome"] == "complete"):
                 vex = [os.path.join(rec["folder"], n) for n in os.listdir(rec["folder"])
@@ -104,13 +112,7 @@ class TestAgainst0B(unittest.TestCase):
                 self.assertEqual(got, want, rec["folder"])
 
     def test_the_failed_attempts_as_read0b_lists_them(self):
-        path = s.env("VB_0B_READ0B")
-        if path is None:
-            self.skipTest("set VB_0B_READ0B to compare with read0b.py's own load_dir")
-        try:
-            read0b = load_read0b(path)
-        except ImportError as e:
-            self.skipTest(f"read0b.py does not import here: {e}")
+        read0b = self.read0b()
         for phase in PHASES:
             want = {(meta["run_id"], meta["context"], meta["replicate"], meta["attempt"], why)
                     for run in sorted(os.listdir(self.dirs[phase]))

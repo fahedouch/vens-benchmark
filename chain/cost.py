@@ -6,7 +6,7 @@ estimate beside it, from each archived call's prompts and reply, never added to 
 """
 import re
 
-# List prices per 1M tokens (input, output), standard tier, the ones 0B's cost estimates used.
+# List prices per 1M tokens (input, output), standard tier.
 PRICES = {"gpt-5.4-mini": (0.75, 4.50), "claude-sonnet-4-6": (3.0, 15.0)}
 CHARS_PER_TOKEN = 4.0
 LABEL = ("estimate, not measured: each archived call's prompt and reply characters at 4 per token and the model's "
