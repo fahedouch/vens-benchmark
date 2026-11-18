@@ -8,7 +8,11 @@ starts once both runs have ended, and a run is rerun only before it.
 dispatch-log.jsonl holds one JSON object per line, appended, never rewritten:
 
     {"campaign", "arm", "repo", "vens_ref", "vens_commit", "provider", "model", "batch_size", "archived_run",
-     "replicate", "run_id", "run_attempt", "time", "action", "replaces"}
+     "dispatch_id", "replicate", "run_id", "run_attempt", "time", "action", "replaces"}
+
+dispatch_id is made afresh for each dispatch and passed to baseline.yml, which puts it in the run's name: the run a
+dispatch started is the one named with its id, whatever other run shares its inputs, a late run of an abandoned
+dispatch included.
 
 action is one of:
     pending          written before `gh workflow run`, run_id and run_attempt null: a run may exist no line names
@@ -23,9 +27,10 @@ action is one of:
     rerun-abandoned  a pending rerun that started no attempt: at least 15 minutes old, the run still at the attempt
                      before
 The lines of one replicate, (campaign, arm, provider, model, replicate), agree on every field but run_id,
-run_attempt, time, action and replaces. time is UTC. Every command holds an exclusive lock on LOG.lock while it reads
-the log, checks, calls gh and writes, so two commands never act on the same state. This script writes the log;
-whoever runs the campaign owns it and commits it with the campaign's archive.
+run_attempt, time, action and replaces, and dispatch_id across an abandoned dispatch and the next. time is UTC.
+Every command holds an exclusive lock on LOG.lock while it reads the log, checks, calls gh and writes, so two
+commands never act on the same state. This script writes the log; whoever runs the campaign owns it and commits it
+with the campaign's archive.
 
     python3 -m chain.dispatch dispatch --log LOG --campaign NAME --arm after --vens-ref SHA --provider openai \
         --model gpt-5.4-mini-2026-03-17 --replicate 1 --max-side-by-side 2
@@ -43,6 +48,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -50,9 +56,9 @@ import time
 from chain.errors import Refused
 
 FIELDS = ("campaign", "arm", "repo", "vens_ref", "vens_commit", "provider", "model", "batch_size", "archived_run",
-          "replicate", "run_id", "run_attempt", "time", "action", "replaces")
+          "dispatch_id", "replicate", "run_id", "run_attempt", "time", "action", "replaces")
 KEY = ("campaign", "arm", "provider", "model", "replicate")
-SAME = ("repo", "vens_ref", "vens_commit", "batch_size", "archived_run")
+SAME = ("repo", "vens_ref", "vens_commit", "batch_size", "archived_run", "dispatch_id")
 PENDING, DISPATCH, RESOLVED, ABANDONED = "pending", "dispatch", "resolved", "abandoned"
 RERUN_PENDING, RERUN, RERUN_ABANDONED = "rerun-pending", "rerun-failed", "rerun-abandoned"
 STARTS = (DISPATCH, RESOLVED)
@@ -223,9 +229,21 @@ def check_folder(folder, line, sources):
             raise Refused(f"{folder}: {source} gives model {model}, the dispatch log {line['model']}")
 
 
-def title(archived_run, provider, model, batch, commit):
-    """baseline.yml's run-name for a one-replicate run pinned to a commit."""
-    return f"baseline · {archived_run} · {provider}/{model} · batch {batch} · x1 · vens {commit}"
+def title(archived_run, provider, model, batch, commit, dispatch_id=None):
+    """baseline.yml's run-name for a one-replicate run pinned to a commit, ending with its dispatch id when it has
+    one."""
+    name = f"baseline · {archived_run} · {provider}/{model} · batch {batch} · x1 · vens {commit}"
+    return f"{name} · dispatch {dispatch_id}" if dispatch_id else name
+
+
+def new_dispatch_id():
+    return secrets.token_hex(6)
+
+
+def inputs(a, commit, dispatch_id):
+    """The workflow inputs of one dispatch, as `gh workflow run -f` passes them."""
+    return {"archived-run": a.archived_run, "provider": a.provider, "model": a.model, "batch-size": str(a.batch_size),
+            "replicates": "1", "vens-ref": commit, "arm": a.arm, "dispatch-id": dispatch_id}
 
 
 def _gh(gh, *args):
@@ -354,16 +372,16 @@ def _dispatch(a, gh, now, sleep):
     _check_pairing(lines, a, status)
     _check_cap(lines, status, a.max_side_by_side)
     commit = _api(gh, f"repos/venslabs/vens/commits/{a.vens_ref}")["sha"]
-    want = title(a.archived_run, a.provider, a.model, a.batch_size, commit)
+    did = new_dispatch_id()
+    want = title(a.archived_run, a.provider, a.model, a.batch_size, commit, did)
     since = now()
     base = {"campaign": a.campaign, "arm": a.arm, "repo": a.repo, "vens_ref": a.vens_ref, "vens_commit": commit,
             "provider": a.provider, "model": a.model, "batch_size": a.batch_size, "archived_run": a.archived_run,
-            "replicate": a.replicate, "time": _stamp(since), "replaces": None}
+            "dispatch_id": did, "replicate": a.replicate, "time": _stamp(since), "replaces": None}
     # Logged before the call: a run the API never names back still blocks this replicate until resolved.
     _append(a.log, {**base, "run_id": None, "run_attempt": None, "action": PENDING})
-    out = _gh(gh, "workflow", "run", WORKFLOW, "-R", a.repo, "--ref", a.workflow_ref,
-              "-f", f"archived-run={a.archived_run}", "-f", f"provider={a.provider}", "-f", f"model={a.model}",
-              "-f", f"batch-size={a.batch_size}", "-f", "replicates=1", "-f", f"vens-ref={commit}")
+    fields = [x for k, v in inputs(a, commit, did).items() for x in ("-f", f"{k}={v}")]
+    out = _gh(gh, "workflow", "run", WORKFLOW, "-R", a.repo, "--ref", a.workflow_ref, *fields)
     m = re.search(rf"/{re.escape(a.repo)}/actions/runs/(\d+)", out)
     known = set(index(lines))
     run_id = int(m.group(1)) if m else _find_run(gh, a.repo, want, since, known, sleep)
@@ -388,7 +406,7 @@ def resolve(a, gh, now=utc_now):
         if pending is None:
             raise Refused(f"replicate {a.replicate} of the {a.arm} has no pending dispatch")
         want = title(pending["archived_run"], pending["provider"], pending["model"], pending["batch_size"],
-                     pending["vens_commit"])
+                     pending["vens_commit"], pending["dispatch_id"])
         since, known = _parse(pending["time"]), set(index(lines))
         if a.no_run:
             if now() - since < SETTLE:

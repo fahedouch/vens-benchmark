@@ -20,7 +20,8 @@ COMMITS = {"before": s.BEFORE_SHA, "after": s.AFTER_SHA}
 def log_line(run_id, replicate, attempt=1, arm="after", model=s.MODEL, commit=s.AFTER_SHA):
     return {"campaign": "c1", "arm": arm, "repo": "venslabs/vens-demo", "vens_ref": commit, "vens_commit": commit,
             "provider": "openai", "model": model, "batch_size": 1, "archived_run": "2026-09-23",
-            "replicate": replicate, "run_id": run_id, "run_attempt": attempt, "time": "2026-11-20T10:00:00Z",
+            "dispatch_id": f"d{run_id}", "replicate": replicate, "run_id": run_id, "run_attempt": attempt,
+            "time": "2026-11-20T10:00:00Z",
             "action": "dispatch" if attempt == 1 else "rerun-failed", "replaces": None if attempt == 1 else attempt - 1}
 
 

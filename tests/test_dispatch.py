@@ -50,7 +50,8 @@ elif args[:2] == ["workflow", "run"]:
     time.sleep(state.get("delay", 0))
     f = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-f")
     title = (f"baseline · {{f['archived-run']}} · {{f['provider']}}/{{f['model']}} · batch {{f['batch-size']}} · "
-             f"x{{f['replicates']}} · vens {{f['vens-ref']}}")
+             f"x{{f['replicates']}} · vens {{f['vens-ref']}}"
+             + (f" · dispatch {{f['dispatch-id']}}" if f.get("dispatch-id") else ""))
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     first = state["next_id"]
     for _ in range(state.get("copies", 1)):
@@ -129,6 +130,9 @@ class Base(unittest.TestCase):
                                       "conclusion": None, "created_at": created_at}
         self.save(state)
 
+    def title(self, line):
+        return dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA, line["dispatch_id"])
+
     def workflow_runs(self):
         return [c for c in self.calls() if c[:2] == ["workflow", "run"]]
 
@@ -154,6 +158,21 @@ class TestDispatch(Base):
         (run,) = self.workflow_runs()
         self.assertIn(f"vens-ref={s.AFTER_SHA}", run)
         self.assertIn("replicates=1", run)
+
+    def test_the_run_is_named_with_the_arm_and_dispatch_id_passed(self):
+        line = self.go()
+        self.assertRegex(line["dispatch_id"], r"^[0-9a-f]{12}$")
+        (run,) = self.workflow_runs()
+        self.assertIn("arm=after", run)
+        self.assertIn(f"dispatch-id={line['dispatch_id']}", run)
+        self.assertEqual(self.load()["runs"]["5001"]["display_title"], self.title(line))
+        self.assertEqual(line["dispatch_id"], dispatch.load(self.log)[0]["dispatch_id"])
+
+    def test_a_run_of_the_same_inputs_and_another_dispatch_id_is_not_taken(self):
+        # a late run of an abandoned dispatch, or another campaign's: same inputs, same title but for the id
+        self.set(print_url=False)
+        self.add_run(4000, self.title({"dispatch_id": "0123456789ab"}), dispatch._stamp(dispatch.utc_now()))
+        self.assertEqual(self.go()["run_id"], 5001)
 
     def test_the_run_read_back_from_the_run_list_once_it_appears(self):
         self.set(print_url=False, hide_new=True)
@@ -220,11 +239,14 @@ class TestPending(Base):
 
     def test_resolve_checks_the_run(self):
         pending = self.failed_dispatch()
-        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        want = self.title(pending)
         self.add_run(7, "baseline · other", pending["time"])
         self.add_run(8, want, "2026-01-01T00:00:00Z")
         with self.assertRaisesRegex(Refused, "not the pending dispatch"):
             dispatch.resolve(self.args(run_id=7), self.gh)
+        self.add_run(9, self.title({"dispatch_id": "0123456789ab"}), pending["time"])
+        with self.assertRaisesRegex(Refused, "not the pending dispatch"):
+            dispatch.resolve(self.args(run_id=9), self.gh)
         with self.assertRaisesRegex(Refused, "before the pending dispatch"):
             dispatch.resolve(self.args(run_id=8), self.gh)
         with self.assertRaisesRegex(Refused, "no pending dispatch"):
@@ -238,10 +260,12 @@ class TestPending(Base):
         self.assertEqual(line["action"], "abandoned")
         self.assertEqual(self.go()["run_id"], 5001)
         self.assertEqual(self.actions(), ["pending", "abandoned", "pending", "dispatch"])
+        ids = [l["dispatch_id"] for l in dispatch.load(self.log)]
+        self.assertTrue(ids[0] == ids[1] != ids[2] == ids[3], ids)
 
     def test_no_run_finds_a_run_past_the_first_page(self):
         pending = self.failed_dispatch()
-        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        want = self.title(pending)
         self.add_run(10, want, pending["time"])
         for n in range(11, 14):
             self.add_run(n, "baseline · other", pending["time"].replace("Z", "") + "Z")
@@ -262,7 +286,7 @@ class TestPending(Base):
         # 1,000 newer runs fill GitHub's cap: the run the pending dispatch started is listed on no page, and the
         # empty page after the cap is no end of the list.
         pending = self.failed_dispatch()
-        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        want = self.title(pending)
         start = dispatch._parse(pending["time"]) + datetime.timedelta(minutes=10)
         state = self.load()
         state["runs"] = {str(n): {"id": n, "display_title": "baseline · other", "run_attempt": 1, "status": "queued",
@@ -403,7 +427,7 @@ class TestTheLog(Base):
     def line(self, **kw):
         base = {f: None for f in dispatch.FIELDS}
         base.update(campaign="c1", arm="after", repo="r", vens_ref="x", vens_commit="x", provider="openai",
-                    model=s.MODEL, batch_size=1, archived_run="2026-09-23", replicate=1, time="t")
+                    model=s.MODEL, batch_size=1, archived_run="2026-09-23", dispatch_id="d1", replicate=1, time="t")
         return {**base, **kw}
 
     def write(self, *lines):
@@ -446,6 +470,15 @@ class TestTheLog(Base):
                                                   **change))
             with self.assertRaisesRegex(dispatch.DispatchError, "a rerun changes"):
                 dispatch.load(self.log)
+
+    def test_a_line_that_changes_its_dispatch_id(self):
+        self.write(self.line(action="pending"), self.line(action="dispatch", run_id=1, run_attempt=1, dispatch_id="d2"))
+        with self.assertRaisesRegex(dispatch.DispatchError, r"a dispatch line changes \['dispatch_id'\]"):
+            dispatch.load(self.log)
+        self.write(*self.started(), self.line(action="rerun-pending", run_id=1, run_attempt=2, replaces=1,
+                                              dispatch_id="d2"))
+        with self.assertRaisesRegex(dispatch.DispatchError, "a rerun changes"):
+            dispatch.load(self.log)
 
     def test_a_run_of_two_replicates(self):
         self.write(*self.started(), self.line(action="pending", replicate=2),

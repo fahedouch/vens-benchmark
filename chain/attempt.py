@@ -115,13 +115,15 @@ def _pick(*values):
 
 def run_meta(run):
     """What a baseline.yml run was dispatched with, from its run-name in run.json (the API's run object): provider,
-    model, batch size, replicates, vens ref and the archived run, as dispatch metadata, not as an attestation."""
-    m = re.fullmatch(r"baseline · (.+) · ([^/ ]+)/(.+) · batch (\d+) · x(\d+) · vens (\S+)",
+    model, batch size, replicates, vens ref, the archived run and the dispatch id, as dispatch metadata, not as an
+    attestation."""
+    m = re.fullmatch(r"baseline · (.+) · ([^/ ]+)/(.+) · batch (\d+) · x(\d+) · vens (\S+)(?: · dispatch (\S+))?",
                      run.get("display_title") or run.get("name") or "")
     if not m:
         return {"run_id": run.get("id")}
     return {"run_id": run.get("id"), "archived_run": m.group(1), "provider": m.group(2), "model": m.group(3),
-            "batch_size": int(m.group(4)), "replicates": int(m.group(5)), "vens_ref": m.group(6)}
+            "batch_size": int(m.group(4)), "replicates": int(m.group(5)), "vens_ref": m.group(6),
+            "dispatch_id": m.group(7)}
 
 
 def check_name(folder, name, rj, prov):
