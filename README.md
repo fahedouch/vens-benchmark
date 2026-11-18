@@ -45,7 +45,7 @@ Half B calls the real `vens generate` CLI, so drop the `vens` binary in this dir
 ## What the two halves measure
 
 - **Half A** — predict the CVSS v3.1 vector from the CVE text (the public CTIBench task), scored by MAD against NVD. Raw CVE understanding.
-- **Half B** — run 35 project-context scenarios through vens and check the OWASP risk moves the right way when you change exposure, data sensitivity, criticality, reachability, or controls. Every model is measured against a non-LLM rule engine it has to beat.
+- **Half B** — run 46 project-context scenarios (35 in the published Half B, before the schema-2 regeneration) through vens and check the OWASP risk moves the right way when you change exposure, data sensitivity, criticality, reachability, or controls. Every model is measured against a non-LLM rule engine it has to beat.
 
 ## Data & license
 

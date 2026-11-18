@@ -1,3 +1,4 @@
+schema_version: 2
 project:
   name: internal-batch-tool
   description: Internal-only batch report generator (Java)
@@ -5,6 +6,13 @@ context:
   exposure: internal
   data_sensitivity: low
   business_criticality: low
+  listener: absent
+  data_subjects: millions
+  detection:
+    network: not_logged
+    host: not_logged
+    application: not_logged
+  traceability: none
   controls:
     segmentation: true
     ids: true

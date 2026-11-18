@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/serdes@4.0.0"
           },
           "Title": "Unsafe deserialization in serdes (local input)",
-          "Description": "serdes executes code when it deserializes attacker-influenced input. Exploitation requires the attacker to place a crafted file on the host; it is not triggerable remotely over HTTP. CVSS 7.0.",
-          "PrimaryURL": "https://example.test/CVE-2099-0007"
+          "Description": "serdes executes code when it deserializes attacker-influenced input. Exploitation requires the attacker to place a crafted file on the host; it is not triggerable remotely over HTTP. CVSS 7.8.",
+          "PrimaryURL": "https://example.test/CVE-2099-0007",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 3
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 7.8
+            }
+          }
         }
       ]
     }

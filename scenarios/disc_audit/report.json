@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/auditlog@2.3.0"
           },
           "Title": "Audit-trail forgery in auditlog",
-          "Description": "An authenticated user can inject or suppress entries in the audit trail, breaking accountability and forensic integrity. There is no confidentiality or availability impact. CVSS 5.4.",
-          "PrimaryURL": "https://example.test/CVE-2099-0006"
+          "Description": "An authenticated user can inject or suppress entries in the audit trail, breaking accountability and forensic integrity. There is no confidentiality or availability impact. CVSS 4.3.",
+          "PrimaryURL": "https://example.test/CVE-2099-0006",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 2
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+              "V3Score": 4.3
+            }
+          }
         }
       ]
     }

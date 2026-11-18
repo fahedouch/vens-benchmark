@@ -1,3 +1,4 @@
+schema_version: 2
 project:
   name: mislabeled
   description: context contradicts reality
@@ -5,4 +6,11 @@ context:
   exposure: internal
   data_sensitivity: low
   business_criticality: low
+  listener: unknown
+  data_subjects: millions
+  detection:
+    network: not_logged
+    host: not_logged
+    application: not_logged
+  traceability: none
   notes: Nothing sensitive here, just a test box.

@@ -39,7 +39,7 @@ def main():
     models = sorted({m for (_, m) in ctx})
 
     print("=== SHOWCASES (does the model modulate CVSS by context?) ===")
-    print(f"{'model':22s} {'8.8 RCE -> expect LOW':>24s} {'5.3 leak -> expect HIGH':>26s}")
+    print(f"{'model':22s} {'10.0 RCE -> expect LOW':>24s} {'6.5 leak -> expect HIGH':>26s}")
     for m in models:
         h = ctx.get(("showcase_high_to_low", m), {})
         l = ctx.get(("showcase_med_to_high", m), {})
@@ -109,13 +109,14 @@ def main():
         d = ctx.get(("disc_dos", m), {})
         good = isinstance(d.get("technical_impact"), (int, float)) and d["technical_impact"] < bdos.get("technical_impact", 9)
         print(f"    {m:22s} technical={d.get('technical_impact','?')} risk={d.get('risk','?')}  {'reads DoS' if good else '= naive'}")
+    # Printed, no verdict: the accountability verdict is the answer to Loss of
+    # accountability under traceability per_individual, which this record lacks.
     baud = base.get("disc_audit", {})
     print(f"\n  [accountability + low data] naive rule technical={baud.get('technical_impact','?')} "
-          f"risk={baud.get('risk','?')} -- a reading model should score technical HIGHER (audit_req)")
+          f"risk={baud.get('risk','?')} -- a diagnostic")
     for m in models:
         d = ctx.get(("disc_audit", m), {})
-        good = isinstance(d.get("technical_impact"), (int, float)) and d["technical_impact"] > baud.get("technical_impact", 0)
-        print(f"    {m:22s} technical={d.get('technical_impact','?')} risk={d.get('risk','?')}  {'uses audit_req' if good else '= naive'}")
+        print(f"    {m:22s} technical={d.get('technical_impact','?')} risk={d.get('risk','?')}")
     print(f"\n  [reachability via notes] naive rule reach_yes=reach_no="
           f"{base.get('reach_yes',{}).get('risk','?')} (ignores notes) -- a reading model should differ")
     for m in models:
@@ -147,17 +148,16 @@ def main():
     print("       NOT drift back up once 'denial of service' is removed):")
     famrows("technical_impact", ["disc_dos", "disc_dos2", "disc_dos3"],
             ["disc_dos_nt", "disc_dos_nt2"])
-    print("\n  Accountability technical_impact (naive rule=2; a reading model scores HIGHER")
-    print("       via audit_requirement and should stay high without the word 'audit'):")
+    print("\n  Accountability technical_impact (naive rule=2), a diagnostic:")
     famrows("technical_impact", ["disc_audit", "disc_audit2", "disc_audit3"],
             ["disc_audit_nt", "disc_audit_nt2"])
     print("\n  Irrelevant WAF: vulnerability on the local bug. no-WAF is the SAME local bug")
-    print("       without controls; a WAF at the edge must not lower a local-file exploit:")
+    print("       without controls, each text against its own twin; a WAF at the edge must not lower a")
+    print("       local-file exploit:")
     for m in models:
-        off = ctx.get(("disc_ctrl_off_local", m), {}).get("vulnerability", "?")
-        tel = ctx.get(("disc_ctrl_irrelevant", m), {}).get("vulnerability", "?")
-        nt = ctx.get(("disc_ctrl_irrelevant_nt", m), {}).get("vulnerability", "?")
-        print(f"    {m:22s} no-WAF={off}  WAF(telegraphed)={tel}  WAF(non-telegraphed)={nt}")
+        vu = lambda sid: ctx.get((sid, m), {}).get("vulnerability", "?")
+        print(f"    {m:22s} telegraphed no-WAF={vu('disc_ctrl_off_local')} WAF={vu('disc_ctrl_irrelevant')}  "
+              f"non-telegraphed no-WAF={vu('disc_ctrl_off_local_nt')} WAF={vu('disc_ctrl_irrelevant_nt')}")
 
     print("\n=== LLM vs BASELINE (risk per scenario; divergence = LLM adds value) ===")
     scen = sorted({s for (s, _) in ctx})

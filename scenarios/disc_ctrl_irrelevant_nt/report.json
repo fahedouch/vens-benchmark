@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/cfgloader@1.0.0"
           },
           "Title": "Unsafe load in cfgloader",
-          "Description": "cfgloader executes embedded directives when it reads a configuration file from the local filesystem during startup. An attacker able to write that file on the host runs code as the service account. CVSS 7.0.",
-          "PrimaryURL": "https://example.test/CVE-2099-0024"
+          "Description": "cfgloader executes embedded directives when it reads a configuration file from the local filesystem during startup. An attacker able to write that file on the host runs code as the service account. CVSS 7.8.",
+          "PrimaryURL": "https://example.test/CVE-2099-0024",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 3
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 7.8
+            }
+          }
         }
       ]
     }

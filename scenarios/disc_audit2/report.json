@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/eventbus@1.4.0"
           },
           "Title": "Security-event suppression in eventbus",
-          "Description": "eventbus lets an authenticated user drop security events before they are persisted, so malicious actions go unrecorded. This breaks accountability; there is no data disclosure or availability impact. CVSS 5.3.",
-          "PrimaryURL": "https://example.test/CVE-2099-0010"
+          "Description": "eventbus lets an authenticated user drop security events before they are persisted, so malicious actions go unrecorded. This breaks accountability; there is no data disclosure or availability impact. CVSS 4.3.",
+          "PrimaryURL": "https://example.test/CVE-2099-0010",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 2
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+              "V3Score": 4.3
+            }
+          }
         }
       ]
     }

@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/syslogx@3.0.0"
           },
           "Title": "Audit-log deletion in syslogx",
-          "Description": "syslogx accepts unauthenticated control messages that delete existing audit logs, destroying the forensic trail. This affects the integrity of the audit record only. CVSS 5.4.",
-          "PrimaryURL": "https://example.test/CVE-2099-0011"
+          "Description": "syslogx accepts unauthenticated control messages that delete existing audit logs, destroying the forensic trail. This affects the integrity of the audit record only. CVSS 5.3.",
+          "PrimaryURL": "https://example.test/CVE-2099-0011",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 2
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N",
+              "V3Score": 5.3
+            }
+          }
         }
       ]
     }

@@ -1,0 +1,30 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "bench/app:latest",
+  "ArtifactType": "container_image",
+  "Results": [
+    {
+      "Target": "app",
+      "Class": "os-pkgs",
+      "Type": "debian",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2099-0021",
+          "PkgName": "fieldmatch",
+          "InstalledVersion": "2.0.0",
+          "Severity": "HIGH",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/fieldmatch@2.0.0"
+          },
+          "Title": "Pattern evaluation issue in fieldmatch",
+          "Description": "fieldmatch checks a request field against a pattern with nested repetition. For some short crafted values the evaluation time grows exponentially with the value's length, and the thread serving the request stays at full CPU until the request is abandoned. CVSS 7.5.",
+          "PrimaryURL": "https://example.test/CVE-2099-0021",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 3
+          }
+        }
+      ]
+    }
+  ]
+}

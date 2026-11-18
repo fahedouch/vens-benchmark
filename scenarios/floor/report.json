@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/tinylog@0.9.0"
           },
           "Title": "Log spoofing via unescaped newline in tinylog",
-          "Description": "tinylog does not escape newlines, letting a local user forge log lines. Requires local access, no data impact. CVSS 3.3.",
-          "PrimaryURL": "https://example.test/CVE-2099-0003"
+          "Description": "tinylog does not escape newlines, letting a local user forge log lines. Requires local access. The impact is low and on the log's integrity only, with no confidentiality or availability impact. CVSS 3.3.",
+          "PrimaryURL": "https://example.test/CVE-2099-0003",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 1
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+              "V3Score": 3.3
+            }
+          }
         }
       ]
     }

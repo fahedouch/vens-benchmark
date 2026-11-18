@@ -20,7 +20,8 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # the freeze records Python 3.12.12, which setup-python has no Ubuntu 26.04 build of
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -47,12 +48,15 @@ jobs:
             (cd "$RUNNER_TEMP/src-$arm" && go build -o "$RUNNER_TEMP/bin/vens-$arm" ./cmd/vens)
           done
 
+      # The scenarios are PyYAML's output: the generator's test rewrites them byte for byte under the Python and
+      # PyYAML freeze-scenarios.json records. cvss checks the generator's CVSS formula on every base vector.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.12.12"
 
-      - name: Install PyYAML, which reads baseline.yml
-        run: python3 -m pip install PyYAML==6.0.3
+      # PyYAML also reads baseline.yml in the workflow tests
+      - name: Install the corpus's packages at requirements.txt's versions
+        run: python3 -m pip install --disable-pip-version-check -c requirements.txt PyYAML cvss
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:

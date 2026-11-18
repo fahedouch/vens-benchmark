@@ -18,7 +18,17 @@
           },
           "Title": "Decompression bomb in zipread",
           "Description": "zipread does not bound decompression, so a small crafted archive expands to exhaust memory and crash the process (denial of service). The impact is availability only. CVSS 7.5.",
-          "PrimaryURL": "https://example.test/CVE-2099-0009"
+          "PrimaryURL": "https://example.test/CVE-2099-0009",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 3
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V3Score": 7.5
+            }
+          }
         }
       ]
     }
