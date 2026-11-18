@@ -377,28 +377,42 @@ def _sweep(ctx):
 def _seal(ctx, doc, error):
     """The archive finished, whatever stopped the campaign: campaign.json with its end, why it stopped and the files
     a key was cut out of; failures.jsonl; every key's forms swept out of every file, campaign.json included, a form
-    found then stopping the campaign; SHA256SUMS last. An error writing campaign.json or failures.jsonl is kept, the
-    sweep and the sums made all the same, and raised then. Returns the error the campaign ends on."""
+    found then stopping the campaign; SHA256SUMS last, once a sweep finds the archive clean. No write keeps the steps
+    after it from running: each one's error is kept, the sweeps run whatever the writes did, and the first error
+    kept is raised once the sums are written. Returns the error the campaign ends on."""
     path = os.path.join(ctx.out, campaign.CAMPAIGN)
-    unwritten = None
-    try:
-        runvens.write_json(path, {**doc, "ended_at": runvens.utc(), "redacted": sorted(set(ctx.redacted)),
-                                  "stopped": None if error is None else _why(error)})
-        campaign.write_failures(ctx.out)
-    except Exception as e:
-        unwritten = e
-    # the second sweep reads what the first one's marks rewrote; the marks never hold a key, only paths
-    for _ in range(2):
-        found = _sweep(ctx)
-        if not found:
-            break
-        error = error or RunnerError(f"a form of a key was in {', '.join(found)}, now cut out")
+    kept = []
+
+    def keep(write, *args):
+        try:
+            write(*args)
+        except Exception as e:
+            kept.append(e)
+
+    def mark(found):
         sealed = load_object(path)
         runvens.write_json(path, {**sealed, "redacted": sorted(set(sealed.get("redacted") or []) | set(found)),
                                   "stopped": sealed.get("stopped") or _why(error)})
-    campaign.write_sums(ctx.out)
-    if unwritten is not None:
-        raise unwritten
+
+    keep(runvens.write_json, path, {**doc, "ended_at": runvens.utc(), "redacted": sorted(set(ctx.redacted)),
+                                    "stopped": None if error is None else _why(error)})
+    keep(campaign.write_failures, ctx.out)
+    # each sweep reads what the marks before it rewrote; a mark holds paths, never a key
+    for _ in range(3):
+        try:
+            found = _sweep(ctx)
+        except Exception as e:
+            kept.append(e)
+            break
+        if not found:
+            keep(campaign.write_sums, ctx.out)
+            break
+        error = error or RunnerError(f"a form of a key was in {', '.join(found)}, now cut out")
+        keep(mark, found)
+    else:
+        kept.append(RunnerError("a form of a key was still found after three sweeps: the archive has no SHA256SUMS"))
+    if kept:
+        raise kept[0]
     return error
 
 

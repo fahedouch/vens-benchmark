@@ -590,16 +590,43 @@ class TestSealing(Base):
                 self.main()
         campaign.check_sums(self.out)
 
-    def test_an_error_while_finishing_still_sweeps_the_keys_out_before_the_sums(self):
+    @staticmethod
+    def failing_campaign_write(nth, error):
+        """write_json raising error at the nth write of campaign.json, the first being the campaign's start."""
+        real, seen = runvens.write_json, []
+
+        def write(path, doc):
+            if os.path.basename(path) == campaign.CAMPAIGN:
+                seen.append(path)
+                if len(seen) == nth:
+                    raise error
+            return real(path, doc)
+
+        return mock.patch.object(runvens, "write_json", write)
+
+    def test_a_write_failing_while_sealing_leaves_the_archive_key_free_and_summed(self):
+        before, after = OSError("campaign.json before the sweep"), OSError("campaign.json after the sweep")
+        index = RuntimeError("failures.jsonl")
+        failing_index = lambda: mock.patch.object(campaign, "write_failures", side_effect=index)
+        cases = (("campaign.json before the sweep", lambda: [self.failing_campaign_write(2, before)], before, True),
+                 ("failures.jsonl", lambda: [failing_index()], index, True),
+                 ("campaign.json after the sweep", lambda: [self.failing_campaign_write(3, after)], after, False),
+                 ("failures.jsonl, then campaign.json after the sweep",
+                  lambda: [failing_index(), self.failing_campaign_write(3, after)], index, False))
         environ = self.env(VENS_MOCK_LLM_SKIP=KEYS["OPENAI_API_KEY_BEFORE"], **KEYS)
-        with mock.patch.object(campaign, "write_failures", side_effect=RuntimeError("disk full")):
-            with self.assertRaisesRegex(RuntimeError, "disk full"):
-                self.main(models=("mock/mock", DATED), environ=environ)
-        self.assertEqual(self.key_forms_held(), [])
-        campaign.check_sums(self.out)
-        doc = self.doc()
-        self.assertTrue(doc["stopped"].startswith("runner error: a form of a key was in "), doc["stopped"])
-        self.assertIn(campaign.CAMPAIGN, doc["redacted"])
+        for name, patches, first, marked in cases:
+            with self.subTest(name):
+                shutil.rmtree(self.out, ignore_errors=True)
+                with contextlib.ExitStack() as stack:
+                    for patch in patches():
+                        stack.enter_context(patch)
+                    with self.assertRaises(type(first)) as raised:
+                        self.main(models=("mock/mock", DATED), environ=environ)
+                self.assertIs(raised.exception, first)
+                self.assertEqual(self.key_forms_held(), [])
+                campaign.check_sums(self.out)
+                stopped = self.doc()["stopped"] or ""
+                self.assertEqual(stopped.startswith("runner error: a form of a key was in "), marked, stopped)
 
     def test_an_error_in_the_runner_names_its_cause(self):
         def failing_drain(*args):
