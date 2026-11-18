@@ -16,7 +16,7 @@ env:
   VENS_BEFORE: 43ab10bf980d42b77157e003a27921805a546770  # venslabs/vens main
   DEMO: 7ab1570f8068b16b965571f363726bc051d06d9f  # venslabs/vens-demo, its frozen scan runs/2026-09-23
   # venslabs/vens-demo, its baseline.yml with the attempt record, which tests/test_baseline_yml.py runs
-  DEMO_BASELINE: c4524dc5383a3cdc6441847a9c536f285063591d
+  DEMO_BASELINE: 3d6afdfce4fdcef5981846985296a432fcaf2196
 
 jobs:
   test:

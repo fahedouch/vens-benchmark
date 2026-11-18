@@ -72,6 +72,9 @@ s.write(out[:-len(".cdx.json")] + ".attestation.cdx.json", s.attestation(calls, 
 s.write(out, s.vex([({vid!r}, s.VECTOR, s.SEVERITY, s.SCORE)]))
 summary = dict(rows=2, cves=1, llm_calls=2) if before else dict(rows=1, cves=1, llm_calls=2, calls__M=1, calls__O=1)
 print(s.summary_line(**summary, asked_again=0, splits=0, failed=False), file=sys.stderr)
+if mode == "hold-log":
+    import subprocess
+    subprocess.Popen(["sleep", "600"])  # holds vens's stderr, the logger's pipe, open after vens returns
 '''
 
 # Keeps the first line only, then fails, as a tee whose disk filled up.
@@ -233,18 +236,17 @@ class Base(unittest.TestCase):
         mine = {k: render(str(v), ctx) for k, v in (st.get("env") or {}).items()}
         return {**base, **wide, **mine, **extra}
 
-    def bash(self, st, ctx, ws, cancel=False, **extra):
-        """Runs a step as the runner does, `bash -e {0}`, its output added to jobs.out; with cancel, as the runner
-        cancels it: SIGINT to the shell alone once vens has started, SIGTERM after, then whatever the shell left
-        running is killed."""
+    def bash(self, st, ctx, ws, cancel=None, **extra):
+        """Runs a step as the runner does, `bash -e {0}`, its output added to jobs.out; with cancel, a condition, as
+        the runner cancels it once the condition holds: SIGINT to the shell alone, SIGTERM after, then whatever the
+        shell left running is killed."""
         script = s.write(os.path.join(self.dir, "step.sh"), render(st["run"], ctx))
         with open(os.path.join(self.dir, "step.out"), "w") as out:
             p = subprocess.Popen(["bash", "-e", script], cwd=ws, env=self.env(st, ctx, ws, **extra), stdout=out,
                                  stderr=subprocess.STDOUT, start_new_session=True)
-            if cancel:
-                log = os.path.join(ws, "vens-internal.log")
+            if cancel is not None:
                 for _ in range(200):
-                    if os.path.exists(log) and os.path.getsize(log):
+                    if cancel():
                         break
                     time.sleep(0.05)
                 os.kill(p.pid, signal.SIGINT)
@@ -319,6 +321,13 @@ class TestKeys(Base):
         self.assertEqual(self.plan(ctx), 1)
         self.assertEqual(self.plan(context(provider="mock", model="mock", secrets={})), 0)
 
+    def test_the_plan_stops_a_bad_batch_size(self):
+        for batch, rc in (("10", 0), ("0", 1), ("010", 1), ("ten", 1), ("", 1)):
+            ctx = context()
+            ctx["inputs"]["batch-size"] = batch
+            self.assertEqual(self.plan(ctx), rc, batch)
+        self.assertIn("::error::batch-size must be a positive integer", self.output())
+
     def test_an_input_is_data_not_shell(self):
         ctx = context()
         ctx["inputs"]["replicates"] = "$(touch pwned)1"
@@ -352,7 +361,7 @@ class Download(Base):
                 self.upload(st, ctx, ws, os.path.join(root, str(run_id)))
                 outcome = "success"
             else:
-                cancel = mode == "hang" and st.get("id") == "vens"
+                cancel = self.cancel_when(mode, ws) if st.get("id") == "vens" else None
                 rc = self.bash(st, ctx, ws, cancel=cancel, VENS=vens or self.fake, FAKE_VENS=mode, **(env or {}))
                 outcome = "cancelled" if cancel else "success" if rc == 0 else "failure"
                 conclusion = outcome if conclusion == "success" else conclusion
@@ -368,8 +377,21 @@ class Download(Base):
         line = {"campaign": "c1", "arm": arm, "repo": "venslabs/vens-demo", "vens_ref": commit, "vens_commit": commit,
                 "provider": provider, "model": model, "batch_size": batch, "archived_run": "2026-09-23",
                 "dispatch_id": DISPATCH_ID, "replicate": run_id - 2000, "run_id": run_id, "run_attempt": 1,
-                "time": "2026-11-20T10:00:00Z", "replaces": None}
+                "time": "2026-11-20T10:00:00Z", "replaces": None, "conclusion": None}
         return [{**line, "run_id": None, "run_attempt": None, "action": "pending"}, {**line, "action": "dispatch"}]
+
+    @staticmethod
+    def cancel_when(mode, ws):
+        """When a case cancels its job: once vens has logged its first line, or once generate's exit is recorded
+        while its logger is held open."""
+        def logged():
+            log = os.path.join(ws, "vens-internal.log")
+            return os.path.exists(log) and os.path.getsize(log) > 0
+
+        def returned():
+            path = os.path.join(ws, "attempt.json")
+            return os.path.exists(path) and load(path)["generate"]["exit_status"] is not None
+        return {"hang": logged, "hold-log": returned}.get(mode)
 
     def upload(self, st, ctx, ws, run_dir):
         folder = os.path.join(run_dir, render(st["with"]["name"], ctx))
@@ -421,13 +443,15 @@ class TestTheAttemptRecord(Download):
         self.assertEqual((gen["outcome"], gen["failure"]), ("failed", {
             "kind": "scoring", "step": "generate", "cause": CAUSE, "cause_source": "vens log"}))
         self.assertTrue(gen["summary"]["failed"])
-        # A scoring that completed and a later step that failed; a log not captured whole fails the archive check.
+        # A scoring that completed and a later step that failed: the log capture, vens enrich, the archive check.
+        self.assertEqual((tee["outcome"], tee["failure"]), ("failed", {
+            "kind": "later_step", "step": "log_capture", "cause": "vens's log was not captured whole",
+            "cause_source": "attempt.json"}))
         self.assertEqual((enrich["outcome"], enrich["failure"]), ("failed", {
             "kind": "later_step", "step": "enrich", "cause": "vens enrich exited 1", "cause_source": "attempt.json"}))
-        for rec in (check, tee):
-            self.assertEqual((rec["outcome"], rec["failure"]), ("failed", {
-                "kind": "later_step", "step": "archive_check", "cause": "archive check failure",
-                "cause_source": "attempt.json"}))
+        self.assertEqual((check["outcome"], check["failure"]), ("failed", {
+            "kind": "later_step", "step": "archive_check", "cause": "archive check failure",
+            "cause_source": "attempt.json"}))
         for rec in (enrich, check):
             self.assertEqual((rec["summary"]["failed"], rec["calls"]["archived"]), (False, 2))
         # A scoring interrupted: its start and no exit status, the job's conclusion its cause.
@@ -466,6 +490,15 @@ class TestTheAttemptRecord(Download):
         self.assertEqual(steps(tee), (0, False, 0, "failure", False))
         with open(os.path.join(recs[5]["folder"], "vens-internal.log")) as fh:
             self.assertEqual(len(fh.read().splitlines()), 1)
+
+    def test_a_logger_held_open_then_a_cancel(self):
+        (rec,) = self.read([{"mode": "hold-log"}])
+        rj = load(os.path.join(rec["folder"], "attempt.json"))
+        self.assertEqual((rj["generate"]["exit_status"], rj["generate"]["log_complete"], rj["enrich"]), (0, None, None))
+        self.assertRegex(rj["generate"]["ended_at"], UTC)
+        self.assertEqual((rec["outcome"], rec["failure"]), ("failed", {
+            "kind": "later_step", "step": "log_capture", "cause": "job cancelled", "cause_source": "jobs.json"}))
+        self.assertFalse(rec["summary"]["failed"])
 
     def test_a_stop_before_vens_keeps_its_cause(self):
         (no_key,) = self.read([{"secrets": NO_AFTER_KEY}])
