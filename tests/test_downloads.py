@@ -22,7 +22,8 @@ def log_line(run_id, replicate, attempt=1, arm="after", model=s.MODEL, commit=s.
             "provider": "openai", "model": model, "batch_size": 1, "archived_run": "2026-09-23",
             "dispatch_id": f"d{run_id}", "replicate": replicate, "run_id": run_id, "run_attempt": attempt,
             "time": "2026-11-20T10:00:00Z",
-            "action": "dispatch" if attempt == 1 else "rerun-failed", "replaces": None if attempt == 1 else attempt - 1}
+            "action": "dispatch" if attempt == 1 else "rerun-failed", "replaces": None if attempt == 1 else attempt - 1,
+            "conclusion": None}
 
 
 def as_logged(*lines):
@@ -72,6 +73,38 @@ class Base(unittest.TestCase):
 
     def log_file(self, *lines):
         return s.write(os.path.join(self.root, "log.jsonl"), "".join(json.dumps(l) + "\n" for l in as_logged(*lines)))
+
+
+class TestStrayRuns(Base):
+    def test_a_completed_and_a_cancelled_stray_run_count_their_calls_not_their_scores(self):
+        lines = []
+        for replicate, (redone, stray, conclusion) in enumerate(((1001, 1002, "success"), (1003, 1004, "cancelled")),
+                                                                 1):
+            gone = log_line(stray, replicate)
+            lines += [{**gone, "run_id": None, "run_attempt": None, "action": "pending"},
+                      {**gone, "run_id": None, "run_attempt": None, "action": "abandoned"},
+                      *as_logged(log_line(redone, replicate)), {**gone, "action": "stray", "conclusion": conclusion}]
+            self.complete(redone)
+            for run_id in (redone, stray):
+                self.run_json(run_id)
+        self.complete(1002)
+        s.baseline_folder(self.root, 1004, "internal", 1, 1, log=[], vex_file=False, provenance=False, answers=False,
+                          record={"generate": {"started_at": "2026-11-20T10:00:00Z"}})
+        s.write(os.path.join(self.root, "1004", "jobs.json"), {"jobs": [
+            {"id": 9, "name": "internal · run 1", "run_attempt": 1, "status": "completed", "conclusion": "cancelled",
+             "started_at": "2026-11-20T10:00:00Z", "completed_at": "2026-11-20T10:02:00Z"}]})
+        log = s.write(os.path.join(self.root, "log.jsonl"), "".join(json.dumps(l) + "\n" for l in lines))
+        recs = {r["what"]["run_id"]: r for r in downloads.read_downloads(self.root, lines=dispatch.load(log),
+                                                                          commits=COMMITS)}
+        for run_id in (1001, 1003):
+            self.assertEqual((recs[run_id]["scores_usable"], recs[run_id]["excluded"]), (True, None))
+        done, cancelled = recs[1002], recs[1004]
+        self.assertEqual((done["outcome"], done["scores_usable"], done["excluded"], done["what"]["replicate"]),
+                         ("complete", False, attempt.STRAY, 1))
+        self.assertEqual((done["calls"]["archived"], done["cost_estimate"]), (2, recs[1001]["cost_estimate"]))
+        self.assertEqual((cancelled["outcome"], cancelled["failure"]["cause"], cancelled["excluded"],
+                          cancelled["what"]["replicate"], cancelled["calls"]["archived"]),
+                         ("failed", "job cancelled", attempt.STRAY, 2, 2))
 
 
 class TestTheDispatchLog(Base):

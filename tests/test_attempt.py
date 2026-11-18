@@ -70,6 +70,38 @@ class TestOutcomes(Base):
         self.assertNotIn("failure.cause", rec["unknown"])
         self.assertEqual([p for p in rec["problems"] if "neither the start" in p], [])
 
+    def test_a_cancel_names_the_cause_of_a_command_that_exited_non_zero(self):
+        for conclusion in ("cancelled", "timed_out"):
+            job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": conclusion}
+            gen = attempt.read_attempt(self.folder({"generate": {**GEN_OK, "exit_status": 130}}, log=[s.error_line(
+                "context canceled")], vex_file=False, provenance=False, answers=False), job=job)
+            self.assertEqual(gen["failure"], {"kind": "interrupted", "step": "generate", "cause": f"job {conclusion}",
+                                              "cause_source": "jobs.json", "detail": "vens generate exited 130"})
+            enrich = attempt.read_attempt(self.folder({**s.COMPLETE_RECORD, "enrich": {
+                **s.COMPLETE_RECORD["enrich"], "exit_status": 1}, "archive_check": "skipped", "provenance": False},
+                provenance=False), job=job)
+            self.assertEqual(enrich["failure"], {"kind": "later_step", "step": "enrich", "cause": f"job {conclusion}",
+                                                 "cause_source": "jobs.json", "detail": "vens enrich exited 1"})
+        failed = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "failure"}
+        rec = attempt.read_attempt(self.folder({"generate": {**GEN_OK, "exit_status": 1}}, log=[s.error_line(CAUSE)],
+                                               vex_file=False, provenance=False, answers=False), job=failed)
+        self.assertEqual(rec["failure"], {"kind": "scoring", "step": "generate", "cause": CAUSE,
+                                          "cause_source": "vens log"})
+
+    def test_the_log_capture_after_a_scoring_that_completed(self):
+        cancelled = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "cancelled"}
+        held = attempt.read_attempt(self.folder({"generate": {**GEN_OK, "log_complete": None}}, provenance=False),
+                                    job=cancelled)
+        self.assertEqual((held["failure"], held["steps"]["generate"]["exit_status"]), ({
+            "kind": "later_step", "step": "log_capture", "cause": "job cancelled", "cause_source": "jobs.json"}, 0))
+        self.assertIn("generate.log_complete", held["unknown"])
+        cut = attempt.read_attempt(self.folder({**s.COMPLETE_RECORD, "generate": {**GEN_OK, "log_complete": False},
+                                                "archive_check": "failure", "provenance": False}, provenance=False))
+        self.assertEqual(cut["failure"], {"kind": "later_step", "step": "log_capture",
+                                          "cause": "vens's log was not captured whole", "cause_source": "attempt.json"})
+        whole = attempt.read_attempt(self.folder({**s.COMPLETE_RECORD, "generate": {**GEN_OK, "log_complete": True}}))
+        self.assertEqual((whole["outcome"], whole["scores_usable"]), ("complete", True))
+
     def test_a_job_that_succeeded_without_an_exit_status(self):
         job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
         rec = attempt.read_attempt(self.folder({"generate": {"started_at": "2026-11-20T10:00:00Z"}}, log=[]), job=job)

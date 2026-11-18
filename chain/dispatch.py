@@ -8,7 +8,7 @@ starts once both runs have ended, and a run is rerun only before it.
 dispatch-log.jsonl holds one JSON object per line, appended, never rewritten:
 
     {"campaign", "arm", "repo", "vens_ref", "vens_commit", "provider", "model", "batch_size", "archived_run",
-     "dispatch_id", "replicate", "run_id", "run_attempt", "time", "action", "replaces"}
+     "dispatch_id", "replicate", "run_id", "run_attempt", "time", "action", "replaces", "conclusion"}
 
 dispatch_id is made afresh for each dispatch and passed to baseline.yml, which puts it in the run's name: the run a
 dispatch started is the one named with its id, whatever other run shares its inputs, a late run of an abandoned
@@ -22,14 +22,18 @@ action is one of:
                      replicate was not dispatched again
     abandoned        a pending dispatch that started no run: at least 15 minutes old, and the run list, read back to
                      its time within GitHub's cap, holds no run of its title and no run the log does not name created
-                     within two minutes of it. A run of its id that appears later blocks every new dispatch until it
-                     is attached with resolve --run-id or cancelled
+                     within two minutes of it. A run of its id that appears later blocks every new dispatch and
+                     rerun until it is attached with resolve --run-id or recorded as a stray
+    stray            the late run of an abandoned dispatch whose replicate was dispatched again, recorded once it has
+                     ended, its title and creation checked against the abandoned dispatch: its calls count in the
+                     spend, its scores are not its replicate's; conclusion, null on every other line, says how it ended
     rerun-pending    written before `gh run rerun --failed`, run_attempt the attempt it asks for
     rerun-failed     that attempt, read back from the API, replacing the attempt before it
     rerun-abandoned  a pending rerun that started no attempt: at least 15 minutes old, the run still at the attempt
                      before
 The lines of one replicate, (campaign, arm, provider, model, replicate), agree on every field but run_id,
-run_attempt, time, action and replaces, and dispatch_id across an abandoned dispatch and the next. time is UTC.
+run_attempt, time, action, replaces and conclusion, and dispatch_id across an abandoned dispatch and the next. time is
+UTC.
 Every command holds an exclusive lock on LOG.lock while it reads the log, checks, calls gh and writes, so two
 commands never act on the same state. This script writes the log; whoever runs the campaign owns it and commits it
 with the campaign's archive.
@@ -39,7 +43,12 @@ with the campaign's archive.
     python3 -m chain.dispatch rerun --log LOG --run-id ID --retry-cap 4 --max-side-by-side 2
     python3 -m chain.dispatch resolve --log LOG --campaign NAME --arm after --provider openai \
         --model gpt-5.4-mini-2026-03-17 --replicate 1 (--run-id ID | --no-run)
+    python3 -m chain.dispatch resolve --log LOG --campaign NAME --arm after --provider openai \
+        --model gpt-5.4-mini-2026-03-17 --replicate 1 --stray --run-id ID
     python3 -m chain.dispatch resolve-rerun --log LOG --run-id ID [--no-rerun]
+    python3 -m chain.dispatch check-late --log LOG
+
+A campaign is archived only after check-late passes: no run of an abandoned dispatch is left out of its log.
 
 gh is the executable --gh names, else $GH, else the one on PATH.
 """
@@ -58,11 +67,12 @@ import time
 from chain.errors import Refused
 
 FIELDS = ("campaign", "arm", "repo", "vens_ref", "vens_commit", "provider", "model", "batch_size", "archived_run",
-          "dispatch_id", "replicate", "run_id", "run_attempt", "time", "action", "replaces")
+          "dispatch_id", "replicate", "run_id", "run_attempt", "time", "action", "replaces", "conclusion")
 KEY = ("campaign", "arm", "provider", "model", "replicate")
 SAME = ("repo", "vens_ref", "vens_commit", "batch_size", "archived_run", "dispatch_id")
 PENDING, DISPATCH, RESOLVED, ABANDONED = "pending", "dispatch", "resolved", "abandoned"
 RERUN_PENDING, RERUN, RERUN_ABANDONED = "rerun-pending", "rerun-failed", "rerun-abandoned"
+STRAY = "stray"
 STARTS = (DISPATCH, RESOLVED)
 ARMS = ("before", "after")
 WORKFLOW = "baseline.yml"
@@ -109,11 +119,13 @@ def locked(log):
 def load(path):
     """The log's lines, checked: every field present and every action known; a dispatch, resolved or abandoned line
     closing its replicate's pending line on the same fields; a pending rerun asking for the attempt after its run's
-    last one, on its run's fields, and closed by that attempt or abandoned; each run id one replicate's and each
+    last one, on its run's fields, and closed by that attempt or abandoned; a stray line naming the run of an
+    abandoned dispatch dispatched again since, on its fields, and never rerun; each run id one line's and each
     (run id, run attempt) logged once."""
     if not os.path.exists(path):
         return []
     lines, pending, started, attempts, owner, reruns, abandoned = [], {}, {}, {}, {}, {}, {}
+    gone = {}  # dispatch id: {"line": its abandoned line, "again": its replicate dispatched again since}
     with open(path, encoding="utf-8") as fh:
         for n, text in enumerate(fh, 1):
             if not text.strip():
@@ -134,6 +146,8 @@ def load(path):
                     raise DispatchError(f"{where}: a second dispatch of replicate {line['replicate']} of {line['arm']}")
                 pending[k] = line
                 abandoned.pop(k, None)
+                for g in gone.values():
+                    g["again"] = g["again"] or key(g["line"]) == k
             elif action in STARTS + (ABANDONED,):
                 # A resolved line may also attach the late run of the replicate's abandoned dispatch.
                 before = pending.get(k) or (abandoned.get(k) if action == RESOLVED else None)
@@ -144,15 +158,21 @@ def load(path):
                     raise DispatchError(f"{where}: a {action} line changes {changed} of its pending dispatch")
                 pending.pop(k, None)
                 abandoned.pop(k, None)
+                gone.pop(line["dispatch_id"], None)
                 if action == ABANDONED:
                     abandoned[k] = line
+                    gone[line["dispatch_id"]] = {"line": line, "again": False}
                 else:
                     _start(line, where, owner, attempts)
                     started[k] = line
+            elif action == STRAY:
+                _stray_line(line, where, gone.pop(line["dispatch_id"], None), owner)
             elif action in (RERUN_PENDING, RERUN, RERUN_ABANDONED):
                 first = owner.get(line["run_id"])
                 if first is None:
                     raise DispatchError(f"{where}: a {action} line for run {line['run_id']}, which no dispatch names")
+                if first["action"] == STRAY:
+                    raise DispatchError(f"{where}: a {action} line for run {line['run_id']}, a stray run")
                 changed = [f for f in KEY + SAME if line[f] != first[f]]
                 if changed:
                     raise DispatchError(f"{where}: a rerun changes {changed} of run {line['run_id']}")
@@ -177,6 +197,21 @@ def load(path):
     return lines
 
 
+def _stray_line(line, where, g, owner):
+    if g is None or not g["again"]:
+        raise DispatchError(f"{where}: a stray line whose dispatch id is of no abandoned dispatch dispatched "
+                            f"again since")
+    changed = [f for f in KEY + SAME if line[f] != g["line"][f]]
+    if changed:
+        raise DispatchError(f"{where}: a stray line changes {changed} of its abandoned dispatch")
+    if not (isinstance(line["run_id"], int) and isinstance(line["run_attempt"], int) and line["run_attempt"] >= 1
+            and line["replaces"] is None and line["conclusion"]):
+        raise DispatchError(f"{where}: a stray line names a run, its attempt and how it ended, and replaces nothing")
+    if line["run_id"] in owner:
+        raise DispatchError(f"{where}: run {line['run_id']} is already another line's")
+    owner[line["run_id"]] = line
+
+
 def _start(line, where, owner, attempts):
     if line["run_attempt"] != 1 or line["replaces"] is not None or not isinstance(line["run_id"], int):
         raise DispatchError(f"{where}: a run starts at attempt 1 with a run id and replaces nothing")
@@ -187,11 +222,14 @@ def _start(line, where, owner, attempts):
 
 
 def index(lines):
-    """{run id: {run attempt: line}}, from the lines that name a run's attempt."""
+    """{run id: {run attempt: line}}, from the lines that name a run's attempt; a stray line names each attempt of
+    its run up to the one it recorded."""
     out = {}
     for line in lines:
         if line["action"] in STARTS + (RERUN,):
             out[line["run_id"]] = {**out.get(line["run_id"], {}), line["run_attempt"]: line}
+        elif line["action"] == STRAY:
+            out[line["run_id"]] = {n: line for n in range(1, line["run_attempt"] + 1)}
     return out
 
 
@@ -345,24 +383,38 @@ def _check_cap(lines, status, cap):
                       f"dispatches, at the cap of {cap} side by side")
 
 
-def _check_late_runs(gh, repo, lines):
-    """Refused while a run the log does not name, and not cancelled, carries the dispatch id of an abandoned
-    dispatch: GitHub started it late, and a new dispatch could pay for its replicate twice. The run list is read back
-    to the oldest abandoned dispatch; refused when it cannot be."""
-    ids = {l["dispatch_id"] for l in lines if l["action"] == ABANDONED}
-    if not ids:
+def _check_late_runs(gh, lines):
+    """Refused while a run the log does not name carries the dispatch id of an abandoned dispatch, whatever its end:
+    GitHub started it late, it may have made calls, and a new dispatch or rerun could pay for its replicate twice.
+    Each repository's run list is read back to its oldest abandoned dispatch; refused when it cannot be."""
+    abandoned = [l for l in lines if l["action"] == ABANDONED]
+    if not abandoned:
         return
-    since = min(_parse(l["time"]) for l in lines if l["action"] == PENDING and l["dispatch_id"] in ids)
-    runs, reached = runs_since(gh, repo, since)
-    if not reached:
-        raise Refused(f"the run list did not reach {_stamp(since)}, the oldest abandoned dispatch, within GitHub's cap "
-                      f"of {LISTING_CAP} runs and {MAX_PAGES} pages: no new dispatch while a late run of it may exist")
-    known = set(index(lines))
-    late = sorted(r["id"] for r in runs if r["id"] not in known and r.get("conclusion") != "cancelled"
-                  and dispatch_id_of(r) in ids)
+    ids = {l["dispatch_id"] for l in abandoned}
+    asked = {l["dispatch_id"]: _parse(l["time"]) for l in lines if l["action"] == PENDING and l["dispatch_id"] in ids}
+    known, late = set(index(lines)), []
+    for repo in sorted({l["repo"] for l in abandoned}):
+        since = min(asked[l["dispatch_id"]] for l in abandoned if l["repo"] == repo)
+        runs, reached = runs_since(gh, repo, since)
+        if not reached:
+            raise Refused(f"the run list of {repo} did not reach {_stamp(since)}, the oldest abandoned dispatch, "
+                          f"within GitHub's cap of {LISTING_CAP} runs and {MAX_PAGES} pages: a late run of it may "
+                          f"exist")
+        late += [r["id"] for r in runs if r["id"] not in known and dispatch_id_of(r) in ids]
     if late:
-        raise Refused(f"runs {late} carry the dispatch id of an abandoned dispatch: attach each to its replicate with "
-                      f"resolve --run-id, or cancel it, before any new dispatch")
+        raise Refused(f"runs {sorted(late)} carry the dispatch id of an abandoned dispatch: attach each with resolve "
+                      f"--run-id, or once it has ended and its replicate was dispatched again record it with resolve "
+                      f"--stray --run-id")
+
+
+def check_late(a, gh):
+    """The late-run check alone, under the lock; Refused while a run the log does not name carries an abandoned
+    dispatch's id."""
+    with locked(a.log):
+        lines = load(a.log)
+        _check_late_runs(gh, lines)
+        return {"log": a.log, "abandoned": sorted({l["dispatch_id"] for l in lines if l["action"] == ABANDONED}),
+                "late_runs": []}
 
 
 def _dispatched(lines, campaign, provider, model):
@@ -413,14 +465,15 @@ def _dispatch(a, gh, now, sleep):
         raise Refused(f"replicate {a.replicate} of the {a.arm} is already run {started[0]['run_id']}; rerun it instead")
     _check_pairing(lines, a, status)
     _check_cap(lines, status, a.max_side_by_side)
-    _check_late_runs(gh, a.repo, lines)
+    _check_late_runs(gh, lines)
     commit = _api(gh, f"repos/venslabs/vens/commits/{a.vens_ref}")["sha"]
     did = new_dispatch_id()
     want = title(a.archived_run, a.provider, a.model, a.batch_size, commit, did)
     since = now()
     base = {"campaign": a.campaign, "arm": a.arm, "repo": a.repo, "vens_ref": a.vens_ref, "vens_commit": commit,
             "provider": a.provider, "model": a.model, "batch_size": a.batch_size, "archived_run": a.archived_run,
-            "dispatch_id": did, "replicate": a.replicate, "time": _stamp(since), "replaces": None}
+            "dispatch_id": did, "replicate": a.replicate, "time": _stamp(since), "replaces": None,
+            "conclusion": None}
     # Logged before the call: a run the API never names back still blocks this replicate until resolved.
     _append(a.log, {**base, "run_id": None, "run_attempt": None, "action": PENDING})
     fields = [x for k, v in inputs(a, commit, did).items() for x in ("-f", f"{k}={v}")]
@@ -446,6 +499,8 @@ def resolve(a, gh, now=utc_now):
     checks made, when the replicate was not dispatched again."""
     with locked(a.log):
         lines = load(a.log)
+        if a.stray:
+            return _stray(a, gh, now, lines)
         k = (a.campaign, a.arm, a.provider, a.model, a.replicate)
         pending = next((l for l in open_pending(lines) if key(l) == k), None)
         if pending is None and not a.no_run:
@@ -486,6 +541,39 @@ def resolve(a, gh, now=utc_now):
         return line
 
 
+def _stray(a, gh, now, lines):
+    """Records the late run of the replicate's abandoned dispatch once its replicate was dispatched again: its title
+    the abandoned dispatch's, created after it was asked for, and ended."""
+    k = (a.campaign, a.arm, a.provider, a.model, a.replicate)
+    if a.run_id in index(lines):
+        raise Refused(f"run {a.run_id} is already in the log")
+    abandoned = [l for l in lines if l["action"] == ABANDONED and key(l) == k]
+    if not abandoned:
+        raise Refused(f"replicate {a.replicate} of the {a.arm} has no abandoned dispatch")
+    run = _api(gh, f"repos/{abandoned[0]['repo']}/actions/runs/{a.run_id}")
+    gone = next((l for l in abandoned if l["dispatch_id"] == dispatch_id_of(run)), None)
+    if gone is None:
+        raise Refused(f"run {a.run_id} is {run.get('display_title')!r}, of no abandoned dispatch of replicate "
+                      f"{a.replicate} of the {a.arm}")
+    asked = next(l for l in lines if l["action"] == PENDING and l["dispatch_id"] == gone["dispatch_id"])
+    want = title(asked["archived_run"], asked["provider"], asked["model"], asked["batch_size"], asked["vens_commit"],
+                 asked["dispatch_id"])
+    if run.get("display_title") != want:
+        raise Refused(f"run {a.run_id} is {run.get('display_title')!r}, not the abandoned dispatch {want!r}")
+    if not run.get("created_at") or _parse(run["created_at"]) < _parse(asked["time"]) - SKEW:
+        raise Refused(f"run {a.run_id} was created at {run.get('created_at')}, before the abandoned dispatch of "
+                      f"{asked['time']}")
+    if run.get("status") != "completed":
+        raise Refused(f"run {a.run_id} is {run.get('status')}: a stray run is recorded once it has ended")
+    if not any(l["action"] == PENDING and key(l) == k for l in lines[lines.index(gone) + 1:]):
+        raise Refused(f"replicate {a.replicate} of the {a.arm} was not dispatched again: attach run {a.run_id} with "
+                      f"resolve --run-id")
+    line = {**asked, "run_id": a.run_id, "run_attempt": run.get("run_attempt"), "time": _stamp(now()),
+            "action": STRAY, "replaces": None, "conclusion": run.get("conclusion")}
+    _append(a.log, line)
+    return line
+
+
 def rerun(a, gh, now=utc_now, sleep=time.sleep):
     with locked(a.log):
         return _rerun(a, gh, now, sleep)
@@ -496,6 +584,8 @@ def _rerun(a, gh, now, sleep):
     idx = index(lines)
     if a.run_id not in idx:
         raise Refused(f"run {a.run_id} is not in {a.log}")
+    if idx[a.run_id][min(idx[a.run_id])]["action"] == STRAY:
+        raise Refused(f"run {a.run_id} is a stray run: never rerun")
     if a.run_id in open_reruns(lines):
         raise Refused(f"run {a.run_id} has a pending rerun: resolve it with resolve-rerun first")
     attempts = idx[a.run_id]
@@ -508,6 +598,7 @@ def _rerun(a, gh, now, sleep):
         raise Refused(f"replicate {later[0]} is already dispatched: replicate {first['replicate']} is not rerun after")
     status = _Status(gh, lines)
     _check_cap(lines, status, a.max_side_by_side)
+    _check_late_runs(gh, lines)
     path = f"repos/{first['repo']}/actions/runs/{a.run_id}"
     run = _api(gh, path)
     if run.get("run_attempt") != last:
@@ -594,12 +685,18 @@ def main(argv=None):
     how = s.add_mutually_exclusive_group(required=True)
     how.add_argument("--run-id", type=int)
     how.add_argument("--no-run", action="store_true")
+    s.add_argument("--stray", action="store_true")
     rr = sub.add_parser("resolve-rerun")
     rr.add_argument("--log", required=True)
     rr.add_argument("--run-id", required=True, type=int)
     rr.add_argument("--no-rerun", action="store_true")
+    c = sub.add_parser("check-late")
+    c.add_argument("--log", required=True)
     a = ap.parse_args(argv)
-    commands = {"dispatch": dispatch, "rerun": rerun, "resolve": resolve, "resolve-rerun": resolve_rerun}
+    if a.cmd == "resolve" and a.stray and a.run_id is None:
+        ap.error("--stray needs --run-id")
+    commands = {"dispatch": dispatch, "rerun": rerun, "resolve": resolve, "resolve-rerun": resolve_rerun,
+                "check-late": check_late}
     try:
         line = commands[a.cmd](a, a.gh)
     except Refused as e:

@@ -27,6 +27,7 @@ import os
 import re
 
 from chain import answers as answersmod
+from chain import dispatch
 from chain import calls as callmod
 from chain import cdx, cost, recovery, venslog
 from chain.errors import Refused, load_object
@@ -36,6 +37,9 @@ SCORING, LATER_STEP, INTERRUPTED = "scoring", "later_step", "interrupted"
 CONTEXTS = ("internet-facing", "internal", "internal-api")
 NO_PROVENANCE = "no provenance.json: the job failed before writing it"
 STOPPED = ("cancelled", "timed_out", "failure")
+CANCELLED = ("cancelled", "timed_out")
+STRAY = ("a stray run: GitHub started it after its dispatch was abandoned and its replicate was dispatched again; "
+         "its calls count in the spend, its scores are not the replicate's")
 # What the record adds to a download made before it.
 RECORD = ("generate.started_at", "generate.ended_at", "generate.exit_status", "enrich.started_at",
           "enrich.ended_at", "enrich.exit_status", "archive_check", "vens_binary_sha256")
@@ -195,7 +199,24 @@ def _record_fields(rj):
     if rj.get("runner") == "baseline.yml":
         fields.update({"enrich.started_at": enrich.get("started_at"), "enrich.ended_at": enrich.get("ended_at"),
                        "enrich.exit_status": enrich.get("exit_status"), "archive_check": rj.get("archive_check")})
+        if "log_complete" in gen:
+            fields["generate.log_complete"] = gen["log_complete"]
     return fields
+
+
+def _stopped(job):
+    """The job's cancel or timeout from jobs.json, which names the cause even of a command that exited non-zero:
+    the cancel can be what made it exit."""
+    conclusion = (job or {}).get("conclusion")
+    return conclusion if conclusion in CANCELLED else None
+
+
+def _stopped_failure(kind, step, conclusion, detail):
+    return {**_failure(kind, step, f"job {conclusion}", "jobs.json"), "detail": detail}
+
+
+def _excluded(line):
+    return STRAY if (line or {}).get("action") == dispatch.STRAY else None
 
 
 def _from_record(rj, provenance_present, job):
@@ -219,28 +240,42 @@ def _from_record(rj, provenance_present, job):
                 problem]
         return FAILED, _failure(INTERRUPTED, "generate", cause, source), steps, unknown, problems
     if gen["exit_status"] != 0:
+        stopped = _stopped(job)
+        if stopped:
+            return FAILED, _stopped_failure(INTERRUPTED, "generate", stopped,
+                                            f"vens generate exited {gen['exit_status']}"), steps, unknown, problems
         return FAILED, _failure(SCORING, "generate", None, None), steps, unknown, problems
     if not baseline:
         return COMPLETE, None, steps, unknown, problems
+    outcome, failure, found = _later_steps(rj, gen, enrich, provenance_present, job)
+    return outcome, failure, steps, unknown, problems + found
+
+
+def _later_steps(rj, gen, enrich, provenance_present, job):
+    """(outcome, failure, problems) of baseline.yml's steps after a scoring that completed, the first that did not
+    end well: the log capture, vens enrich, the archive check, provenance.json."""
+    def unended(step, what):
+        cause, source, problem = _job_cause(job, what)
+        return FAILED, _failure(LATER_STEP, step, cause, source), [problem] if problem else []
+
+    if "log_complete" in gen and gen["log_complete"] is None:
+        return unended("log_capture", "the log capture")
+    if "log_complete" in gen and gen["log_complete"] is not True:
+        return FAILED, _failure(LATER_STEP, "log_capture", "vens's log was not captured whole", "attempt.json"), []
     if enrich.get("exit_status") is None:
-        cause, source, problem = _job_cause(job, "vens enrich")
-        return FAILED, _failure(LATER_STEP, "enrich", cause, source), steps, unknown, problems + (
-            [problem] if problem else [])
+        return unended("enrich", "vens enrich")
     if enrich["exit_status"] != 0:
-        return FAILED, _failure(LATER_STEP, "enrich", f"vens enrich exited {enrich['exit_status']}",
-                                "attempt.json"), steps, unknown, problems
+        stopped, detail = _stopped(job), f"vens enrich exited {enrich['exit_status']}"
+        return FAILED, (_stopped_failure(LATER_STEP, "enrich", stopped, detail) if stopped else
+                        _failure(LATER_STEP, "enrich", detail, "attempt.json")), []
     check = rj.get("archive_check")
     if check is None:
-        cause, source, problem = _job_cause(job, "the archive check")
-        return FAILED, _failure(LATER_STEP, "archive_check", cause, source), steps, unknown, problems + (
-            [problem] if problem else [])
+        return unended("archive_check", "the archive check")
     if check != "success":
-        return FAILED, _failure(LATER_STEP, "archive_check", f"archive check {check}", "attempt.json"), steps, \
-            unknown, problems
+        return FAILED, _failure(LATER_STEP, "archive_check", f"archive check {check}", "attempt.json"), []
     if not (rj.get("provenance") and provenance_present):
-        return FAILED, _failure(LATER_STEP, "provenance", "provenance.json not written", "attempt.json"), steps, \
-            unknown, problems
-    return COMPLETE, None, steps, unknown, problems
+        return FAILED, _failure(LATER_STEP, "provenance", "provenance.json not written", "attempt.json"), []
+    return COMPLETE, None, []
 
 
 def _without_record(folder, files, failure_line, job):
@@ -330,7 +365,9 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     no CVE listed twice (answers' problems empty). The other problems are reported beside the scores and leave them
     usable: logs, summaries, counters or defects that disagree, calls out of vens's order, a missing summary. A VEX,
     an attestation or an answers.json that does not read is a problem of the attempt, its content unknown. Arms
-    that disagree, commits that disagree and a record or provenance.json that does not read are refused."""
+    that disagree, commits that disagree and a record or provenance.json that does not read are refused. excluded
+    says why an attempt that read is not its replicate's, a stray run of an abandoned dispatch: its calls and cost
+    are still the campaign's."""
     files = _files(folder)
     rj = _record(files["record"])
     prov = load_object(files["provenance"]) if files["provenance"] else None
@@ -411,8 +448,9 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
                           "a complete attempt whose VEX does not read")
     if outcome == COMPLETE and recs is not None and summary is None:
         problems.append("the log holds no run summary")
+    excluded = _excluded(line)
     usable = (outcome == COMPLETE and ratings is not None and not vex_problems and check[0] is True
-              and not incomplete and not (answers or {}).get("problems"))
+              and not incomplete and not (answers or {}).get("problems") and excluded is None)
     if outcome == COMPLETE and check[0] is not True:
         problems.append(f"archive check, restated: {check[1]}")
     return {
@@ -424,7 +462,7 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
                   "kinds": kinds},
         "recovery": rec, "cost_estimate": estimate, "archive_check": {"passed": check[0], "reason": check[1]},
         "answers": answers, "ratings": ratings, "vex_problems": vex_problems, "scores_usable": usable,
-        "incomplete": incomplete, "problems": problems,
+        "excluded": excluded, "incomplete": incomplete, "problems": problems,
     }
 
 
@@ -446,8 +484,8 @@ def without_artefact(job, model, run_id, line=None, arm=None):
             "unknown": sorted(unknown), "job": job, "summary": None,
             "calls": {"archived": None, "with_reply": None, "kinds": None}, "recovery": None, "cost_estimate": None,
             "archive_check": {"passed": None, "reason": "no artefact"}, "answers": None, "ratings": None,
-            "vex_problems": [], "scores_usable": False, "incomplete": [] if what["arm"] else ["arm unknown"],
-            "problems": ["artefact missing"]}
+            "vex_problems": [], "scores_usable": False, "excluded": _excluded(line),
+            "incomplete": [] if what["arm"] else ["arm unknown"], "problems": ["artefact missing"]}
 
 
 def not_downloaded(line, why, arm=None, reason="not downloaded"):
@@ -462,4 +500,5 @@ def not_downloaded(line, why, arm=None, reason="not downloaded"):
             "steps": None, "implied": [], "unknown": ["outcome"] + list(RECORD), "job": None, "summary": None,
             "calls": {"archived": None, "with_reply": None, "kinds": None}, "recovery": None, "cost_estimate": None,
             "archive_check": {"passed": None, "reason": reason}, "answers": None, "ratings": None,
-            "vex_problems": [], "scores_usable": False, "incomplete": [], "problems": [why]}
+            "vex_problems": [], "scores_usable": False, "excluded": _excluded(line), "incomplete": [],
+            "problems": [why]}
