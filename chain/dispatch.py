@@ -16,7 +16,8 @@ action is one of:
     resolved         the pending dispatch's run attached by hand: its title, its run_attempt 1 and its creation after
                      the pending line checked
     abandoned        a pending dispatch that started no run: at least 15 minutes old, and the run list, read back to
-                     its time, holds no run of its title
+                     its time within GitHub's cap, holds no run of its title and no run the log does not name created
+                     within two minutes of it
     rerun-pending    written before `gh run rerun --failed`, run_attempt the attempt it asks for
     rerun-failed     that attempt, read back from the API, replacing the attempt before it
     rerun-abandoned  a pending rerun that started no attempt: at least 15 minutes old, the run still at the attempt
@@ -59,8 +60,12 @@ ARMS = ("before", "after")
 WORKFLOW = "baseline.yml"
 POLLS, POLL_SECONDS = 20, 3
 PER_PAGE, MAX_PAGES = 100, 20
+# GitHub lists at most 1,000 runs of a filtered search (event=...); the pages past it come back empty.
+LISTING_CAP = 1000
 SETTLE = datetime.timedelta(minutes=15)
 SKEW = datetime.timedelta(minutes=2)
+# A run of any title created this close to a pending dispatch may be the one it started under another title.
+NEAR = datetime.timedelta(minutes=2)
 
 
 class DispatchError(Exception):
@@ -107,8 +112,13 @@ def load(path):
         for n, text in enumerate(fh, 1):
             if not text.strip():
                 continue
-            line = json.loads(text)
             where = f"{path}:{n}"
+            try:
+                line = json.loads(text)
+            except ValueError as e:
+                raise DispatchError(f"{where}: not a JSON line, cut short or corrupted: {e}") from e
+            if not isinstance(line, dict):
+                raise DispatchError(f"{where}: a JSON {type(line).__name__}, not a line of the log")
             missing = [f for f in FIELDS if f not in line]
             if missing:
                 raise DispatchError(f"{where}: missing {missing}")
@@ -240,15 +250,20 @@ def _append(path, line):
 
 
 def runs_since(gh, repo, since, pages=None):
-    """The workflow_dispatch runs of baseline.yml created from since on, two minutes of clock skew allowed, newest
-    first, and whether the listing reached since: it stops at an older run or at the list's end, and falls short when
-    the pages run out first."""
-    floor, out = since - SKEW, []
+    """The workflow_dispatch runs of baseline.yml created from since on, clock skew allowed, newest first, and
+    whether the listing reached since: it stops at an older run or at the list's end, and falls short when the pages
+    run out first or GitHub's cap on a filtered listing is met, whose next page is empty whatever is older."""
+    floor, out, listed = since - max(SKEW, NEAR), [], 0
     for page in range(1, (pages or MAX_PAGES) + 1):
         runs = _api(gh, f"repos/{repo}/actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch&per_page="
                         f"{PER_PAGE}&page={page}").get("workflow_runs") or []
+        listed += len(runs)
         out += [r for r in runs if _parse(r["created_at"]) >= floor]
-        if len(runs) < PER_PAGE or any(_parse(r["created_at"]) < floor for r in runs):
+        if any(_parse(r["created_at"]) < floor for r in runs):
+            return out, True
+        if listed >= LISTING_CAP:
+            return out, False
+        if len(runs) < PER_PAGE:
             return out, True
     return out, False
 
@@ -366,7 +381,8 @@ def _dispatch(a, gh, now, sleep):
 def resolve(a, gh, now=utc_now):
     """Closes a pending dispatch: attaches the run it started, its title, its run_attempt 1 and its creation after
     the pending line checked; or, with no_run, records that it started none, no sooner than 15 minutes after it and
-    only when the run list, read back to its time, holds no run of its title."""
+    only when the run list, read back to its time, holds no run of its title and no run the log does not name
+    created within NEAR of it, whatever its title."""
     with locked(a.log):
         lines = load(a.log)
         k = (a.campaign, a.arm, a.provider, a.model, a.replicate)
@@ -381,10 +397,16 @@ def resolve(a, gh, now=utc_now):
                 raise Refused(f"a pending dispatch is abandoned no sooner than {SETTLE} after it, {pending['time']}")
             runs, reached = runs_since(gh, pending["repo"], since)
             if not reached:
-                raise Refused(f"the run list did not reach {pending['time']} in {MAX_PAGES} pages: nothing abandoned")
+                raise Refused(f"the run list did not reach {pending['time']} within GitHub's cap of {LISTING_CAP} runs "
+                              f"and {MAX_PAGES} pages: nothing abandoned")
             found = _titled(runs, want, known)
             if found:
                 raise Refused(f"runs {found} carry the pending dispatch's title: resolve it with --run-id")
+            near = sorted(r["id"] for r in runs
+                          if r["id"] not in known and abs(_parse(r["created_at"]) - since) <= NEAR)
+            if near:
+                raise Refused(f"runs {near}, which no line of the log names, were created within {NEAR} of the pending "
+                              f"dispatch of {pending['time']}: nothing abandoned while one of them may be its run")
             line = {**pending, "time": _stamp(now()), "action": ABANDONED}
         else:
             if a.run_id in known:

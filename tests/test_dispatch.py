@@ -36,7 +36,7 @@ elif args[:1] == ["api"] and "/actions/workflows/" in args[1]:
         state["hidden"] = []
         save()
     runs = sorted((r for r in state["runs"].values() if str(r["id"]) not in hidden),
-                  key=lambda r: (r["created_at"], r["id"]), reverse=True)
+                  key=lambda r: (r["created_at"], r["id"]), reverse=True)[:state.get("cap")]
     size, page = int(query["per_page"]), int(query["page"])
     print(json.dumps({{"workflow_runs": runs[(page - 1) * size:page * size]}}))
 elif args[:1] == ["api"] and "/actions/runs/" in args[1]:
@@ -74,6 +74,7 @@ else:
 '''
 
 NO_SLEEP = {"sleep": lambda _: None}
+GITHUB_CAP = 1000  # the most runs GitHub lists for a search filtered by event
 LATER = lambda: dispatch.utc_now() + datetime.timedelta(minutes=16)
 
 
@@ -257,6 +258,39 @@ class TestPending(Base):
                 dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
         self.assertEqual(self.actions(), ["pending"])
 
+    def test_no_run_refused_when_github_caps_the_listing(self):
+        # 1,000 newer runs fill GitHub's cap: the run the pending dispatch started is listed on no page, and the
+        # empty page after the cap is no end of the list.
+        pending = self.failed_dispatch()
+        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        start = dispatch._parse(pending["time"]) + datetime.timedelta(minutes=10)
+        state = self.load()
+        state["runs"] = {str(n): {"id": n, "display_title": "baseline · other", "run_attempt": 1, "status": "queued",
+                                  "conclusion": None,
+                                  "created_at": dispatch._stamp(start + datetime.timedelta(seconds=n))}
+                         for n in range(GITHUB_CAP)}
+        state["runs"]["5000"] = {"id": 5000, "display_title": want, "run_attempt": 1, "status": "queued",
+                                 "conclusion": None, "created_at": pending["time"]}
+        self.save({**state, "cap": GITHUB_CAP})
+        with self.assertRaisesRegex(Refused, "did not reach .* within GitHub's cap of 1000 runs"):
+            dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
+        self.assertEqual(self.actions(), ["pending"])
+        pages = [c for c in self.calls() if c[:1] == ["api"] and "/actions/workflows/" in c[1]]
+        self.assertEqual(len(pages), GITHUB_CAP // dispatch.PER_PAGE)
+
+    def test_no_run_refused_while_a_run_the_log_does_not_name_is_near(self):
+        pending = self.failed_dispatch()
+        self.go(arm="before", vens_ref="43ab10b")
+        far = dispatch._parse(pending["time"]) + dispatch.NEAR + datetime.timedelta(minutes=1)
+        self.add_run(13, "baseline · other", dispatch._stamp(far))
+        self.add_run(12, "baseline.yml", pending["time"])
+        with self.assertRaisesRegex(Refused, r"runs \[12\], which no line of the log names, were created within"):
+            dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
+        state = self.load()
+        del state["runs"]["12"]
+        self.save(state)
+        self.assertEqual(dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)["action"], "abandoned")
+
 
 class TestPairingAndCap(Base):
     def test_the_pair_of_a_replicate_then_the_next_once_both_ended(self):
@@ -380,6 +414,14 @@ class TestTheLog(Base):
     def test_a_line_without_a_field(self):
         self.write({"campaign": "c1"})
         with self.assertRaises(dispatch.DispatchError):
+            dispatch.load(self.log)
+
+    def test_a_line_cut_mid_write(self):
+        s.write(self.log, json.dumps(self.line(action="pending")) + "\n" + json.dumps(self.started()[1])[:40])
+        with self.assertRaisesRegex(dispatch.DispatchError, r"dispatch-log.jsonl:2: not a JSON line, cut short"):
+            dispatch.load(self.log)
+        s.write(self.log, "[]\n")
+        with self.assertRaisesRegex(dispatch.DispatchError, "a JSON list, not a line of the log"):
             dispatch.load(self.log)
 
     def test_a_dispatch_without_its_pending_line(self):
