@@ -23,6 +23,7 @@ section names each replicate's attempt, and the measured cost never mixes with t
 1 when a reader refuses an input or an input is wrong, 2 on a usage error.
 """
 import argparse
+import collections
 import hashlib
 import os
 import sys
@@ -64,17 +65,28 @@ def draw_list(path):
 
 def campaigns(inputs, lines):
     """campaign_of(record) and {input: [campaigns]}: a record's campaign is its campaign.json's, else its run's in the
-    dispatch log, else its input's, told apart by the input's canonical path and shown by its own name."""
+    dispatch log, else its input's (cells.Unnamed), numbered in the order of the inputs where two campaigns would
+    show one name."""
     logged = {run_id: line["campaign"] for run_id, attempts in (dispatch.index(lines) if lines else {}).items()
               for line in attempts.values()}
-    named, per_input = {}, {}
+    named = {id(rec): rec["what"].get("campaign") or logged.get(rec["what"].get("run_id"))
+             for _, records in inputs for rec in records}
+    paths = {}
+    for path, records in inputs:
+        if not all(named[id(r)] for r in records):
+            paths.setdefault(os.path.realpath(path), os.path.basename(os.path.normpath(path)))
+    shown = collections.Counter(paths.values())
+    shown.update({n for n in named.values() if n})
+    numbers, unnamed = collections.Counter(), {}
+    for real, name in paths.items():
+        numbers[name] += 1
+        unnamed[real] = cellmod.Unnamed(real, name, numbers[name] if shown[name] > 1 else None)
+    of_record, per_input = {}, {}
     for path, records in inputs:
         for rec in records:
-            w = rec["what"]
-            named[id(rec)] = w.get("campaign") or logged.get(w.get("run_id")) or \
-                cellmod.Unnamed(os.path.realpath(path))
-        per_input[path] = sorted({named[id(r)] for r in records}, key=str)
-    return (lambda rec: named.get(id(rec))), per_input
+            of_record[id(rec)] = named[id(rec)] or unnamed[os.path.realpath(path)]
+        per_input[path] = sorted({of_record[id(r)] for r in records}, key=str)
+    return (lambda rec: of_record.get(id(rec))), per_input
 
 
 class Reports:
@@ -208,6 +220,13 @@ def scenario_info(inputs):
     return None if found is None else verdicts.load(os.path.join(found[0], campaign.SCENARIOS))
 
 
+def batches(cells):
+    """The batch sizes of the runs read, each replicate's complete run with its scores read or not, None last for a
+    run that does not record its own."""
+    got = {k.batch for k, c in cells.items() if c["runs"] or c["unusable"]}
+    return sorted(got - {None}) + ([None] if None in got else [])
+
+
 def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, lines=None):
     """Every section's figures, from the records of inputs, [(path, records)]; fallback: (records, its name) of the
     after's fallback campaign; usage: the measured usage, {rows, name, sha256}; draws: {ids, name, sha256}."""
@@ -217,7 +236,7 @@ def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, li
     java = java_targets(cells, reports, jar)
     out = {"inputs": [(p, len(recs)) for p, recs in inputs], "campaigns": per_input, "cells": cells,
            "conflicts": cellmod.conflicts(cells), "java": java is not None, "usage": usage, "draws": draws,
-           "batches": sorted({k.batch for k, c in cells.items() if c["runs"] or c["unusable"]} - {None}),
+           "batches": batches(cells),
            "targets": demo.targets(cells, reports.ids, (lambda r: java.get(id(r))) if java is not None else None),
            "spreads": demo.spreads(cells), "cross": demo.cross_model(cells), "impacts": demo.impacts(cells),
            "floors": demo.floors(cells), "ledgers": ledger.ledgers(cells), "scenarios": None,

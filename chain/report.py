@@ -37,8 +37,8 @@ def ordered(d):
 
 def records(data):
     out = ["## Records", "", "Inputs, each read by chain/read.py, and the campaign each one's attempts belong to (its "
-           "dispatch log's, its campaign.json's, else the input's own name, two inputs of one name two campaigns "
-           "never pooled):", ""]
+           "dispatch log's, its campaign.json's, else the input's own name, numbered in the order of the inputs where "
+           "two campaigns would show one name, never pooled):", ""]
     out += [f"- `{path}`: {n} attempts, campaign {', '.join(map(str, data['campaigns'].get(path, []))) or 'none'}"
             for path, n in data["inputs"]] + [""]
     out += [f"- {' · '.join(map(str, k))}: runs at {len(commits)} vens commits ({', '.join(map(str, commits))}), "
@@ -97,7 +97,7 @@ def _scenario_rows(data, field):
     for k, per in ordered(data["targets"]):
         if k.corpus != cellmod.SCENARIOS:
             continue
-        a = agg.setdefault((k.arm, f"{k.campaign} · {cellmod.model_of(k)}"),
+        a = agg.setdefault((k.arm, f"{k.campaign} · {cellmod.model_of(k)}", str(k.commit)[:12]),
                            {"k": 0, "n": 0, "scenarios": 0, "below": [], "sev": 0})
         a["scenarios"] += 1
         for rep, t in sorted(per.items()):
@@ -109,8 +109,9 @@ def _scenario_rows(data, field):
             a["sev"] += t["severity_ok"]
             if t[field] < t["cves"]:
                 a["below"].append(f"{k.unit} r{rep}" + ("" if t["vex"] else " no VEX"))
-    return [[arm, model, a["scenarios"], a["n"], share(a["k"], a["n"]), ", ".join(a["below"]) or "none"]
-            + ([share(a["sev"], a["n"])] if field == "recomputable" else []) for (arm, model), a in sorted(agg.items())]
+    return [[arm, model, commit, a["scenarios"], a["n"], share(a["k"], a["n"]), ", ".join(a["below"]) or "none"]
+            + ([share(a["sev"], a["n"])] if field == "recomputable" else [])
+            for (arm, model, commit), a in sorted(agg.items())]
 
 
 TARGETS = (("legal", "Target (i), the legal-vector share: the report's CVEs whose rating the Java check accepts, a CVE "
@@ -132,8 +133,9 @@ def targets(data):
         if demo_rows:
             out += table(["cell", "replicates", "per run, over the report's CVEs"] + extra, demo_rows)
         if scen_rows:
-            out += ["The scenarios, one CVE each, summed per arm and model:", ""]
-            out += table(["arm", "model", "scenarios", "CVE-runs", "share", "runs below 1"] + extra, scen_rows)
+            out += ["The scenarios, one CVE each, summed per arm, model and vens commit:", ""]
+            out += table(["arm", "model", "vens commit", "scenarios", "CVE-runs", "share", "runs below 1"] + extra,
+                         scen_rows)
         if not demo_rows and not scen_rows:
             out += ["No complete run.", ""]
     return out
@@ -193,11 +195,12 @@ def cross(data):
            "cross-model MPD, Delta (the cross-model MPD less the mean of the two within-model ones) and its gap test, "
            "10,000 permutations of whole runs, seeded per test; band agreement, the mean over cross-model run pairs "
            "of the share of CVEs with equal severities, and each model's own (its floor). Delta needs two runs per "
-           "model. The permutations draw from SeedSequence([310, crc32(key)]), each pair's key, listed under the "
-           "table, built from its two cells' own fields, `gap|<campaign>|<arm>|<batch size>|<context>|<provider/model "
-           "a>|<provider/model b>`, an unnamed campaign by its input's own name: 0B's tests had other keys, so these p "
-           "are not 0B's, though Delta and the MPDs are computed as 0B computed them. A pair whose runs share no "
-           "rated CVE is unavailable, none of its figures computed.", ""]
+           "model. Up to 10,000 relabellings all are enumerated and p is exact; beyond, the permutations draw from "
+           "SeedSequence([310, crc32(key)]), the key of each pair whose p is drawn listed under the table, built from "
+           "its two cells' own fields, `gap|<campaign>|<arm>|<batch size>|<context>|<provider/model a>|<provider/model "
+           "b>`, an unnamed campaign by its input's own name: 0B's tests had other keys, so these p are not 0B's, "
+           "though Delta and the MPDs are computed as 0B computed them. A pair whose runs share no rated CVE is "
+           "unavailable, none of its figures computed.", ""]
     rows = [[campaign, ctx, arm, a, b,
              f"{cellmod.replicates(r['replicates'][0])} / {cellmod.replicates(r['replicates'][1])}", r["cves"],
              num(r["mpd"][0], 2), num(r["mpd"][1], 2), num(r["cross"], 2), num(r["delta"], 2), num(r["p"], 4),
@@ -211,9 +214,11 @@ def cross(data):
             largest[(campaign, ctx, arm)] = (r["delta"], f"{a} / {b}")
     out += table(["campaign", "context", "arm", "model a", "model b", "replicates a / b", "CVEs", "MPD a", "MPD b",
                   "cross MPD", "Delta", "gap p", "bands", "bands a", "bands b"], rows)
-    out += ["Each pair's gap test:", ""] + [
-        f"- {campaign}, {ctx}, {arm}, {a} / {b}: " + (r["unavailable"] if r.get("unavailable") else f"key `{r['key']}`")
-        + "." for (campaign, ctx, arm, a, b), r in ordered(data["cross"])] + [""]
+    notes = [f"- {campaign}, {ctx}, {arm}, {a} / {b}: "
+             + (r["unavailable"] if r.get("unavailable") else f"p drawn, key `{r['key']}`") + "."
+             for (campaign, ctx, arm, a, b), r in ordered(data["cross"]) if r.get("unavailable") or r.get("drawn")]
+    if notes:
+        out += ["The pairs without a CVE in common, and the key of each pair whose p is drawn:", ""] + notes + [""]
     return out + (["The largest Delta over the pairs, which step 5's target bounds: " + "; ".join(
         f"{cp}, {ctx}, {arm}: {num(d, 2)} ({pair})" for (cp, ctx, arm), (d, pair) in sorted(largest.items(), key=str))
         + ".", ""] if largest else [])

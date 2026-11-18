@@ -110,6 +110,12 @@ class TestUsage(unittest.TestCase):
                 self.load(HEADER, row, again)
         self.assertEqual(len(self.load(HEADER, row, "c1,2026-11-20,openai,k,after,m2,1,10,0,1,0.01")), 2)
 
+    def test_a_split_export_is_summed_before_loading(self):
+        row = "c1,2026-11-20,openai,k,after,m,1,10,0,1,0.01"
+        with self.assertRaisesRegex(usage.UsageError, "an export that splits one over several lines is summed into "
+                                                      "one row before it is loaded"):
+            self.load(HEADER, row, row)
+
     def test_refused_rows(self):
         for bad in ("c1,2026-11-20,openai,k,both,m,1,1,1,1,1", "c1,20/11/2026,openai,k,,m,1,1,1,1,1",
                     "c1,2026-11-20,openai,k,,m,-1,1,1,1,1", "c1,2026-11-20,openai,k,,m,x,1,1,1,1",

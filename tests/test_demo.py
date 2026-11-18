@@ -3,7 +3,7 @@ import math
 import unittest
 from fractions import Fraction
 
-from chain import cdx, demo, legal, report, stats
+from chain import cdx, demo, ledger, legal, report, stats
 from chain import cells as cellmod
 from tests import records as r
 from tests import support as s
@@ -68,6 +68,21 @@ class TestRuns(unittest.TestCase):
         self.assertEqual(list(cellmod.conflicts(clash).values()), [sorted([s.AFTER_SHA, "c" * 40])])
         self.assertEqual(demo.by_model(clash), {})
 
+    def test_a_commit_whose_complete_runs_are_not_usable_still_clashes(self):
+        rated = {"CVE-A": r.rating(s.VECTOR), "CVE-B": r.rating(r.vector(M=4))}
+        unusable = r.record("after", CTX, 3, rated, commit="c" * 40, usable=False)
+        unusable["incomplete"] = ["a complete run's VEX without its answers.json"]
+        cells = cellmod.group([r.record("after", CTX, 1, rated), r.record("after", CTX, 2, rated), unusable,
+                               r.record("before", CTX, 1, rated), r.record("before", CTX, 2, rated)])
+        self.assertEqual(list(cellmod.conflicts(cells).values()), [sorted([s.AFTER_SHA, "c" * 40])])
+        self.assertEqual((demo.by_model(cells), demo.spreads(cells)), ({}, {}))
+        data = {"inputs": [], "campaigns": {}, "cells": cells, "conflicts": cellmod.conflicts(cells),
+                "ledgers": ledger.ledgers(cells), "spreads": demo.spreads(cells)}
+        text = "\n".join(report.records(data) + report.spreads(data))
+        self.assertIn(f"runs at 2 vens commits ({', '.join(sorted([s.AFTER_SHA, 'c' * 40]))}), compared with nothing",
+                      text)
+        self.assertNotIn("after / before", text)
+
     def test_a_complete_run_not_usable_says_why_and_still_counts_in_the_targets(self):
         rec = r.record("after", CTX, 1, r.scored([1, 2]), usable=False)
         rec["incomplete"] = ["a complete run's VEX without its answers.json"]
@@ -126,6 +141,17 @@ class TestTargets(unittest.TestCase):
                2: {"cves": 2, "vex": False, "legal": 0, "recomputable": 0, "severity_ok": 0}}
         self.assertEqual(report._per_run(per, "recomputable"), "r1 2/2 (1.000); r2 0/2 (0.000); no VEX: r2")
         self.assertIsNone(legal.vex_path(r.record("after", CTX, 1, None, usable=False)))
+
+    def test_the_scenarios_targets_per_vens_commit(self):
+        vid = "CVE-2099-0001"
+        recs = [r.record("after", "wrong_yaml", 1, {vid: r.rating(s.VECTOR)}, scenario=True),
+                r.record("after", "wrong_yaml", 1, {vid: r.rating(s.VECTOR, score=s.SCORE + 1)}, scenario=True,
+                         commit="c" * 40)]
+        text = "\n".join(report.targets({"targets": demo.targets(cellmod.group(recs), lambda rec: {vid}),
+                                         "java": False}))
+        model = f"c1 · openai/{s.MODEL}"
+        self.assertIn(f"| after | {model} | {s.AFTER_SHA[:12]} | 1 | 1 | 1/1 (1.000) | none | 1/1 (1.000) |", text)
+        self.assertIn(f"| after | {model} | {'c' * 12} | 1 | 1 | 0/1 (0.000) | wrong_yaml r1 | 1/1 (1.000) |", text)
 
     def test_without_the_report_the_targets_are_unavailable(self):
         rec = r.record("before", CTX, 1, {"CVE-A": r.rating(r.group_vector(3, 4, 2, 3), "before")})
@@ -196,16 +222,28 @@ class TestCrossModel(unittest.TestCase):
         self.assertEqual(stats.noninferiority([math.nan, 1.0], [1.0, 2.0]), (None, None, None))
 
     def test_the_gap_tests_key_is_the_cells_own(self):
-        pair = [r.record("after", CTX, rep, r.scored([x]), model=m, batch=10)
-                for m in (s.MODEL, "m2") for rep, x in ((1, 0), (2, 2))]
+        pair = [r.record("after", CTX, rep, r.scored([rep % 3]), model=m, batch=10)
+                for m in (s.MODEL, "m2") for rep in range(1, 9)]
         key = f"gap|None|after|10|{CTX}|openai/{s.MODEL}|openai/m2"
         alone = demo.cross_model(cellmod.group(pair))
         # a batch-1 run read beside them relabels their arm "after, batch 10", not their key
         beside = demo.cross_model(cellmod.group(pair + [r.record("after", CTX, 1, r.scored([0]))]))
         self.assertEqual(([x["key"] for x in alone.values()], [k[2] for k in beside]), ([key], ["after, batch 10"]))
         self.assertEqual([x["key"] for x in beside.values()], [key])
-        self.assertIn(f"- None, {CTX}, after, batch 10, {MODEL} batch 10 / openai/m2 batch 10: key `{key}`.",
-                      report.cross({"cross": beside}))
+        self.assertIn(f"- None, {CTX}, after, batch 10, {MODEL} batch 10 / openai/m2 batch 10: p drawn, "
+                      f"key `{key}`.", report.cross({"cross": beside}))
+
+    def test_a_key_only_where_p_is_drawn(self):
+        runs = lambda model, n: [r.record("after", CTX, rep, r.scored([rep % 3]), model=model)
+                                 for rep in range(1, n + 1)]
+        # two runs a side: 6 relabellings, all enumerated; eight a side: 12,870, so 10,000 drawn
+        few = demo.cross_model(cellmod.group(runs(s.MODEL, 2) + runs("m2", 2)))
+        many = demo.cross_model(cellmod.group(runs(s.MODEL, 8) + runs("m2", 8)))
+        self.assertEqual(([x["drawn"] for x in few.values()], [x["drawn"] for x in many.values()]), ([False], [True]))
+        self.assertEqual([ln for ln in report.cross({"cross": few}) if ln.startswith("- ")], [])
+        (key,) = [x["key"] for x in many.values()]
+        self.assertIn(f"- None, {CTX}, after, {MODEL} / openai/m2: p drawn, key `{key}`.",
+                      report.cross({"cross": many}))
 
     def test_models_are_paired_at_one_batch_size(self):
         recs = [r.record("after", CTX, 1, r.scored([0])), r.record("after", CTX, 1, r.scored([0]), model="m2"),

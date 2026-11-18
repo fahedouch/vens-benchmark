@@ -103,14 +103,16 @@ def targets(cells, report_of, legal_of=None):
 
 def by_model(cells, corpus=cellmod.DEMO):
     """{(campaign, model, unit): {arm: cell}} of one corpus's cells with runs, the model as provider/model; a group
-    whose arm holds two vens commits is left out, compared with nothing."""
-    out, clash = collections.defaultdict(dict), set()
+    whose arm holds complete runs at two vens commits, usable or not, is left out, compared with nothing, as
+    cells.conflicts() reports it."""
+    out, seen, clash = collections.defaultdict(dict), collections.defaultdict(set), set()
     for k, c in cells.items():
-        if k.corpus == corpus and c["runs"] and k.arm in cellmod.ARMS:
+        if k.corpus == corpus and k.arm in cellmod.ARMS and (c["runs"] or c["unusable"]):
             g = (k.campaign, cellmod.model_of(k), k.unit)
-            if k.arm in out[g]:
-                clash.add(g)
-            out[g][k.arm] = c
+            clash |= {g} if k.arm in seen[g] else set()
+            seen[g].add(k.arm)
+            if c["runs"]:
+                out[g][k.arm] = c
     return {g: arms for g, arms in out.items() if g not in clash}
 
 
@@ -172,8 +174,8 @@ NO_COMMON = "unavailable: no CVE both models' runs rate"
 
 def cross_model(cells):
     """Per (campaign, context, arm, model a, model b): the CVEs, the two within-model MPDs, the cross MPD, Delta and
-    its p with the gap test's key, and the band agreement, cross and within each model; without a CVE both models'
-    runs rate, none of them, the pair unavailable."""
+    its p with the gap test's key and whether p is drawn, and the band agreement, cross and within each model;
+    without a CVE both models' runs rate, none of them, the pair unavailable."""
     out = {}
     key_of = {id(c): k for k, c in cells.items()}
     for (campaign, ctx, arm), models in sorted(model_pairs(cells).items(), key=lambda kv: str(kv[0])):
@@ -182,8 +184,8 @@ def cross_model(cells):
             ids = cellmod.common(ra + rb)
             key = gap_key(key_of[id(models[a])], key_of[id(models[b])])
             row = {"cves": len(ids), "replicates": (sorted(models[a]["runs"]), sorted(models[b]["runs"])),
-                   "key": key, "mpd": (None, None), "cross": None, "delta": None, "p": None, "bands": None,
-                   "bands_within": (None, None)}
+                   "key": key, "drawn": bool(ids) and stats.drawn(len(ra), len(rb)), "mpd": (None, None),
+                   "cross": None, "delta": None, "p": None, "bands": None, "bands_within": (None, None)}
             if not ids:
                 out[(campaign, ctx, arm, a, b)] = {**row, "unavailable": NO_COMMON}
                 continue
@@ -199,10 +201,10 @@ def cross_model(cells):
 
 def gap_key(cell_a, cell_b):
     """The gap test's key, from the two cells' own fields, never their labels: its draws come from
-    SeedSequence([310, crc32(key)]). A campaign enters by its name, an unnamed one by its input's own name, the same
-    wherever the input lies."""
-    return (f"gap|{cell_a.campaign}|{cell_a.arm}|{cell_a.batch}|{cell_a.unit}|{cell_a.provider}/{cell_a.model}|"
-            f"{cell_b.provider}/{cell_b.model}")
+    SeedSequence([310, crc32(key)]). A campaign enters by its name, an unnamed one by its input's own name without
+    the number that tells two apart, the same wherever the input lies and whatever is read beside it."""
+    return (f"gap|{cellmod.campaign_name(cell_a.campaign)}|{cell_a.arm}|{cell_a.batch}|{cell_a.unit}|"
+            f"{cell_a.provider}/{cell_a.model}|{cell_b.provider}/{cell_b.model}")
 
 
 def impact_report(rec):

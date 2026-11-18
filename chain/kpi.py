@@ -11,12 +11,14 @@ and conformance, not whether a score is right.
   (chain/demo.py). It measures agreement, neither independence nor correctness.
 - Context sensitivity: the expected likelihood order, internal at most internal-api at most internet-facing, on each
   CVE's mean L over the runs; the mean gap in L between two contexts against the noise floor, the mean of the two
-  contexts' own MPDs of L; and for the after, each question's answer agreement across two contexts against within one.
+  contexts' own MPDs of L, unavailable unless both give one; and for the after, each question's answer agreement
+  across two contexts against within one.
 - Discrimination: the spread of scores across CVEs (W and H per run, chain/demo.py) and across contexts, the SD
   (n - 1) of the per-CVE mean scores pooled over the contexts.
-- Failures, apart from cannot_tell: complete attempts without their full record, the run summaries' defects, failed
-  attempts by cause, and replicates left without a complete attempt; then cannot_tell, a designed answer, per
-  question: its rate over the questions answered, its repeat-run agreement, and the share of CVEs a run left with one.
+- Failures, apart from cannot_tell: complete attempts without their full record, every one of them whether its
+  replicate's run or not, the run summaries' defects, failed attempts by cause, and replicates left without a complete
+  attempt; then cannot_tell, a designed answer, per question: its rate over the questions answered, its repeat-run
+  agreement, and the share of CVEs a run left with one.
 - Cost: calls per run and per CVE, the recovery calls per run, vens generate's wall time per run, and the estimated
   dollars per run and per CVE (chain/cost.py, an estimate); the measured spend is the usage exports' (chain/usage.py).
 Conformance's checks with mechanically known expectations are vens's own Go tests, run on each commit, and the Java
@@ -26,6 +28,7 @@ import collections
 import itertools
 import statistics
 
+from chain import attempt as attemptmod
 from chain import cdx, demo, diagnostics, ledger, stats
 from chain import cells as cellmod
 
@@ -123,8 +126,9 @@ def context_sensitivity(cells):
         order = sum(1 for v in ids if means["internal"][v] <= means["internal-api"][v] <= means["internet-facing"][v])
         pairs = {}
         for x, y in itertools.combinations(CONTEXT_ORDER, 2):
+            mpds = [stats.mpd(cellmod.matrix(ctxs[c], ids, "L")) for c in (x, y)]
             pairs[(x, y)] = {"gap": _mean([abs(means[y][v] - means[x][v]) for v in ids]),
-                             "noise": _mean([stats.mpd(cellmod.matrix(ctxs[c], ids, "L")) for c in (x, y)])}
+                             "noise": None if None in mpds else sum(mpds) / 2}
             if arm == "after":
                 pairs[(x, y)]["answers"] = answers_across(ctxs[x], ctxs[y], ids)
         out[(campaign, model, arm)] = {"cves": len(ids), "in_order": order / len(ids) if ids else None, "pairs": pairs,
@@ -163,15 +167,16 @@ def discrimination(cells):
 
 
 def failures(cells):
-    """Per cell: complete attempts without their full record, the defects, failed attempts by cause, replicates
-    left without a complete attempt, and cannot_tell per question."""
+    """Per cell: complete attempts without their full record, the replicate's run or another, the defects, failed
+    attempts by cause, replicates left without a complete attempt, and cannot_tell per question."""
     out = {}
     for k, c in sorted(cells.items(), key=lambda kv: str(kv[0])):
         defects = collections.Counter()
         for rec in c["attempts"]:
             defects.update((rec.get("summary") or {}).get("defects") or {})
         attempted = {r["what"]["replicate"] for r in c["attempts"] if isinstance(r["what"].get("replicate"), int)}
-        out[k] = {"incomplete": sum(1 for rec, _ in c["unusable"].values() if rec["incomplete"]),
+        out[k] = {"incomplete": sum(1 for rec in c["attempts"]
+                                    if rec["outcome"] == attemptmod.COMPLETE and rec["incomplete"]),
                   "defects": dict(defects), "failed": dict(ledger.tally(c)["failed"]),
                   "without_complete": sorted(attempted - set(c["runs"]) - set(c["unusable"])),
                   "cannot_tell": cannot_tell(demo.runs_of(c))}

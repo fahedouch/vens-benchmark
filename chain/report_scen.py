@@ -292,7 +292,9 @@ SCOPE = (
 
 def scope(data):
     batches = data.get("batches") or []
-    line = ("every run read is at batch 1, one CVE per call: batch interaction is not measured" if batches == [1] else
-            f"the runs read are at batch sizes {', '.join(map(str, batches))}; each size is its own cell, never "
-            f"pooled, and no statistic here compares two sizes" if batches else "no run read")
+    sizes, some = [b for b in batches if b is not None], " that record it" if None in batches else ""
+    line = ("no run read" if not batches else "not recorded in any run read" if not sizes else
+            f"every run read{some} is at batch 1, one CVE per call: batch interaction is not measured" if sizes == [1]
+            else f"the runs read{some} are at batch sizes {', '.join(map(str, sizes))}; each size is its own cell, "
+                 f"never pooled, and no statistic here compares two sizes")
     return ["## What these records cannot show", "", f"- Batch size: {line}."] + [f"- {s}" for s in SCOPE] + [""]

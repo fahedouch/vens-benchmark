@@ -58,6 +58,16 @@ class TestSensitivity(unittest.TestCase):
         self.assertEqual(d["values"], 6)
 
 
+    def test_the_noise_floor_needs_both_contexts_mpd(self):
+        # internal holds one run, no MPD; internal-api's MPD (0 + 2) / 2, internet-facing's (0 + 1) / 2
+        ls = {"internal": [[1, 2]], "internal-api": [[2, 1], [2, 3]], "internet-facing": [[3, 3], [3, 4]]}
+        cells = cellmod.group([r.record("after", ctx, rep, r.scored(x)) for ctx, xs in ls.items()
+                               for rep, x in enumerate(xs, 1)])
+        pairs = kpi.context_sensitivity(cells)[(None, MODEL, "after")]["pairs"]
+        self.assertEqual([pairs[p]["noise"] for p in (("internal", "internal-api"), ("internal", "internet-facing"),
+                                                     ("internal-api", "internet-facing"))], [None, None, 0.75])
+
+
 class TestFailuresAndCost(unittest.TestCase):
     def test_cannot_tell_apart_from_failures(self):
         vec = s.VECTOR
@@ -70,6 +80,16 @@ class TestFailuresAndCost(unittest.TestCase):
         self.assertEqual(got["cannot_tell"]["cves_affected"], 0.5)
         self.assertEqual((got["defects"], got["failed"], got["without_complete"]),
                          ({"reply_unreadable": 2}, {"scoring: stopped": 1}, [3]))
+
+    def test_every_complete_attempt_without_its_record_counts(self):
+        vec = s.VECTOR
+        again = after_run(1, {"CVE-A": r.rating(vec)}, None, attempt=2, usable=False)
+        again["incomplete"] = ["a complete run's VEX without its answers.json"]
+        cells = cellmod.group([after_run(1, {"CVE-A": r.rating(vec)}, {"CVE-A": r.factors(vec)}), again])
+        (c,) = cells.values()
+        (got,) = kpi.failures(cells).values()
+        # the replicate's run is its first attempt, usable; the second, complete, lacks answers.json
+        self.assertEqual((list(c["runs"]), c["unusable"], got["incomplete"]), ([1], {}, 1))
 
     def test_cost_per_run(self):
         steps = lambda end: {"generate": {"started_at": "2026-11-20T10:00:00Z", "ended_at": end}}

@@ -7,12 +7,13 @@ provider's console exports usage by day and key; the rows are copied as exported
     c1,2026-11-20,openai,key-after,after,gpt-5.4-mini-2026-03-17,694,1250000,0,61000,0.42
 
 campaign names the campaign whose runs the key's usage that day is (an export spanning several campaigns gives each
-its rows, which the key and day rule keeps apart: a provider's key, day and model is one row, of one campaign); day
-is the UTC day (YYYY-MM-DD); arm is before or after for a key one arm used alone, empty for a key shared with other
-runs, whose rows count in the campaign's total only; an empty number is one the export does not give (an Anthropic
-export gives tokens, not dollars), never 0, and every number is finite. Per arm totals exist only with a key per arm
-and provider: a key that carries both arms gives none. The CSV holds key names, never key values; the exports
-themselves stay outside the repository.
+its rows, which the key and day rule keeps apart: a provider's key, day and model is one row, of one campaign, and an
+export that splits one over several lines is summed into one row before it is loaded); day is the UTC day
+(YYYY-MM-DD); arm is before or after for a key one arm used alone, empty for a key shared with other runs, whose rows
+count in the campaign's total only; an empty number is one the export does not give (an Anthropic export gives
+tokens, not dollars), never 0, and every number is finite. Per arm totals exist only with a key per arm and
+provider: a key that carries both arms gives none. The CSV holds key names, never key values; the exports themselves
+stay outside the repository.
 """
 import collections
 import csv
@@ -62,7 +63,8 @@ def load(path):
                 line, campaign = seen[same]
                 raise UsageError(f"{where}: {row['provider']} key {row['key']} on {row['day']} for {row['model']} is "
                                  f"line {line}'s already, campaign {campaign}: one row per key, day and model, of "
-                                 f"one campaign")
+                                 f"one campaign; an export that splits one over several lines is summed into one row "
+                                 f"before it is loaded")
             seen[same] = (n, row["campaign"])
             rows.append({**{k: row[k] for k in FIELDS[:6]}, **{k: _number(row[k], where) for k in NUMBERS}})
     return rows

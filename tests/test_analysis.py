@@ -134,9 +134,25 @@ class TestTheCommand(unittest.TestCase):
                 s.baseline_folder(root, 4001, "internal", 1, 1, record=s.COMPLETE_RECORD)
             code, text, err = analyze(*roots)
         self.assertEqual((code, err), (0, ""))
-        row = f"| demo scan | downloads · after · openai/{s.MODEL} · internal | b7c043583544 | 1 | 1 | 1 (r1) | 0 | 0 |"
-        self.assertEqual(text.count(row + " 0 | 0 |"), 2)
+        for n in (1, 2):
+            cell = f"downloads ({n}) · after · openai/{s.MODEL} · internal"
+            self.assertEqual(text.count(f"| demo scan | {cell} | b7c043583544 | 1 | 1 | 1 (r1) | 0 | 0 | 0 | 0 |"), 1)
         self.assertNotIn("complete attempts, the first one read", text)
+
+    def test_two_campaigns_of_one_name_are_numbered_in_the_inputs_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # z before a: the order of the inputs, not where they lie
+            roots = [os.path.join(tmp, c, "downloads") for c in ("z", "a")]
+            for root in roots:
+                s.baseline_folder(root, 4001, "internal", 1, 1, record=s.COMPLETE_RECORD)
+            code, text, err = analyze(*roots)
+        self.assertEqual((code, err), (0, ""))
+        for n, root in enumerate(roots, 1):
+            self.assertIn(f"- `{root}`: 1 attempts, campaign downloads ({n})", text)
+        tables = [[ln[:15] for ln in block.splitlines() if ln.startswith("| downloads (")]
+                  for block in text.split("\n\n")]
+        self.assertGreater(sum(1 for rows in tables if len(set(rows)) == 2), 5)
+        self.assertTrue(all(rows == sorted(rows) for rows in tables))
 
     def test_scenario_campaigns_on_two_corpora_are_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,6 +174,13 @@ class TestTheCommand(unittest.TestCase):
         self.assertEqual(data["batches"], [1, 5])
         self.assertIn("- Batch size: the runs read are at batch sizes 1, 5; each size is its own cell, never pooled, "
                       "and no statistic here compares two sizes.", report_scen.scope(data))
+
+    def test_a_batch_size_no_run_records(self):
+        rated = {vid: r.rating(s.VECTOR) for vid in ("CVE-A", "CVE-B")}
+        data = ctx_analyze.compute([("downloads", [r.record("after", "internal", 1, rated, batch=None)])],
+                                   ctx_analyze.Reports(None))
+        self.assertEqual(data["batches"], [None])
+        self.assertIn("- Batch size: not recorded in any run read.", report_scen.scope(data))
 
     def test_a_refused_input(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -385,8 +408,9 @@ class TestEndToEndOnTheMock(unittest.TestCase):
                       "expect HIGH.", self.text)
 
     def test_the_targets_and_the_null_table(self):
-        self.assertIn("| after | c1 · mock/mock | 46 | 92 | 92/92 (1.000) | none | 92/92 (1.000) |", self.text)
-        self.assertIn("| before | c1 · mock/mock | 46 | 92 | 92/92 (1.000) | none | 92/92 (1.000) |", self.text)
+        for arm, sha in (("after", s.AFTER_SHA), ("before", s.BEFORE_SHA)):
+            self.assertIn(f"| {arm} | c1 · mock/mock | {sha[:12]} | 46 | 92 | 92/92 (1.000) | none | 92/92 (1.000) |",
+                          self.text)
         rows = [ln for ln in self.text.splitlines() if ln.startswith("| ") and "c1 · mock/mock after:" in ln]
         self.assertEqual(len(rows), 46)
         self.assertTrue(all(not ln.endswith("| n/a |") for ln in rows))

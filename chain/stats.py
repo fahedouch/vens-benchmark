@@ -92,6 +92,12 @@ def _relabellings(n, k):
     return np.array([list(c) + [i for i in range(n) if i not in c] for c in first])
 
 
+def drawn(n_a, n_b, n_perm=N_PERM):
+    """Whether the gap test draws its permutations, its p then the key's: two runs a side at least, and more
+    relabellings than n_perm, all enumerated otherwise."""
+    return n_a >= 2 and n_b >= 2 and math.comb(n_a + n_b, n_a) > n_perm
+
+
 def gap_test(runs_a, runs_b, rng, n_perm=N_PERM):
     """(Delta, p); (None, None) unless each model has two runs, and without a CVE."""
     a, b = cell(runs_a), cell(runs_b)
@@ -100,7 +106,7 @@ def gap_test(runs_a, runs_b, rng, n_perm=N_PERM):
     D = pair_matrix(np.vstack([a, b]))
     na, n = len(a), len(a) + len(b)
     obs = float(_delta_labels(D, np.r_[np.ones(na), np.zeros(n - na)][None, :])[0])
-    if math.comb(n, na) <= n_perm:
+    if not drawn(na, n - na, n_perm):
         order = _relabellings(n, na)
         lab = np.zeros((len(order), n))
         np.put_along_axis(lab, order[:, :na], 1.0, axis=1)
