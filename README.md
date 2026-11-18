@@ -42,10 +42,10 @@ Add a model in one line in the `MODELS` dict (`cti_runner.py`). Local models run
 Half B runs the frozen scenarios (`freeze-scenarios.json`) through two `vens generate` binaries, the before and the after of [venslabs/vens#310](https://github.com/venslabs/vens/issues/310), each built from a pinned commit of the [vens repo](https://github.com/venslabs/vens):
 
 ```
-python3 ctx_runner.py --campaign c1 --out runs/c1 \
+python3 ctx_runner.py --campaign c1 --out measurements/c1 \
     --before ./vens-before --before-commit <main commit> --after ./vens-after --after-commit <310-step3 commit> \
     --model openai/gpt-5.4-mini-2026-03-17 --replicates 10 --retry-cap 4 --timeout 600 --parallel 4
-python3 -m chain.read runs/c1                         # every attempt, failed ones included, one JSON per line
+python3 -m chain.read measurements/c1                 # every attempt, failed ones included, one JSON per line
 ```
 
 Each arm runs on its own key, `OPENAI_API_KEY_BEFORE` and `OPENAI_API_KEY_AFTER` (or `ANTHROPIC_API_KEY_...`); `--key-suffix SCENARIOS` reads `OPENAI_API_KEY_BEFORE_SCENARIOS` and so on, so that a scenario campaign's spend shows on keys of its own. Models go by their dated ids. `--model mock/mock` runs vens's own mock LLM, free. The campaign folder is the archive, `SHA256SUMS` included; `ctx_runner.py` documents the order, the retries and the record. `ctx_analyze.py` still reads the published Half B's `results/context.json`, the old runner's format (at `paper-v1`), until the analysis is rebuilt on the runner's archives.
