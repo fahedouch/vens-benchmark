@@ -13,7 +13,7 @@ attempt.json, the attempt record, is written before `vens generate` runs and com
      "run_id", "run_attempt", "job", "context", "replicate", "archived_scan", "config",      baseline.yml
      "campaign", "scenario", "report", "config", "replicate", "attempt", "freeze_sha256",    the scenario runner
      "retry_cap", "timeout_seconds", "parallelism", "key_env", "mock_env", "command",
-     "retry_cap_reached",
+     "record_check": {"passed", "cause"}, "retry_cap_reached", "redacted",
      "setup_error",
      "generate": {"started_at", "ended_at", "exit_status", "timed_out", "interrupted", "log_complete"},
      "enrich": {"started_at", "ended_at", "exit_status"},                                    baseline.yml
@@ -24,11 +24,11 @@ A field not yet written is absent or null. Times are UTC, ISO 8601, on the runne
 `vens generate` never started (baseline.yml: a missing key, a bad batch size; the scenario runner: vens that does not
 start); log_complete, whether vens's log, the key cut out of it, was written whole, which baseline.yml's archive check
 requires. The scenario runner records a vens it killed with no exit status, interrupted saying why ("timeout", with
-timed_out, or "the runner was stopped"), and retry_cap_reached on a failed attempt that was the last the retry cap
-allows. The reader tells four outcomes apart: a scoring that did not complete; a scoring that
-completed and a later step that failed (baseline.yml's alone: the scenario runner has no step after vens generate); a
-scoring interrupted, its start recorded and no exit status; a complete attempt. What a folder does not say stays an
-explicit unknown.
+timed_out, "the runner was stopped", or the runner's own failure), and retry_cap_reached on a failed attempt that was
+the last the retry cap allows. The reader tells four outcomes apart: a scoring that did not complete; a scoring that
+completed and a later step that failed (baseline.yml's log capture, vens enrich, archive check or provenance.json; the
+scenario runner's record check, record_gaps); a scoring interrupted, its start recorded and no exit status; a
+complete attempt. What a folder does not say stays an explicit unknown.
 """
 import os
 import re
@@ -237,10 +237,13 @@ def _from_record(rj, provenance_present, job):
     baseline = rj.get("runner") == "baseline.yml"
     steps = {"generate": gen, "enrich": enrich or None, "archive_check": rj.get("archive_check"),
              "provenance": provenance_present}
+    if "record_check" in rj:
+        steps["record_check"] = rj["record_check"]
     unknown = [f for f, v in _record_fields(rj).items() if v is None]
     problems = [f"attempt.json lacks {f}" for f in IDENTITY if baseline and rj.get(f) is None]
     if gen.get("exit_status") is None:
-        if gen.get("started_at") is None:
+        # a launch that failed says so whatever start it recorded
+        if gen.get("started_at") is None or rj.get("setup_error"):
             cause = rj.get("setup_error")
             return FAILED, _failure(None, None, cause, "attempt.json"), steps, unknown + ["failure.kind"], problems + (
                 [] if cause else ["attempt.json records neither the start nor the exit status of vens generate"])
@@ -259,9 +262,54 @@ def _from_record(rj, provenance_present, job):
                                             f"vens generate exited {gen['exit_status']}"), steps, unknown, problems
         return FAILED, _failure(SCORING, "generate", None, None), steps, unknown, problems
     if not baseline:
-        return COMPLETE, None, steps, unknown, problems
+        outcome, failure, found = _record_check(rj)
+        return outcome, failure, steps, unknown + (["failure.cause"] if found else []), problems + found
     outcome, failure, found = _later_steps(rj, gen, enrich, provenance_present, job)
     return outcome, failure, steps, unknown, problems + found
+
+
+def _record_check(rj):
+    """(outcome, failure, problems) of the scenario runner's step after a scoring that completed: its check that the
+    attempt left a complete record (record_gaps). Records written without that step are complete at exit 0."""
+    if "record_check" not in rj:
+        return COMPLETE, None, []
+    check = rj["record_check"]
+    if check is None:
+        return FAILED, _failure(LATER_STEP, "record_check", None, None), [
+            "attempt.json gives the record check no result: the runner stopped before it"]
+    if check.get("passed") is not True:
+        return FAILED, _failure(LATER_STEP, "record_check", check.get("cause"), "attempt.json"), []
+    return COMPLETE, None, []
+
+
+def _readable(load, path, what, gaps):
+    if path is None:
+        gaps.append(f"no {what}")
+        return None
+    try:
+        return load(path)
+    except Refused:
+        gaps.append(f"{what} that does not read")
+        return None
+
+
+def record_gaps(folder, arm, provider, model):
+    """What an attempt whose `vens generate` exited 0 left short of a complete record: the VEX, the attestation and,
+    for the after, answers.json, each there and readable, and the archive check restated on its calls: one run
+    folder, every call with its reply, the prompt hashes and the model attested. [] for a complete record."""
+    files, gaps = _files(folder), []
+    _readable(cdx.ratings, files["vex"], "VEX", gaps)
+    evidence = _readable(cdx.evidence, files["attestation"], "attestation", gaps)
+    if arm == "after":
+        _readable(answersmod.load, files["answers"], "answers.json", gaps)
+    run_dirs = files["run_dirs"] or []
+    if len(run_dirs) != 1:
+        gaps.append(f"{len(run_dirs)} run folders under calls/")
+    elif evidence is not None:
+        passed, reason = callmod.archive_check(run_dirs, callmod.load(run_dirs[0]), evidence, provider, model)
+        if not passed:
+            gaps.append(f"the archive check: {reason}")
+    return gaps
 
 
 def _later_steps(rj, gen, enrich, provenance_present, job):

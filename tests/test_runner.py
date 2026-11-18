@@ -1,21 +1,25 @@
-"""The scenario runner (ctx_runner.py) and the reading of its campaigns. Its order, parallelism, retries, timeout,
-stop, keys, model ids and freeze on a fake vens that calls nothing; on vens's own mock at both commits, a failed
-attempt then a complete one, the omission stop up to the retry cap, and a timeout, read back by the reader. No model
-is called and no real key is used."""
+"""The scenario runner (ctx_runner.py) and the reading of its campaigns. Its order, parallelism, retries, record
+check, timeout, signals, keys, model ids, input snapshot and freeze on a fake vens that calls nothing; on vens's own
+mock at both commits, a failed attempt then a complete one, the omission stop up to the retry cap, and a timeout, read
+back by the reader. No model is called and no real key is used."""
+import base64
+import concurrent.futures
 import contextlib
 import io
 import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 import ctx_runner
-from chain import campaign, read, runvens
+from chain import attempt, campaign, read, runvens
 from chain.errors import Refused
 from tests import support as s
 from tests.test_mock_runs import FORCED, SKIPPED, SKIPPED_BEFORE
@@ -24,26 +28,36 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARMS = ("before", "after")
 KEYS = {"OPENAI_API_KEY_BEFORE": "sk-fake-before-0001", "OPENAI_API_KEY_AFTER": "sk-fake-after-0002"}
 DATED = "openai/gpt-5.4-mini-2026-03-17"
+OPENAI = ("openai", "gpt-5.4-mini-2026-03-17")
 # Variables Python sets in its own environment at startup, not given by the runner.
 PYTHON_ADDS = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
 
-# The fake vens: ARM and STATE are set above this body. Each call takes the next mode of its arm's list in
-# STATE/plan.json, else its default: ok, fail, sleep (killed at the timeout), echo (the key in its log), leak (the
-# key in a debug file too), barrier (waits until plan.json's width calls run at once).
+# The fake vens: ROOT, ARM and STATE are set above this body. On success it leaves a complete record, built with
+# tests/support.py. Each call takes the next mode of its arm's list in STATE/plan.json, else its default: ok; fail;
+# sleep (killed at the timeout); echo, the key's forms (plan.json's forms) in its log; leak, in a debug file too;
+# no_answers, no_attestation; straggler, a child that keeps its stderr; escape, the same child in a session of its
+# own; tamper, its config changed; barrier, waiting until plan.json's width calls run at once.
 FAKE_VENS = r'''
-import fcntl, json, os, sys, time
+import fcntl, json, os, subprocess, sys, time
+sys.path.insert(0, ROOT)
+from tests import support as s
 args = sys.argv[1:]
 arg = lambda flag: args[args.index(flag) + 1]
-scenario, out, calls = arg("--config-file").split("/")[1], args[-1], arg("--debug-dir")
-with open(os.path.join(STATE, "lock"), "a") as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    count = os.path.join(STATE, "count-" + ARM)
-    n = int(open(count).read()) if os.path.exists(count) else 0
-    open(count, "w").write(str(n + 1))
-plan = json.load(open(os.path.join(STATE, "plan.json")))
-modes = plan.get(ARM, [])
-mode = modes[n] if n < len(modes) else plan.get("default", "ok")
+config, report, out, calls = arg("--config-file"), args[-2], args[-1], arg("--debug-dir")
+scenario, provider = config.split("/")[1], arg("--llm")
+model = os.environ.get("OPENAI_MODEL") or os.environ.get("ANTHROPIC_MODEL") or "mock"
 key = os.environ.get("OPENAI_API_KEY", "")
+
+def locked(change):
+    with open(os.path.join(STATE, "lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return change()
+
+def bump(name, by):
+    path = os.path.join(STATE, name)
+    value = (int(open(path).read()) if os.path.exists(path) else 0) + by
+    open(path, "w").write(str(value))
+    return value
 
 def event(kind, **kw):
     with open(os.path.join(STATE, "events.jsonl"), "a") as fh:
@@ -55,21 +69,15 @@ def log(level, msg, **kw):
     sys.stderr.write(f"time=2026-11-20T10:00:00.000Z level={level} msg={json.dumps(msg)}{fields}\n")
     sys.stderr.flush()
 
-event("start", mode=mode, env=sorted(os.environ), model=os.environ.get("OPENAI_MODEL"), key=key, cwd=os.getcwd())
+n = locked(lambda: bump("count-" + ARM, 1) - 1)
+plan = json.load(open(os.path.join(STATE, "plan.json")))
+modes = plan.get(ARM, [])
+mode = modes[n] if n < len(modes) else plan.get("default", "ok")
+event("start", mode=mode, env=sorted(os.environ), model=os.environ.get("OPENAI_MODEL"), key=key, cwd=os.getcwd(),
+      config_mode=oct(os.stat(config).st_mode & 0o777))
 if mode == "barrier":
     # tickets in arrival order: a wave of width calls is released once its last ticket is taken, all of the wave
     # then running at once; alive counts the calls running when this one arrived
-    def locked(change):
-        with open(os.path.join(STATE, "lock"), "a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            return change()
-
-    def bump(name, by):
-        path = os.path.join(STATE, name)
-        value = (int(open(path).read()) if os.path.exists(path) else 0) + by
-        open(path, "w").write(str(value))
-        return value
-
     ticket, alive = locked(lambda: (bump("tickets", 1) - 1, bump("alive", 1)))
     wave_end, end = (ticket // plan["width"] + 1) * plan["width"], time.time() + 5
     while locked(lambda: bump("tickets", 0)) < wave_end and time.time() < end:
@@ -82,15 +90,29 @@ if mode == "fail":
     log("ERROR", "Error", error="failed to generate risk scores: fake failure")
     event("end")
     sys.exit(1)
-os.makedirs(os.path.join(calls, "run-1"), exist_ok=True)
-for part, text in (("system.prompt", "s"), ("human.prompt", "h"), ("response", key if mode == "leak" else "{}")):
-    with open(os.path.join(calls, "run-1", "batch-00001." + part), "w") as fh:
-        fh.write(text)
-with open(out, "w") as fh:
-    fh.write('{"bomFormat": "CycloneDX", "vulnerabilities": []}')
+if mode in ("straggler", "escape"):
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=mode == "escape")
+    event("child", child=child.pid)
+if mode == "tamper":
+    os.chmod(config, 0o644)
+    with open(config, "a") as fh:
+        fh.write("\n")
+with open(report) as fh:
+    cve = json.load(fh)["Results"][0]["Vulnerabilities"][0]["VulnerabilityID"]
+made = s.after_calls(cve) if ARM == "after" else s.before_calls(cve)
+s.write_calls(os.path.join(calls, "run-1"), made)
+if mode != "no_attestation":
+    s.write(out[:-len(".cdx.json")] + ".attestation.cdx.json", s.attestation(made, provider, model))
+s.write(out, s.vex([(cve, s.VECTOR, s.SEVERITY, s.SCORE)]))
+if ARM == "after" and mode != "no_answers":
+    s.write(os.path.join(calls, "run-1", "answers.json"), s.answers_doc([(cve, s.VECTOR)]))
 if mode in ("echo", "leak"):
-    log("WARN", "a key in the log", key=key)
-log("INFO", "Scoring run finished", rows=1, cves=1, llm_calls=1, asked_again=0, splits=0, failed=False)
+    for form in plan["forms"]:
+        log("WARN", "a key in the log", key=form)
+if mode == "leak":
+    with open(os.path.join(calls, "run-1", "batch-00001.response"), "w") as fh:
+        fh.write(" ".join(plan["forms"]))
+log("INFO", "Scoring run finished", rows=1, cves=1, llm_calls=len(made), asked_again=0, splits=0, failed=False)
 event("end")
 '''
 
@@ -111,11 +133,21 @@ os.execve(BINARY, [BINARY] + sys.argv[1:], env)
 '''
 
 
-def gone(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
+def forms(key):
+    """The key as a log or a file could hold it: itself, its base64 alone, inside a longer encoded text at another
+    byte alignment, and masked the way an SDK shows it."""
+    return [key, base64.b64encode(key.encode()).decode(), "Basic " + base64.b64encode(b"u:" + key.encode()).decode(),
+            key[:8] + "…" + key[-4:]]
+
+
+def gone(pid, wait=5.0):
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
     return False
 
 
@@ -132,7 +164,7 @@ class Base(unittest.TestCase):
 
     def fake(self, arm):
         path = s.write(os.path.join(self.dir, "bin", f"vens-{arm}"),
-                       f"#!{sys.executable}\nARM, STATE = {arm!r}, {self.state!r}\n{FAKE_VENS}")
+                       f"#!{sys.executable}\nROOT, ARM, STATE = {ROOT!r}, {arm!r}, {self.state!r}\n{FAKE_VENS}")
         os.chmod(path, 0o755)
         return path
 
@@ -142,16 +174,19 @@ class Base(unittest.TestCase):
     def env(self, **extra):
         return {"PATH": os.environ.get("PATH", ""), "HOME": self.dir, **extra}
 
-    def main(self, *extra, environ=None, models=("mock/mock",), scenarios=("comp_gdpr",), replicates=1, cap=3,
-             timeout=30, parallel=1, bins=None, commits=(s.BEFORE_SHA, s.AFTER_SHA)):
+    def argv(self, *extra, models=("mock/mock",), scenarios=("comp_gdpr",), replicates=1, cap=3, timeout=30,
+             parallel=1, bins=None, commits=(s.BEFORE_SHA, s.AFTER_SHA)):
         bins = bins or self.bins
         argv = ["--campaign", "c1", "--out", self.out, "--before", bins["before"], "--before-commit", commits[0],
                 "--after", bins["after"], "--after-commit", commits[1], "--replicates", str(replicates),
                 "--retry-cap", str(cap), "--timeout", str(timeout), "--parallel", str(parallel)]
         argv += [x for m in models for x in ("--model", m)] + [x for sc in scenarios for x in ("--scenario", sc)]
+        return argv + list(extra)
+
+    def main(self, *extra, environ=None, **kw):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = ctx_runner.main(argv + list(extra), environ=self.env() if environ is None else environ)
+            code = ctx_runner.main(self.argv(*extra, **kw), environ=self.env() if environ is None else environ)
         self.stdout, self.stderr = out.getvalue(), err.getvalue()
         return code
 
@@ -162,17 +197,42 @@ class Base(unittest.TestCase):
         with open(path) as fh:
             return [e for e in map(json.loads, fh) if e["event"] == kind]
 
+    def started(self):
+        path = os.path.join(self.state, "events.jsonl")
+        return os.path.exists(path) and '"start"' in open(path).read()
+
+    def signal_once_started(self, *signums):
+        def send():
+            end = time.time() + 30
+            while time.time() < end and not self.started():
+                time.sleep(0.05)
+            for signum in signums:
+                os.kill(os.getpid(), signum)
+
+        threading.Thread(target=send, daemon=True).start()
+
     def record(self, rel):
         with open(os.path.join(self.out, rel, "attempt.json")) as fh:
             return json.load(fh)
+
+    def rewrite(self, rel, **fields):
+        runvens.write_json(os.path.join(self.out, rel, "attempt.json"), {**self.record(rel), **fields})
 
     def doc(self):
         with open(os.path.join(self.out, campaign.CAMPAIGN)) as fh:
             return json.load(fh)
 
+    def reseal(self):
+        """failures.jsonl and SHA256SUMS written again, as a consistent rewrite of the archive would leave them."""
+        campaign.write_failures(self.out)
+        campaign.write_sums(self.out)
+
     def read(self):
         return {(r["what"]["replicate"], r["what"]["scenario"], r["what"]["arm"], r["what"]["run_attempt"]): r
                 for r in campaign.read_campaign(self.out)}
+
+    def files(self):
+        return [os.path.join(d, n) for d, _, names in os.walk(self.out) for n in names]
 
 
 def at(arm, k, scenario="comp_gdpr", replicate=1, model=("mock", "mock")):
@@ -215,9 +275,24 @@ class TestAttempts(Base):
         first = recs[(1, "comp_gdpr", "before", 1)]
         self.assertEqual((first["outcome"], first["failure"]["kind"], first["failure"]["cause"]),
                          ("failed", "scoring", "failed to generate risk scores: fake failure"))
-        self.assertEqual([recs[(1, "comp_gdpr", arm, k)]["outcome"] for arm, k in (("before", 2), ("after", 1))],
-                         ["complete", "complete"])
+        for arm, k in (("before", 2), ("after", 1)):
+            rec = recs[(1, "comp_gdpr", arm, k)]
+            self.assertEqual((rec["outcome"], rec["scores_usable"], rec["problems"]), ("complete", True, []))
+            self.assertEqual(rec["steps"]["record_check"], {"passed": True, "cause": None})
         self.assertEqual(len(recs), 3)
+
+    def test_an_incomplete_record_is_a_failed_attempt_with_its_cause(self):
+        self.plan(after=["no_answers", "ok"], before=["no_attestation"] * 2)
+        self.assertEqual(self.main(cap=2), ctx_runner.EXIT_CAP_REACHED)
+        recs = self.read()
+        gap = recs[(1, "comp_gdpr", "after", 1)]
+        self.assertEqual(gap["failure"], {"kind": "later_step", "step": "record_check", "cause": "no answers.json",
+                                          "cause_source": "attempt.json"})
+        self.assertEqual((gap["outcome"], gap["steps"]["generate"]["exit_status"]), ("failed", 0))
+        self.assertEqual(recs[(1, "comp_gdpr", "after", 2)]["outcome"], "complete")
+        last = recs[(1, "comp_gdpr", "before", 2)]
+        self.assertEqual((last["failure"]["cause"].split(";")[0], last["retry_cap_reached"]), ("no attestation", True))
+        self.assertIn(f"{at('after', 1)}: failed, the record check: no answers.json", self.stdout)
 
     def test_the_retry_cap_reached_is_recorded_as_such(self):
         self.plan(before=["fail"] * 3)
@@ -246,33 +321,141 @@ class TestAttempts(Base):
         self.assertIn("generate.exit_status", rec["unknown"])
         self.assertEqual(self.read()[(1, "comp_gdpr", "before", 2)]["outcome"], "complete")
 
-    def test_a_stop_kills_the_attempt_running_and_starts_no_other(self):
-        self.plan(before=["sleep"])
+    def test_a_child_holding_stderr_is_killed_with_vens_group(self):
+        self.plan(before=["straggler"])
+        began = time.time()
+        self.assertEqual(self.main(timeout=30), 0)
+        self.assertLess(time.time() - began, 10)
+        (child,) = self.events("child")
+        self.assertTrue(gone(child["child"]))
+        self.assertEqual(self.record(at("before", 1))["generate"]["log_complete"], True)
 
-        def terminate():
-            path, end = os.path.join(self.state, "events.jsonl"), time.time() + 30
-            while time.time() < end and not (os.path.exists(path) and '"start"' in open(path).read()):
+    def test_a_child_out_of_vens_group_holding_stderr_bounds_the_drain(self):
+        self.plan(before=["escape"])
+        with mock.patch.object(runvens, "DRAIN", 0.3):
+            began = time.time()
+            code = self.main(timeout=30)
+        (child,) = self.events("child")
+        os.kill(child["child"], signal.SIGKILL)
+        self.assertEqual(code, 1)
+        self.assertLess(time.time() - began, 10)
+        self.assertIn("vens's log was not written whole", self.stderr)
+        self.assertEqual(self.record(at("before", 1))["generate"]["log_complete"], False)
+
+    def test_the_failures_index(self):
+        self.plan(before=["fail", "ok"])
+        self.assertEqual(self.main(), 0)
+        with open(os.path.join(self.out, campaign.FAILURES)) as fh:
+            (line,) = map(json.loads, fh)
+        self.assertEqual({k: line[k] for k in ("folder", "arm", "attempt", "kind", "cause", "retry_cap_reached")},
+                         {"folder": at("before", 1), "arm": "before", "attempt": 1, "kind": "scoring",
+                          "cause": "failed to generate risk scores: fake failure", "retry_cap_reached": False})
+        s.write(os.path.join(self.out, campaign.FAILURES), "")
+        campaign.write_sums(self.out)
+        with self.assertRaisesRegex(Refused, "failures.jsonl lists 0 failed attempts, the attempt records give 1"):
+            campaign.read_campaign(self.out)
+
+
+class TestRunvens(Base):
+    def test_an_error_between_the_start_and_the_end_kills_vens(self):
+        folder, pidfile = os.path.join(self.dir, "a"), os.path.join(self.dir, "pid")
+        cmd = [sys.executable, "-c", f"import os, time; open({pidfile!r}, 'w').write(str(os.getpid())); "
+                                     f"time.sleep(60)"]
+
+        def failing_drain(*args):
+            end = time.time() + 10
+            while time.time() < end and not os.path.exists(pidfile):
                 time.sleep(0.05)
-            os.kill(os.getpid(), signal.SIGTERM)
+            raise RuntimeError("no thread for the log")
 
-        threading.Thread(target=terminate, daemon=True).start()
-        self.assertEqual(self.main(scenarios=("comp_gdpr", "comp_none"), timeout=60), 143)
+        with mock.patch.object(runvens, "_drain", failing_drain):
+            with self.assertRaisesRegex(RuntimeError, "no thread for the log"):
+                runvens.run(cmd, folder, {}, env={}, timeout=60)
+        with open(pidfile) as fh:
+            self.assertTrue(gone(int(fh.read())))
+        self.assertEqual(runvens._LIVE, set())
+        gen = self.record(folder)["generate"]
+        self.assertEqual((gen["exit_status"], gen["interrupted"]),
+                         (None, "the runner failed: RuntimeError('no thread for the log')"))
+
+    def test_a_launch_that_fails_is_read_as_such(self):
+        folder = os.path.join(self.dir, "a")
+        with self.assertRaises(OSError):
+            runvens.run([os.path.join(self.dir, "no-vens")], folder, {"runner": "scenarios", "arm": "after"}, env={})
+        rec = self.record(folder)
+        self.assertEqual(rec["generate"]["started_at"], None)
+        self.assertTrue(rec["setup_error"].startswith("vens did not start: "))
+        for started in (None, "2026-11-20T10:00:00.000000Z"):
+            self.rewrite(folder, generate={**rec["generate"], "started_at": started})
+            got = attempt.read_attempt(folder)
+            self.assertEqual((got["outcome"], got["failure"]["cause"], got["failure"]["cause_source"]),
+                             ("failed", rec["setup_error"], "attempt.json"), started)
+
+
+class TestSignals(Base):
+    def stopped(self, signum, code, *more):
+        self.plan(before=["sleep"])
+        self.signal_once_started(signum, *more)
+        began = time.time()
+        self.assertEqual(self.main(scenarios=("comp_gdpr", "comp_none"), timeout=60), code)
+        self.assertLess(time.time() - began, 15)
         (started,) = self.events()
         self.assertTrue(gone(started["pid"]))
         doc = self.doc()
-        self.assertEqual((doc["stopped"], doc["ended_at"] is not None), ("interrupted: SIGTERM", True))
+        self.assertEqual((doc["stopped"], doc["ended_at"] is not None),
+                         (f"interrupted: {signal.Signals(signum).name}", True))
         gen = self.record(at("before", 1))["generate"]
         self.assertEqual((gen["exit_status"], gen["interrupted"]), (None, runvens.STOPPED))
         recs = campaign.read_campaign(self.out)
         self.assertEqual(recs[0]["failure"]["cause"], "the runner was stopped")
         self.assertEqual([(r["outcome"], r["what"]["scenario"], r["what"]["arm"]) for r in recs[1:]],
                          [(None, "comp_gdpr", "after"), (None, "comp_none", "before"), (None, "comp_none", "after")])
-        self.assertTrue(os.path.exists(os.path.join(self.out, campaign.SUMS)))
+
+    def test_sigterm(self):
+        self.stopped(signal.SIGTERM, 143)
+
+    def test_sighup(self):
+        self.stopped(signal.SIGHUP, 129)
+
+    def test_a_second_signal_while_stopping_changes_nothing(self):
+        self.stopped(signal.SIGINT, 130, signal.SIGINT, signal.SIGTERM)
+
+    def test_sigterm_while_the_units_are_submitted(self):
+        self.plan(default="sleep")
+        submit, calls = concurrent.futures.ThreadPoolExecutor.submit, []
+
+        def signalling_submit(ex, *args, **kw):
+            calls.append(1)
+            if len(calls) == 2:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return submit(ex, *args, **kw)
+
+        began = time.time()
+        with mock.patch.object(concurrent.futures.ThreadPoolExecutor, "submit", signalling_submit):
+            code = self.main(scenarios=("comp_gdpr", "comp_none", "crit_low"), timeout=60)
+        self.assertEqual(code, 143)
+        self.assertLess(time.time() - began, 15)
+        self.assertLessEqual(len(self.events()), 1)
+        self.assertTrue(all(gone(e["pid"]) for e in self.events()))
+        self.assertEqual(self.doc()["stopped"], "interrupted: SIGTERM")
+
+    def test_sigkill_of_the_runner_leaves_no_vens_running(self):
+        self.plan(before=["sleep"])
+        runner = subprocess.Popen([sys.executable, os.path.join(ROOT, "ctx_runner.py"), *self.argv(timeout=60)],
+                                  env=self.env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        end = time.time() + 30
+        while time.time() < end and not self.started():
+            time.sleep(0.05)
+        runner.kill()
+        runner.wait()
+        (started,) = self.events()
+        self.assertTrue(gone(started["pid"]))
+        self.assertIsNone(self.doc()["ended_at"])
 
 
 class TestKeys(Base):
     def test_each_arm_gets_its_own_key_and_the_model_and_nothing_else(self):
-        self.plan(default="echo")
+        self.plan(default="echo", forms=forms(KEYS["OPENAI_API_KEY_BEFORE"]) + forms(KEYS["OPENAI_API_KEY_AFTER"]))
         self.assertEqual(self.main(models=(DATED,), environ=self.env(OPENAI_API_KEY="sk-shared", **KEYS)), 0)
         got = {e["arm"]: e for e in self.events()}
         for arm in ARMS:
@@ -280,19 +463,49 @@ class TestKeys(Base):
                              (KEYS[f"OPENAI_API_KEY_{arm.upper()}"], "gpt-5.4-mini-2026-03-17"))
             self.assertEqual(set(got[arm]["env"]) - PYTHON_ADDS, {"PATH", "HOME", "TZ", "OPENAI_MODEL",
                                                                   "OPENAI_API_KEY"})
-            rec = self.record(at(arm, 1, model=("openai", "gpt-5.4-mini-2026-03-17")))
+            rec = self.record(at(arm, 1, model=OPENAI))
             self.assertEqual(rec["key_env"], f"OPENAI_API_KEY_{arm.upper()}")
         self.assertEqual(self.doc()["arms"]["after"]["keys"], {"openai": "OPENAI_API_KEY_AFTER"})
+        with open(os.path.join(self.out, at("after", 1, model=OPENAI), "vens.log")) as fh:
+            log = fh.read()
+        self.assertIn('key="***"', log)
+        self.assertNotIn("sk-fake", log)
+        self.assertEqual(self.key_forms_held(), [])
+
+    def key_forms_held(self):
         held = []
-        for d, _, names in os.walk(self.out):
-            for n in names:
-                with open(os.path.join(d, n), "rb") as fh:
-                    data = fh.read()
-                held += [n for k in KEYS.values() if k.encode() in data]
-        self.assertEqual(held, [])
-        with open(os.path.join(self.out, at("after", 1, model=("openai", "gpt-5.4-mini-2026-03-17")),
-                               "vens.log")) as fh:
-            self.assertIn('key="***"', fh.read())
+        for path in self.files():
+            with open(path, "rb") as fh:
+                data = fh.read()
+            held += [(os.path.relpath(path, self.out), f) for k in KEYS.values() for f in forms(k)
+                     if f.encode() in data]
+        return held
+
+    def test_a_key_in_an_attempts_files_is_cut_out_and_stops_the_campaign(self):
+        self.plan(before=["leak"], forms=forms(KEYS["OPENAI_API_KEY_BEFORE"]))
+        self.assertEqual(self.main(models=(DATED,), scenarios=("comp_gdpr", "comp_none"),
+                                   environ=self.env(**KEYS)), 1)
+        response = os.path.join("calls", "run-1", "batch-00001.response")
+        self.assertIn(f"OPENAI_API_KEY_BEFORE's key was in {response}, now cut out of them", self.stderr)
+        doc = self.doc()
+        self.assertTrue(doc["stopped"].startswith("runner error: "))
+        self.assertEqual(doc["redacted"], [os.path.join(at("before", 1, model=OPENAI), response)])
+        self.assertEqual(self.record(at("before", 1, model=OPENAI))["redacted"], [response])
+        self.assertEqual(len(self.events()), 1)
+        self.assertEqual(self.key_forms_held(), [])
+        campaign.check_sums(self.out)
+
+    def test_a_key_suffix(self):
+        environ = self.env(**{f"{k}_SCENARIOS": v for k, v in KEYS.items()})
+        self.assertEqual(self.main("--key-suffix", "SCENARIOS", models=(DATED,), environ=environ), 0)
+        self.assertEqual(self.record(at("after", 1, model=OPENAI))["key_env"], "OPENAI_API_KEY_AFTER_SCENARIOS")
+        self.assertEqual({e["arm"]: e["key"] for e in self.events()},
+                         {"before": KEYS["OPENAI_API_KEY_BEFORE"], "after": KEYS["OPENAI_API_KEY_AFTER"]})
+        shutil.rmtree(self.out)
+        self.assertEqual(self.main("--key-suffix", "SCENARIOS", models=(DATED,), environ=self.env(**KEYS)), 1)
+        self.assertIn("OPENAI_API_KEY_BEFORE_SCENARIOS is not set", self.stderr)
+        self.assertEqual(self.main("--key-suffix", "scenarios", models=(DATED,), environ=environ), 1)
+        self.assertIn("capitals, digits and '_' only", self.stderr)
 
     def test_a_missing_key_stops_the_runner_before_any_call(self):
         self.assertEqual(self.main(models=(DATED,), environ=self.env(OPENAI_API_KEY_BEFORE="sk-1")), 1)
@@ -305,13 +518,14 @@ class TestKeys(Base):
         self.assertIn("hold one key", self.stderr)
         self.assertEqual(self.events(), [])
 
-    def test_a_key_in_an_attempts_files_stops_the_campaign(self):
-        self.plan(before=["leak"])
-        self.assertEqual(self.main(models=(DATED,), scenarios=("comp_gdpr", "comp_none"),
-                                   environ=self.env(**KEYS)), 1)
-        self.assertIn("OPENAI_API_KEY_BEFORE's key is in calls/run-1/batch-00001.response", self.stderr)
-        self.assertTrue(self.doc()["stopped"].startswith("runner error: "))
-        self.assertEqual(len(self.events()), 1)
+    def test_the_key_forms_cut_out(self):
+        key = "sk-proj-abcdefghijklmnopqrstuvwxyz0123"
+        text = "\n".join(forms(key) + ["Basic " + base64.b64encode(b"ab" + key.encode()).decode(),
+                                       base64.urlsafe_b64encode(b"\xff" + key.encode()).decode(), "sk-proj-***0123"])
+        clean = runvens.secret_pattern(key).sub(b"***", text.encode()).decode()
+        self.assertEqual([line for line in clean.splitlines() if "***" not in line], [])
+        self.assertNotIn("abcdefghij", clean)
+        self.assertIsNone(runvens.secret_pattern(""))
 
 
 class TestInputs(Base):
@@ -329,6 +543,8 @@ class TestInputs(Base):
                          [{"provider": "anthropic", "model": "claude-sonnet-4-6", "dated": False}])
         with self.assertRaisesRegex(Refused, "no --model names it"):
             parse([DATED], ["claude-sonnet-4-6"])
+        with self.assertRaisesRegex(Refused, "not a model known to have no dated id"):
+            parse(["openai/gpt-5.4-mini"], ["gpt-5.4-mini"])
 
     def test_the_binaries_and_their_commits(self):
         self.assertEqual(self.main(bins={"before": self.bins["after"], "after": self.bins["after"]}), 1)
@@ -355,14 +571,22 @@ class TestInputs(Base):
         self.assertIn("--attest", command)
         self.assertEqual(command[command.index("--debug-dir") + 1], os.path.join(at("after", 1), "calls"))
         self.assertFalse({"--llm-temperature", "--llm-seed", "--strict"} & set(command))
-        with open(os.path.join(self.out, campaign.SUMS)) as fh:
-            sums = dict(reversed(line.rstrip("\n").split("  ", 1)) for line in fh)
-        files = {os.path.relpath(os.path.join(d, n), self.out) for d, _, names in os.walk(self.out) for n in names}
-        self.assertEqual(set(sums), files - {campaign.SUMS})
-        self.assertTrue(all(runvens.sha256(os.path.join(self.out, p)) == h for p, h in sums.items()))
-        for p in files:
-            with open(os.path.join(self.out, p), "rb") as fh:
-                self.assertNotIn(self.dir.encode(), fh.read(), p)
+        campaign.check_sums(self.out)
+        for path in self.files():
+            with open(path, "rb") as fh:
+                self.assertNotIn(self.dir.encode(), fh.read(), path)
+
+    def test_the_input_snapshot_is_read_only_and_checked_after_each_attempt(self):
+        self.plan(before=["ok", "tamper"])
+        self.assertEqual(self.main(scenarios=("comp_gdpr", "comp_none")), 1)
+        self.assertEqual({e["config_mode"] for e in self.events()}, {"0o444"})
+        config = os.path.join("scenarios", "comp_none", "config.yaml")
+        self.assertIn(f"{config} changed during the attempt", self.stderr)
+        self.assertEqual(self.record(at("before", 1, "comp_none"))["record_check"],
+                         {"passed": False, "cause": f"{config} changed during the attempt"})
+        self.assertTrue(self.doc()["stopped"].startswith("runner error: "))
+        with self.assertRaisesRegex(Refused, f"{config} changed"):
+            campaign.read_campaign(self.out)
 
 
 class TestTheFreeze(Base):
@@ -378,9 +602,10 @@ class TestTheFreeze(Base):
         self.assertEqual((self.events(), os.path.exists(self.out)), ([], False))
 
     def test_the_committed_corpus_is_the_frozen_one(self):
-        sha, ids = campaign.check_corpus(ROOT)
-        self.assertEqual((sha, len(ids)), (campaign.FROZEN, 46))
-        self.assertEqual(campaign.check_corpus(self.corpus()), (sha, ids))
+        files, ids = campaign.check_corpus(ROOT)
+        self.assertEqual((runvens.sha256(os.path.join(ROOT, campaign.FREEZE)), len(files), len(ids)),
+                         (campaign.FROZEN, 93, 46))
+        self.assertEqual(campaign.check_corpus(self.corpus()), (files, ids))
 
     def test_a_scenario_changed(self):
         root = self.corpus()
@@ -415,38 +640,87 @@ class TestTheReader(Base):
         with contextlib.redirect_stdout(out):
             self.assertEqual(read.main([self.out]), 0)
         recs = [json.loads(x) for x in out.getvalue().splitlines()]
-        self.assertEqual([(r["what"]["arm"], r["what"]["campaign"], r["what"]["retry_cap"]) for r in recs],
-                         [("before", "c1", 3), ("after", "c1", 3)])
+        self.assertEqual([(r["what"]["arm"], r["what"]["campaign"], r["what"]["retry_cap"], r["scores_usable"])
+                          for r in recs], [("before", "c1", 3, True), ("after", "c1", 3, True)])
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(read.main(["--arm", "after", self.out]), 1)
         self.assertIn("a scenario campaign", err.getvalue())
 
+    def test_a_tampered_archive_is_refused(self):
+        self.assertEqual(self.main(), 0)
+        log = os.path.join(self.out, at("after", 1), "vens.log")
+        s.write(os.path.join(self.out, at("after", 1), "vex.cdx.json.123.tmp"), "a kill mid-write")
+        campaign.read_campaign(self.out)
+        with open(log, "a") as fh:
+            fh.write("one more line\n")
+        with self.assertRaisesRegex(Refused, "SHA256SUMS does not match the archive: .*vens.log changed"):
+            campaign.read_campaign(self.out)
+        campaign.write_sums(self.out)
+        s.write(os.path.join(self.out, "extra.txt"), "x")
+        with self.assertRaisesRegex(Refused, "extra.txt not listed"):
+            campaign.read_campaign(self.out)
+        os.remove(os.path.join(self.out, campaign.SUMS))
+        with self.assertRaisesRegex(Refused, "without its SHA256SUMS"):
+            campaign.read_campaign(self.out)
+
+    def test_another_freeze_is_refused_unless_named(self):
+        self.assertEqual(self.main(), 0)
+        path = os.path.join(self.out, campaign.FREEZE)
+        os.chmod(path, 0o644)
+        with open(path, "a") as fh:
+            fh.write("\n")
+        other = runvens.sha256(path)
+        runvens.write_json(os.path.join(self.out, campaign.CAMPAIGN),
+                           {**self.doc(), "corpus": {**self.doc()["corpus"], "freeze_sha256": other}})
+        for arm in ARMS:
+            self.rewrite(at(arm, 1), freeze_sha256=other)
+        self.reseal()
+        with self.assertRaisesRegex(Refused, f"its corpus's freeze is {other}, not {campaign.FROZEN}"):
+            campaign.read_campaign(self.out)
+        self.assertEqual(len(campaign.read_campaign(self.out, freeze=other)), 2)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(read.main([self.out]), 1)
+            self.assertEqual(read.main(["--freeze-sha256", other, self.out]), 0)
+
+    def test_an_input_other_than_the_scenarios_is_refused(self):
+        self.assertEqual(self.main(), 0)
+        self.rewrite(at("after", 1), config="scenarios/comp_none/config.yaml")
+        self.reseal()
+        with self.assertRaisesRegex(Refused, "attempt.json gives config"):
+            campaign.read_campaign(self.out)
+
     def test_an_archive_that_lost_an_attempt_is_refused(self):
         self.plan(before=["fail", "ok"])
         self.assertEqual(self.main(), 0)
         shutil.rmtree(os.path.join(self.out, at("after", 1)))
+        self.reseal()
         with self.assertRaisesRegex(Refused, "after of replicate 1 .* ran to its end: a truncated archive"):
             campaign.read_campaign(self.out)
         shutil.rmtree(os.path.join(self.out, at("before", 1)))
+        self.reseal()
         with self.assertRaisesRegex(Refused, "numbered with a gap"):
             campaign.read_campaign(self.out)
 
     def test_a_record_that_contradicts_the_campaign_is_refused(self):
         self.assertEqual(self.main(), 0)
-        rec = self.record(at("after", 1))
-        runvens.write_json(os.path.join(self.out, at("after", 1), "attempt.json"), {**rec, "vens_sha": s.BEFORE_SHA})
+        self.rewrite(at("after", 1), vens_sha=s.BEFORE_SHA)
+        self.reseal()
         with self.assertRaisesRegex(Refused, "attempt.json gives vens_sha"):
             campaign.read_campaign(self.out)
 
     def test_a_runner_killed_mid_attempt(self):
-        # what a SIGKILL of the runner leaves: the attempt's start recorded, no end, campaign.json never completed
+        # what a SIGKILL of the runner leaves: the attempt's start recorded, no end, campaign.json never completed,
+        # no failures.jsonl and no SHA256SUMS
         self.assertEqual(self.main(scenarios=("comp_gdpr", "comp_none")), 0)
         rec = self.record(at("after", 1))
-        runvens.write_json(os.path.join(self.out, at("after", 1), "attempt.json"),
-                           {**rec, "generate": {**rec["generate"], "ended_at": None, "exit_status": None}})
+        self.rewrite(at("after", 1), generate={**rec["generate"], "ended_at": None, "exit_status": None},
+                     record_check=None)
         shutil.rmtree(os.path.join(self.out, "mock", "mock", "r1", "comp_none"))
         runvens.write_json(os.path.join(self.out, campaign.CAMPAIGN), {**self.doc(), "ended_at": None})
+        for name in (campaign.SUMS, campaign.FAILURES):
+            os.remove(os.path.join(self.out, name))
         recs = campaign.read_campaign(self.out)
         killed = recs[1]
         self.assertEqual((killed["outcome"], killed["failure"]["kind"], killed["failure"]["cause"]),
@@ -490,6 +764,7 @@ class TestOnTheMock(MockCampaign):
                              (1, 1, False))
             self.assertEqual((done["outcome"], done["scores_usable"], done["problems"], done["models_attested"][0]),
                              ("complete", True, [], ["mock", "mock"]))
+            self.assertEqual(done["steps"]["record_check"], {"passed": True, "cause": None})
         self.assertEqual(recs[(1, "comp_gdpr", "after", 2)]["answers"]["rated"], 1)
         with open(os.path.join(self.out, at("after", 2), "vens.log")) as fh:
             self.assertNotIn(self.dir, fh.read())
