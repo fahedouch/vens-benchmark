@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/opstrace@2.2.0"
           },
           "Title": "Event handling flaw in opstrace",
-          "Description": "opstrace lets an authenticated user discard change-history entries before they reach durable storage, so a later review cannot reconstruct what was modified. No stored business data is read or changed. CVSS 5.3.",
-          "PrimaryURL": "https://example.test/CVE-2099-0023"
+          "Description": "opstrace lets an authenticated user discard change-history entries before they reach durable storage, so a later review cannot reconstruct what was modified. No stored business data is read or changed. CVSS 4.3.",
+          "PrimaryURL": "https://example.test/CVE-2099-0023",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 2
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+              "V3Score": 4.3
+            }
+          }
         }
       ]
     }

@@ -18,7 +18,17 @@
           },
           "Title": "Template-injection RCE in tmplengine",
           "Description": "Server-side template injection in tmplengine lets a remote attacker run arbitrary code by submitting a crafted template expression. CVSS 9.8.",
-          "PrimaryURL": "https://example.test/CVE-2099-0013"
+          "PrimaryURL": "https://example.test/CVE-2099-0013",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 4
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 9.8
+            }
+          }
         }
       ]
     }

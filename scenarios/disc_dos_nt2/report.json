@@ -18,7 +18,17 @@
           },
           "Title": "Entity expansion in xmlflat",
           "Description": "xmlflat expands nested entity references in incoming documents. A small crafted document expands to many gigabytes in memory and the parser process is killed before it returns a response. CVSS 7.5.",
-          "PrimaryURL": "https://example.test/CVE-2099-0021"
+          "PrimaryURL": "https://example.test/CVE-2099-0021",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 3
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V3Score": 7.5
+            }
+          }
         }
       ]
     }

@@ -1,0 +1,16 @@
+schema_version: 2
+project:
+  name: svc
+  description: financial ledger
+context:
+  exposure: internet
+  data_sensitivity: low
+  business_criticality: high
+  audit_requirement: high
+  listener: present
+  data_subjects: millions
+  detection:
+    network: not_logged
+    host: not_logged
+    application: not_logged
+  traceability: per_individual

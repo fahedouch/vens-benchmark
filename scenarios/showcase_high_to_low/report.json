@@ -18,7 +18,17 @@
           },
           "Title": "Apache Log4j2 JNDI RCE (Log4Shell)",
           "Description": "Apache Log4j2 2.0-beta9 through 2.15.0 JNDI features used in configuration, log messages, and parameters do not protect against attacker controlled LDAP and other JNDI related endpoints. An attacker who can control log messages or log message parameters can execute arbitrary code loaded from LDAP servers when message lookup substitution is enabled. CVSS 10.0.",
-          "PrimaryURL": "https://example.test/CVE-2021-44228"
+          "PrimaryURL": "https://example.test/CVE-2021-44228",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 4
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+              "V3Score": 10.0
+            }
+          }
         }
       ]
     }

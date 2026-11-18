@@ -18,7 +18,17 @@
           },
           "Title": "Resource handling issue in bufpool",
           "Description": "In bufpool, a request field sets the size of a preallocated buffer with no upper bound. A remote request carrying a large value drives memory use up until the operating system terminates the worker process. CVSS 7.5.",
-          "PrimaryURL": "https://example.test/CVE-2099-0020"
+          "PrimaryURL": "https://example.test/CVE-2099-0020",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 3
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V3Score": 7.5
+            }
+          }
         }
       ]
     }

@@ -18,7 +18,17 @@
           },
           "Title": "Deserialization RCE in pickleio",
           "Description": "pickleio deserializes untrusted input received over the network, allowing a remote attacker to execute arbitrary code. Public PoC exists. CVSS 9.8.",
-          "PrimaryURL": "https://example.test/CVE-2099-0012"
+          "PrimaryURL": "https://example.test/CVE-2099-0012",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 4
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 9.8
+            }
+          }
         }
       ]
     }

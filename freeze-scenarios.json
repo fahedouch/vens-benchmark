@@ -1,0 +1,454 @@
+{
+  "generator": {
+    "make_scenarios.py": "0380d6150defcb08363e9bc3793e3c307733c3fe8550d65aed86340a6498a5b1",
+    "requirements.txt": "08429a45b74b822e6b034d4e3dcac406027c4e9a717e9f4fae6af827ddeeb2d5"
+  },
+  "python": "3.12.12",
+  "pyyaml": "6.0.3",
+  "schema_version": 2,
+  "declared": {
+    "detection": {
+      "network": "not_logged",
+      "host": "not_logged",
+      "application": "not_logged"
+    },
+    "data_subjects": "millions",
+    "traceability": {
+      "default": "none",
+      "per_individual": [
+        "disc_audit",
+        "disc_audit2",
+        "disc_audit3",
+        "disc_audit_nt",
+        "disc_audit_nt2",
+        "disc_audit_novec",
+        "disc_audit2_novec",
+        "disc_audit3_novec",
+        "disc_audit_nt_novec",
+        "disc_audit_nt2_novec"
+      ]
+    },
+    "listener": {
+      "showcase_high_to_low": "absent",
+      "showcase_med_to_high": "present",
+      "expo_internal": "present",
+      "expo_private": "present",
+      "expo_internet": "present",
+      "ctrl_off": "present",
+      "ctrl_on": "present",
+      "wrong_yaml": "unknown",
+      "floor": "unknown",
+      "sens_low": "present",
+      "sens_high": "present",
+      "sens_critical": "present",
+      "crit_low": "present",
+      "crit_critical": "present",
+      "comp_none": "present",
+      "comp_gdpr": "present",
+      "disc_dos": "present",
+      "disc_audit": "present",
+      "disc_ctrl_irrelevant": "present",
+      "reach_yes": "present",
+      "reach_no": "present",
+      "disc_dos2": "present",
+      "disc_dos3": "present",
+      "disc_audit2": "present",
+      "disc_audit3": "present",
+      "reach2_yes": "present",
+      "reach2_no": "present",
+      "reach3_yes": "present",
+      "reach3_no": "present",
+      "disc_ctrl_off_local": "present",
+      "disc_dos_nt": "present",
+      "disc_dos_nt2": "present",
+      "disc_audit_nt": "present",
+      "disc_audit_nt2": "present",
+      "disc_ctrl_irrelevant_nt": "present",
+      "disc_ctrl_off_local_nt": "present",
+      "disc_dos_novec": "present",
+      "disc_dos2_novec": "present",
+      "disc_dos3_novec": "present",
+      "disc_dos_nt_novec": "present",
+      "disc_dos_nt2_novec": "present",
+      "disc_audit_novec": "present",
+      "disc_audit2_novec": "present",
+      "disc_audit3_novec": "present",
+      "disc_audit_nt_novec": "present",
+      "disc_audit_nt2_novec": "present"
+    }
+  },
+  "counts": {
+    "configs": 46,
+    "with_vector": 36,
+    "without_vector": 10,
+    "setting_ids": [
+      "ctrl_on",
+      "showcase_high_to_low"
+    ]
+  },
+  "vectors": {
+    "showcase_high_to_low": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "NVD CVE API 2.0, fetched 2026-11-18: nvd@nist.gov's Primary cvssMetricV31, record lastModified 2026-08-11T19:33:44.513",
+      "score": 10.0
+    },
+    "showcase_med_to_high": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "NVD CVE API 2.0, fetched 2026-11-18: nvd@nist.gov's Primary cvssMetricV31, record lastModified 2026-06-17T06:29:40.133",
+      "score": 6.5
+    },
+    "expo_internal": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "expo_private": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "expo_internet": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "ctrl_off": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "ctrl_on": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "wrong_yaml": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.1
+    },
+    "floor": {
+      "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 3.3
+    },
+    "sens_low": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3
+    },
+    "sens_high": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3
+    },
+    "sens_critical": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3
+    },
+    "crit_low": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "crit_critical": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "comp_none": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3
+    },
+    "comp_gdpr": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3
+    },
+    "disc_dos": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.5
+    },
+    "disc_audit": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3
+    },
+    "disc_ctrl_irrelevant": {
+      "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.8
+    },
+    "reach_yes": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "reach_no": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "disc_dos2": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.5
+    },
+    "disc_dos3": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.5
+    },
+    "disc_audit2": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3
+    },
+    "disc_audit3": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 5.3
+    },
+    "reach2_yes": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "reach2_no": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "reach3_yes": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "reach3_no": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 9.8
+    },
+    "disc_ctrl_off_local": {
+      "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.8
+    },
+    "disc_dos_nt": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.5,
+      "vector_of": "CVE-2099-0005"
+    },
+    "disc_dos_nt2": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.5,
+      "vector_of": "CVE-2099-0008"
+    },
+    "disc_audit_nt": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3,
+      "vector_of": "CVE-2099-0006"
+    },
+    "disc_audit_nt2": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 4.3,
+      "vector_of": "CVE-2099-0010"
+    },
+    "disc_ctrl_irrelevant_nt": {
+      "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.8,
+      "vector_of": "CVE-2099-0007"
+    },
+    "disc_ctrl_off_local_nt": {
+      "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+      "version": "3.1",
+      "source_key": "nvd",
+      "source": "written for its text: a synthetic CVE, which no source publishes",
+      "score": 7.8,
+      "vector_of": "CVE-2099-0007"
+    },
+    "disc_dos_novec": null,
+    "disc_dos2_novec": null,
+    "disc_dos3_novec": null,
+    "disc_dos_nt_novec": null,
+    "disc_dos_nt2_novec": null,
+    "disc_audit_novec": null,
+    "disc_audit2_novec": null,
+    "disc_audit3_novec": null,
+    "disc_audit_nt_novec": null,
+    "disc_audit_nt2_novec": null
+  },
+  "files": {
+    "scenarios/comp_gdpr/config.yaml": "4504df3d201823813f432238dce8cb9908359d9c23f816036106a73c56a0bb72",
+    "scenarios/comp_gdpr/report.json": "d05e5416e6370fbf35991c1347e4630c3b75164d059efec2ea6d9d6c21b18fd7",
+    "scenarios/comp_none/config.yaml": "5fc7e2f0c32d2bc166ca10d266fa7ad3281f7dcada48715a2ab92a3b74621c2f",
+    "scenarios/comp_none/report.json": "d05e5416e6370fbf35991c1347e4630c3b75164d059efec2ea6d9d6c21b18fd7",
+    "scenarios/crit_critical/config.yaml": "1ca171bb2f709255918b3358df703dd87e4f7f13fe7bbba39527e04062215f5d",
+    "scenarios/crit_critical/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/crit_low/config.yaml": "2c61a80f6682a898544ceef990deaa146dd4ceff07e31cfa5035eba0a73800ff",
+    "scenarios/crit_low/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/ctrl_off/config.yaml": "5fc7e2f0c32d2bc166ca10d266fa7ad3281f7dcada48715a2ab92a3b74621c2f",
+    "scenarios/ctrl_off/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/ctrl_on/config.yaml": "9865d39848a2ae125948c5bd5d8a0d2ce24566b6bf12624117596e8bf485868d",
+    "scenarios/ctrl_on/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/disc_audit/config.yaml": "7f12ffc8c679c8e012ce7139e06d89725e20ceb29d8ee9f3ca359f12a55fd7b6",
+    "scenarios/disc_audit/report.json": "8a2cc3ba321f0e2c342c4fe70d819ab63dbb3852428932976e0db60f35a4d7e1",
+    "scenarios/disc_audit2/config.yaml": "c0fe9253a35ac32b20d6e98da6003abdcaf1c683a8d621159e47e902c9bb6a11",
+    "scenarios/disc_audit2/report.json": "133c0ecdbabe1941e8f22980dbcd542b7c52d3088515fee05de78e51ca62cfd2",
+    "scenarios/disc_audit2_novec/config.yaml": "c0fe9253a35ac32b20d6e98da6003abdcaf1c683a8d621159e47e902c9bb6a11",
+    "scenarios/disc_audit2_novec/report.json": "b2486360e7f017b1667ec796c1157933de9ccca82c1e8310541bdbb932a9fc13",
+    "scenarios/disc_audit3/config.yaml": "c0fe9253a35ac32b20d6e98da6003abdcaf1c683a8d621159e47e902c9bb6a11",
+    "scenarios/disc_audit3/report.json": "e68ba24588a8662a60bda9970b9c047a2606da414d833a4022870ce65d7edae6",
+    "scenarios/disc_audit3_novec/config.yaml": "c0fe9253a35ac32b20d6e98da6003abdcaf1c683a8d621159e47e902c9bb6a11",
+    "scenarios/disc_audit3_novec/report.json": "06617a919d7c8ae198324316c09d470618f6d2750b10cec2d8693412c32e3140",
+    "scenarios/disc_audit_novec/config.yaml": "7f12ffc8c679c8e012ce7139e06d89725e20ceb29d8ee9f3ca359f12a55fd7b6",
+    "scenarios/disc_audit_novec/report.json": "41c8c5ba45f74e5654c8ff899ca107bd27d731d8dc010a89b1b333db5278c209",
+    "scenarios/disc_audit_nt/config.yaml": "7f12ffc8c679c8e012ce7139e06d89725e20ceb29d8ee9f3ca359f12a55fd7b6",
+    "scenarios/disc_audit_nt/report.json": "7ea994590c731953465db6f1dc526ffa3c5969a9759dedc0ad1b6ddf8ab68649",
+    "scenarios/disc_audit_nt2/config.yaml": "c0fe9253a35ac32b20d6e98da6003abdcaf1c683a8d621159e47e902c9bb6a11",
+    "scenarios/disc_audit_nt2/report.json": "a2b4160aad02ab5dcf1a5e48f85a1ef34bdb33a38cb0b7899566e30b3734fdc7",
+    "scenarios/disc_audit_nt2_novec/config.yaml": "c0fe9253a35ac32b20d6e98da6003abdcaf1c683a8d621159e47e902c9bb6a11",
+    "scenarios/disc_audit_nt2_novec/report.json": "108c175ef2d4aa1af439f608400a3b1dd13c01807469ebc7bd6884a0a4785b08",
+    "scenarios/disc_audit_nt_novec/config.yaml": "7f12ffc8c679c8e012ce7139e06d89725e20ceb29d8ee9f3ca359f12a55fd7b6",
+    "scenarios/disc_audit_nt_novec/report.json": "68dc7fb02c4d28da44cb29179f39b49791082141b27b2e756ea439745e690e19",
+    "scenarios/disc_ctrl_irrelevant/config.yaml": "c48545b55cf19fd7a91ab9c20a2e2dea3c61452f0821e5287cc4660e9f052e20",
+    "scenarios/disc_ctrl_irrelevant/report.json": "b5501cc60a6534c50e8bf0d377081cc944797cb907a55681c228699839265b12",
+    "scenarios/disc_ctrl_irrelevant_nt/config.yaml": "c48545b55cf19fd7a91ab9c20a2e2dea3c61452f0821e5287cc4660e9f052e20",
+    "scenarios/disc_ctrl_irrelevant_nt/report.json": "dfc36cde2374dce3f16fd83af2fd3b70a5a33261aa7287e0a4e97e1aefe07d60",
+    "scenarios/disc_ctrl_off_local/config.yaml": "5fc7e2f0c32d2bc166ca10d266fa7ad3281f7dcada48715a2ab92a3b74621c2f",
+    "scenarios/disc_ctrl_off_local/report.json": "b5501cc60a6534c50e8bf0d377081cc944797cb907a55681c228699839265b12",
+    "scenarios/disc_ctrl_off_local_nt/config.yaml": "5fc7e2f0c32d2bc166ca10d266fa7ad3281f7dcada48715a2ab92a3b74621c2f",
+    "scenarios/disc_ctrl_off_local_nt/report.json": "dfc36cde2374dce3f16fd83af2fd3b70a5a33261aa7287e0a4e97e1aefe07d60",
+    "scenarios/disc_dos/config.yaml": "c233841d892ebdcf25f9ac5269f040522f32a95519aad56e38d5dca30982df61",
+    "scenarios/disc_dos/report.json": "af0a6d0834a96103ce32cfdafbd5ea42ce8f57ac18307d448d7cfff76bed674f",
+    "scenarios/disc_dos2/config.yaml": "f4004601b5578d63d96d01eab8c1021355fe2a9b633d3517496f6b0a51e5fbe6",
+    "scenarios/disc_dos2/report.json": "fc6458b5c238cc8a14c5c511a2c523e71b9123134bac1046bddc8ae7d998cfee",
+    "scenarios/disc_dos2_novec/config.yaml": "f4004601b5578d63d96d01eab8c1021355fe2a9b633d3517496f6b0a51e5fbe6",
+    "scenarios/disc_dos2_novec/report.json": "4a78facded6e71d2fff2b5a39612602bd34d351cc6c9c4915dfa4b3936766623",
+    "scenarios/disc_dos3/config.yaml": "f4004601b5578d63d96d01eab8c1021355fe2a9b633d3517496f6b0a51e5fbe6",
+    "scenarios/disc_dos3/report.json": "4a5c16ebf3eddbe1e13f16077bac4334d26b545774346e8078dc7909ed828c86",
+    "scenarios/disc_dos3_novec/config.yaml": "f4004601b5578d63d96d01eab8c1021355fe2a9b633d3517496f6b0a51e5fbe6",
+    "scenarios/disc_dos3_novec/report.json": "0481ab7bf26e5f23434768611afd1305a0a42f8faf3cdaa7d88c3a3e3f89fc6a",
+    "scenarios/disc_dos_novec/config.yaml": "c233841d892ebdcf25f9ac5269f040522f32a95519aad56e38d5dca30982df61",
+    "scenarios/disc_dos_novec/report.json": "7ad4633c557e54cd1dd04b542f100e35855239b660fd1bffb08fa7cb733aef37",
+    "scenarios/disc_dos_nt/config.yaml": "c233841d892ebdcf25f9ac5269f040522f32a95519aad56e38d5dca30982df61",
+    "scenarios/disc_dos_nt/report.json": "38b2595fd4888d7d8b4533cb190ecd82644462126d5fc5d008c2d11420e7d227",
+    "scenarios/disc_dos_nt2/config.yaml": "f4004601b5578d63d96d01eab8c1021355fe2a9b633d3517496f6b0a51e5fbe6",
+    "scenarios/disc_dos_nt2/report.json": "0f35e81cc9b42555d9a816e165e26689ef99a38cd6c19dec36301ec9e01b4f85",
+    "scenarios/disc_dos_nt2_novec/config.yaml": "f4004601b5578d63d96d01eab8c1021355fe2a9b633d3517496f6b0a51e5fbe6",
+    "scenarios/disc_dos_nt2_novec/report.json": "0ea1640a03001603f5fecf5d2a179d22dd08c994ec75ad94cadcfd153095394c",
+    "scenarios/disc_dos_nt_novec/config.yaml": "c233841d892ebdcf25f9ac5269f040522f32a95519aad56e38d5dca30982df61",
+    "scenarios/disc_dos_nt_novec/report.json": "839ff7f231ef52b1bced43ceb3485c4cd1f52e386d1bb7eb4ce7aca4591871c5",
+    "scenarios/expo_internal/config.yaml": "8019db48c7a2d7e9bc8363564c2e670b523ac541810287496acf24f99738b2c1",
+    "scenarios/expo_internal/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/expo_internet/config.yaml": "5fc7e2f0c32d2bc166ca10d266fa7ad3281f7dcada48715a2ab92a3b74621c2f",
+    "scenarios/expo_internet/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/expo_private/config.yaml": "a608b11edd7d423fd81ae75abdd0d371f87bd8b524320e09a6ba4c9bdfe5d234",
+    "scenarios/expo_private/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/floor/config.yaml": "c4e55ba8becf7b1e5869adceb19971fa020e8de9ae110a5b5b703bb70a10330e",
+    "scenarios/floor/report.json": "11fb2f83ebc6f5c3dfe3f83fb7b951ba25c7e296a92b84eb0146ceb9082acfd4",
+    "scenarios/manifest.json": "20a1a9a4416589b5528087f553f342e3a2a4c2f588ac83f2c567d70352f6ef83",
+    "scenarios/reach2_no/config.yaml": "48d7982dbb5b50521fd6682005d957ea3b4112eb6598e58b9050d8c63da0a23d",
+    "scenarios/reach2_no/report.json": "cb94989a148fb0d8d20bd90a975e90bf9df686582d2afdb62a8011b9b8fc6559",
+    "scenarios/reach2_yes/config.yaml": "830d946834dd0521691bf6bba83f6d95331a34227bb3e1b99d668b249ac383c6",
+    "scenarios/reach2_yes/report.json": "cb94989a148fb0d8d20bd90a975e90bf9df686582d2afdb62a8011b9b8fc6559",
+    "scenarios/reach3_no/config.yaml": "20e2829e0eab791eaa7e20d2898ae5eee0e42014467fd9ef8c8477da1790eef3",
+    "scenarios/reach3_no/report.json": "6cc1ef48748313886ec2d05c029f342c6b909eaa2f858d37308e131a5b823947",
+    "scenarios/reach3_yes/config.yaml": "e571e79df93f24f820ccbbd1c3a4700c7d39e7ff8ac0ab4d6ff544e38f7765bc",
+    "scenarios/reach3_yes/report.json": "6cc1ef48748313886ec2d05c029f342c6b909eaa2f858d37308e131a5b823947",
+    "scenarios/reach_no/config.yaml": "67e1cfe8c14103e83ae2e5c4b50931e70c405c4fa5706b7dabeb7680c398b8e8",
+    "scenarios/reach_no/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/reach_yes/config.yaml": "09dbfc9b2179a1b8e57befd55754855639d4ca3f3951417df1201b2c5691c0d6",
+    "scenarios/reach_yes/report.json": "7ded0b47edae5c49a28878b0d039cabcdbf76e05ac40ffa8d47b3234c5fcf677",
+    "scenarios/sens_critical/config.yaml": "17bc510289c520d24e331eb46480a8b38102eb3184726fb8222daf21d41a8841",
+    "scenarios/sens_critical/report.json": "d05e5416e6370fbf35991c1347e4630c3b75164d059efec2ea6d9d6c21b18fd7",
+    "scenarios/sens_high/config.yaml": "5fc7e2f0c32d2bc166ca10d266fa7ad3281f7dcada48715a2ab92a3b74621c2f",
+    "scenarios/sens_high/report.json": "d05e5416e6370fbf35991c1347e4630c3b75164d059efec2ea6d9d6c21b18fd7",
+    "scenarios/sens_low/config.yaml": "ac4374b9a50d0b3366d800d24a6a9f08563290543a8ed816df508cf114d5ded7",
+    "scenarios/sens_low/report.json": "d05e5416e6370fbf35991c1347e4630c3b75164d059efec2ea6d9d6c21b18fd7",
+    "scenarios/showcase_high_to_low/config.yaml": "83cb626205d1315922ee8d759a411f0afeb360ca6932fbe47963f9dd024e03fe",
+    "scenarios/showcase_high_to_low/report.json": "1e0c9b9516fc739c0578fa572d3f9b2e5fe0aed967141a9ee0db0e58cc2578a2",
+    "scenarios/showcase_med_to_high/config.yaml": "24aed69bb93f5fb34c825028bab8ca2cdb9cb4f35e70c73a5a5381323188c70c",
+    "scenarios/showcase_med_to_high/report.json": "c71bf27daf4f1011d3e76f757dd950e7b58149787d82dc48257b6e789d6bdccb",
+    "scenarios/wrong_yaml/config.yaml": "5709b8c1187a55b8a35df59674768634a8a85afc768ec0c388f32fc7441989c0",
+    "scenarios/wrong_yaml/report.json": "4bef522deaf39aca606c050abfdd561d504ccaa3fda5cca3a6af573a6c10a2e4"
+  }
+}

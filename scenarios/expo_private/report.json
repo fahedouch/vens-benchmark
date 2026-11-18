@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/libwidget@1.2.0"
           },
           "Title": "Remote code execution in libwidget request parser",
-          "Description": "A heap overflow in the HTTP request parser of libwidget allows a remote unauthenticated attacker to execute arbitrary code. CVSS 8.8. Public PoC available.",
-          "PrimaryURL": "https://example.test/CVE-2099-0001"
+          "Description": "A heap overflow in the HTTP request parser of libwidget allows a remote unauthenticated attacker to execute arbitrary code. CVSS 9.8. Public PoC available.",
+          "PrimaryURL": "https://example.test/CVE-2099-0001",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 4
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 9.8
+            }
+          }
         }
       ]
     }

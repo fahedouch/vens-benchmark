@@ -18,7 +18,17 @@
           },
           "Title": "Auth bypass in paykit payment gateway",
           "Description": "paykit fails to validate session tokens, letting a remote attacker bypass authentication on the payment API. CVSS 9.1.",
-          "PrimaryURL": "https://example.test/CVE-2099-0004"
+          "PrimaryURL": "https://example.test/CVE-2099-0004",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 4
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 9.1
+            }
+          }
         }
       ]
     }

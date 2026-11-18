@@ -17,8 +17,18 @@
             "PURL": "pkg:deb/debian/trailkeep@1.3.0"
           },
           "Title": "Record handling flaw in trailkeep",
-          "Description": "An authenticated user can send a request that alters or removes the server's stored record of who performed each administrative action. Current application data and service availability are unaffected. CVSS 5.4.",
-          "PrimaryURL": "https://example.test/CVE-2099-0022"
+          "Description": "An authenticated user can send a request that alters or removes the server's stored record of who performed each administrative action. Current application data and service availability are unaffected. CVSS 4.3.",
+          "PrimaryURL": "https://example.test/CVE-2099-0022",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 2
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+              "V3Score": 4.3
+            }
+          }
         }
       ]
     }

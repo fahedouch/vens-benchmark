@@ -18,7 +18,17 @@
           },
           "Title": "Uncontrolled resource consumption in httpparse",
           "Description": "A crafted request makes httpparse allocate memory without bound, crashing the service (denial of service). No data is disclosed or modified; the impact is availability only. CVSS 7.5.",
-          "PrimaryURL": "https://example.test/CVE-2099-0005"
+          "PrimaryURL": "https://example.test/CVE-2099-0005",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 3
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V3Score": 7.5
+            }
+          }
         }
       ]
     }

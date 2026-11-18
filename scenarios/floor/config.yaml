@@ -1,3 +1,4 @@
+schema_version: 2
 project:
   name: dev-box
   description: developer scratch box
@@ -5,3 +6,10 @@ context:
   exposure: internal
   data_sensitivity: low
   business_criticality: low
+  listener: unknown
+  data_subjects: millions
+  detection:
+    network: not_logged
+    host: not_logged
+    application: not_logged
+  traceability: none

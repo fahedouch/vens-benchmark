@@ -18,7 +18,17 @@
           },
           "Title": "ReDoS in regexval",
           "Description": "A catastrophic-backtracking regular expression in regexval lets a remote user hang the request thread with crafted input, exhausting CPU (denial of service). No data is read or modified. CVSS 7.5.",
-          "PrimaryURL": "https://example.test/CVE-2099-0008"
+          "PrimaryURL": "https://example.test/CVE-2099-0008",
+          "SeveritySource": "nvd",
+          "VendorSeverity": {
+            "nvd": 3
+          },
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V3Score": 7.5
+            }
+          }
         }
       ]
     }

@@ -1,3 +1,4 @@
+schema_version: 2
 project:
   name: svc
   description: service
@@ -5,7 +6,12 @@ context:
   exposure: internet
   data_sensitivity: high
   business_criticality: high
+  listener: present
+  data_subjects: millions
+  detection:
+    network: not_logged
+    host: not_logged
+    application: not_logged
+  traceability: none
   controls:
     waf: true
-    ids: true
-  notes: A web application firewall and IDS are deployed at the edge.
