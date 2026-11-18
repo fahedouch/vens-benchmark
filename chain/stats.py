@@ -124,6 +124,11 @@ def run_entropy(runs):
     return np.asarray(out)
 
 
+def entropy(values):
+    """H of one run's scores, as run_entropy."""
+    return float(run_entropy([values])[0]) if len(values) else float("nan")
+
+
 def jackknife_se(theta, cells):
     var = 0.0
     for c, one in enumerate(cells):

@@ -54,15 +54,19 @@ def optional(*names):
 
 
 class TestTheCommand(unittest.TestCase):
+    def downloads(self, tmp):
+        root = os.path.join(tmp, "downloads")
+        s.baseline_folder(root, 4001, "internal", 1, 1, record=s.COMPLETE_RECORD,
+                          log=[s.summary_line(llm_calls=2, asked_again=0, splits=0, failed=False)])
+        s.baseline_folder(root, 4002, "internal", 1, 1, record=s.COMPLETE_RECORD, arm="before", commit=s.BEFORE_SHA)
+        return root
+
     def test_synthetic_downloads_and_a_usage_export(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = os.path.join(tmp, "downloads")
-            s.baseline_folder(root, 4001, "internal", 1, 1, record=s.COMPLETE_RECORD,
-                              log=[s.summary_line(llm_calls=2, asked_again=0, splits=0, failed=False)])
-            s.baseline_folder(root, 4002, "internal", 1, 1, record=s.COMPLETE_RECORD, arm="before",
-                              commit=s.BEFORE_SHA)
+            root = self.downloads(tmp)
             use = s.write(os.path.join(tmp, "usage.csv"), ",".join(usage.FIELDS) + "\n"
-                          + "2026-11-20,openai,key-after,after,gpt-5.4-mini-2026-03-17,2,1000,0,100,0.0012\n")
+                          + "downloads,2026-11-20,openai,key-after,after,gpt-5.4-mini-2026-03-17,2,1000,0,100,0.0012\n"
+                          + "downloads,2026-11-20,openai,key-after,before,gpt-5.4-mini-2026-03-17,1,10,0,1,0.0001\n")
             code, text, err = analyze("--usage", use, root)
         self.assertEqual((code, err), (0, ""))
         for heading in ("## Records", "## Targets", "## The demo scan", "## The scenarios",
@@ -70,15 +74,33 @@ class TestTheCommand(unittest.TestCase):
                         "### Estimated, per attempt (not measured)", "## KPI measures",
                         "## What these records cannot show"):
             self.assertIn(heading, text)
-        self.assertIn(f"| demo scan | after · openai/{s.MODEL} · internal | 1 | 1 | 1 (r1) | 0 | 0 | 0 | 0 |", text)
-        # the after's rating recomputes; the before's VEX holds the after's vector, off main's rule
-        self.assertIn(f"| after · openai/{s.MODEL} · internal | r1 | the VEX's rated CVEs (no report given) | "
-                      "1/1 (1.000) | 1/1 (1.000) |", text)
-        self.assertIn(f"| before · openai/{s.MODEL} · internal | r1 | the VEX's rated CVEs (no report given) | "
-                      "0/1 (0.000) | 0/1 (0.000) |", text)
+        self.assertIn(f"| demo scan | downloads · after · openai/{s.MODEL} · internal | b7c043583544 | 1 | 1 | 1 (r1) | "
+                      "0 | 0 | 0 | 0 |", text)
+        self.assertIn("Unavailable: the Java check did not run, no JAR given (--jar).", text)
+        self.assertIn(f"| downloads · after · openai/{s.MODEL} · internal | r1 | unavailable: the scanner's report is not "
+                      "given", text)
         measured = text.split("### Measured")[1].split("### Estimated")[0]
-        self.assertIn("| openai | gpt-5.4-mini-2026-03-17 | 2 | 1000 | 0 | 100 | 0.00 | 2026-11-20 |", measured)
+        self.assertIn("The export `usage.csv`, sha256 ", measured)
+        self.assertIn("| downloads | openai | gpt-5.4-mini-2026-03-17 | 3 | 1010 | 0 | 101 | 0.00 | 2026-11-20 |",
+                      measured)
+        # one key carries both arms: no per-arm total
+        self.assertIn("No per-arm total for downloads at openai: key key-after carries after, before.", measured)
         self.assertNotIn("estimate", measured)
+        self.assertIn("- Batch size: every run read is at batch 1", text)
+
+    def test_the_targets_over_the_report_its_unrated_cves_failing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.downloads(tmp)
+            demo_tree = os.path.join(tmp, "vens-demo")
+            s.write(os.path.join(demo_tree, "runs", "2026-09-23", "scan", "scan.json"),
+                    {"Results": [{"Vulnerabilities": [{"VulnerabilityID": "CVE-2099-0001"},
+                                                      {"VulnerabilityID": "CVE-2099-0002"}]}]})
+            code, text, err = analyze("--demo", demo_tree, root)
+        self.assertEqual((code, err), (0, ""))
+        # the after's one rating recomputes and CVE-2099-0002 is not rated: 1 of 2; the before's VEX holds the
+        # after's vector, off main's rule: 0 of 2
+        self.assertIn(f"| downloads · after · openai/{s.MODEL} · internal | r1 | 1/2 (0.500) | 1/2 (0.500) |", text)
+        self.assertIn(f"| downloads · before · openai/{s.MODEL} · internal | r1 | 0/2 (0.000) | 0/2 (0.000) |", text)
 
     def test_a_refused_input(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,18 +157,19 @@ class TestAgainst0BPhase2(Phase):
         cross, spreads = demo.cross_model(cells), demo.spreads(cells)
         pair = tuple(sorted(MODELS_0B.values()))
         for ctx, (dc, da, guards) in arm_a.items():
-            self.assertEqual(f"{cross[(ctx, 'before') + pair]['delta']:.2f}", dc, ctx)
-            self.assertEqual(f"{cross[(ctx, 'after') + pair]['delta']:.2f}", da, ctx)
+            self.assertEqual(f"{cross[(None, ctx, 'before') + pair]['delta']:.2f}", dc, ctx)
+            self.assertEqual(f"{cross[(None, ctx, 'after') + pair]['delta']:.2f}", da, ctx)
             for provider, stat, bound, verdict in guards:
-                ratio_bound = spreads[(MODELS_0B[provider], ctx)]["after / before"][stat]
+                ratio_bound = spreads[(None, MODELS_0B[provider], ctx)]["after / before"][stat]
                 self.assertEqual((f"{ratio_bound[1]:.3f}", ratio_bound[2]), (bound, verdict), (ctx, provider, stat))
         for (provider, ctx), (in_arm, in_control) in mpd.items():
             i = pair.index(MODELS_0B[provider])
-            got = (f"{cross[(ctx, 'after') + pair]['mpd'][i]:.2f}", f"{cross[(ctx, 'before') + pair]['mpd'][i]:.2f}")
+            got = (f"{cross[(None, ctx, 'after') + pair]['mpd'][i]:.2f}",
+                   f"{cross[(None, ctx, 'before') + pair]['mpd'][i]:.2f}")
             self.assertEqual(got, (in_arm, in_control), (provider, ctx))
         spreads_b = demo.spreads(self.cells("b"))
         for (provider, ctx), (w, h) in arm_b.items():
-            got = spreads_b[(MODELS_0B[provider], ctx)]["after / before"]
+            got = spreads_b[(None, MODELS_0B[provider], ctx)]["after / before"]
             self.assertEqual((round(got["W"][0], 3), round(got["H"][0], 3)), (float(w), float(h)), (provider, ctx))
 
 
@@ -160,20 +183,23 @@ class TestEndToEndOn0BPhase1(Phase):
             with open(out, encoding="utf-8") as fh:
                 text = fh.read()
         self.assertEqual((code, err), (0, ""))
-        claude10 = "before · anthropic/claude-sonnet-4-6 batch 10 · internal"
-        # replicate 3 failed four times, the retry cap; six more attempts failed before a complete one
-        self.assertIn(f"| demo scan | {claude10} | 19 | 9 | 9 (r1-r2, r4-r10) | 0 | 10 | 0 | 0 |", text)
+        claude10 = "0b-phase1 · before · anthropic/claude-sonnet-4-6 batch 10 · internal"
+        # replicate 3 failed four times, the retry cap; six more attempts failed before a complete one; the failed
+        # downloads keep no commit of their own and run at the one the run was dispatched with
+        self.assertIn(f"| demo scan | {claude10} | 9ac9ef4d7d2f | 19 | 9 | 9 (r1-r2, r4-r10) | 0 | 10 | 0 | 0 |", text)
         self.assertIn(f"- {claude10}: run 43761034679 a1 r1-r2, r4-r5, r8; run 43761034679 a3 r6, r9; "
                       "run 43761034679 a2 r7, r10", text)
         self.assertRegex(text, rf"\| {re.escape(claude10)} \| 0 \| none \| 10 \| r3 \|")
-        self.assertIn("| internal | before, batch 1 | anthropic/claude-sonnet-4-6 | openai/gpt-5.4-mini-2026-03-17 |",
+        self.assertIn("| 0b-phase1 | internal | before, batch 1 | anthropic/claude-sonnet-4-6 | "
+                      "openai/gpt-5.4-mini-2026-03-17 |", text)
+        self.assertEqual(len(re.findall(r"^\| 0b-phase1 · before · .* \| r\d+ \| 74 \|", text, re.M)), 119)  # #340
+        self.assertIn("| 0b-phase1 | anthropic/claude-sonnet-4-6 batch 10 | internal | before | r1-r2, r4-r10 | 74 |",
                       text)
-        self.assertEqual(len(re.findall(r"^\| before · .* \| r\d+ \| 74 \|", text, re.M)), 119)  # #340, per run
-        self.assertIn("| anthropic/claude-sonnet-4-6 batch 10 | internal | before | r1-r2, r4-r10 | 74 |", text)
+        self.assertIn("- Batch size: the runs read are at batch sizes 1, 10;", text)
         if "--demo" in optional():
-            self.assertIn("| the report's CVEs | each run 74/74 (1.000) | each run 74/74 (1.000) |", text)
+            self.assertIn("| r1-r10 | each run 74/74 (1.000) | each run 74/74 (1.000) |", text)
         if "--jar" in optional():
-            self.assertIn("| the report's CVEs | each run 0/74 (0.000) |", text)
+            self.assertIn("| r1-r10 | each run 0/74 (0.000) |", text)
 
 
 class TestEndToEndOnR2(unittest.TestCase):
@@ -199,30 +225,34 @@ class TestEndToEndOnR2(unittest.TestCase):
         cls.tmp.cleanup()
 
     def cell(self, arm, ctx):
-        return f"{arm} · openai/{s.MODEL} · {ctx}"
+        return f"r2 · {arm} · openai/{s.MODEL} · {ctx}"
 
     def test_read_whole(self):
         self.assertEqual((self.code, self.err), (0, ""))
         for arm in ("after", "before"):
             for ctx in CONTEXTS:
-                self.assertIn(f"| demo scan | {self.cell(arm, ctx)} | 1 | 1 | 1 (r1) | 0 | 0 | 0 | 0 |", self.text)
+                commit = (s.AFTER_SHA if arm == "after" else s.BEFORE_SHA)[:12]
+                self.assertIn(f"| demo scan | {self.cell(arm, ctx)} | {commit} | 1 | 1 | 1 (r1) | 0 | 0 | 0 | 0 |",
+                              self.text)
         self.assertIn("No failed attempt.", self.text)
 
     def test_the_targets(self):
-        over = "the report's CVEs" if "--demo" in optional() else "the VEX's rated CVEs (no report given)"
+        if "--demo" not in optional():
+            self.assertIn("unavailable: the scanner's report is not given", self.text)
+            return
         for arm in ("after", "before"):
             for ctx in CONTEXTS:
-                self.assertIn(f"| {self.cell(arm, ctx)} | r1 | {over} | 74/74 (1.000) | 74/74 (1.000) |", self.text)
+                self.assertIn(f"| {self.cell(arm, ctx)} | r1 | 74/74 (1.000) | 74/74 (1.000) |", self.text)
         if "--jar" in optional():
             for ctx in CONTEXTS:
-                self.assertIn(f"| {self.cell('after', ctx)} | r1 | {over} | 74/74 (1.000) |\n", self.text)
-                self.assertIn(f"| {self.cell('before', ctx)} | r1 | {over} | 0/74 (0.000) |\n", self.text)
+                self.assertIn(f"| {self.cell('after', ctx)} | r1 | 74/74 (1.000) |\n", self.text)
+                self.assertIn(f"| {self.cell('before', ctx)} | r1 | 0/74 (0.000) |\n", self.text)
 
     def test_the_spreads_on_one_replicate(self):
         model = f"openai/{s.MODEL}"
         for ctx, w, h in (("internal", "2.932", "1.114"), ("internal-api", "1.201", "1.216"),
                           ("internet-facing", "0.718", "1.033")):
-            self.assertIn(f"| {model} · {ctx} | after / before |  |  | ratio {w}, lower bound n/a | ratio {h}, "
+            self.assertIn(f"| r2 · {model} · {ctx} | after / before |  |  | ratio {w}, lower bound n/a | ratio {h}, "
                           f"lower bound n/a |", self.text)
         self.assertIn("Needs two models with runs in one context and arm: none here.", self.text)
 
@@ -238,9 +268,11 @@ class TestEndToEndOnR2(unittest.TestCase):
     def test_opportunity_outside_the_draws(self):
         if s.env("VB_0A_DRAWS") is None:
             self.skipTest("set VB_0A_DRAWS to the CVE ids earlier draws used")
-        self.assertIn(f"| openai/{s.MODEL} | internal | r1 | in the list | 37 |", self.text)
-        # the five CVEs no row describes get no Opportunity question
-        self.assertIn(f"| openai/{s.MODEL} | internal | r1 | outside it | 32 |", self.text)
+        self.assertIn(f"| r2 | openai/{s.MODEL} | internal | r1 | in the list | 37 | 37 | 0 |", self.text)
+        # all 37 outside: 32 answered, and the five CVEs no row describes, which get no Opportunity question
+        self.assertIn(f"| r2 | openai/{s.MODEL} | internal | r1 | outside it | 37 | 32 | 5 |", self.text)
+        self.assertRegex(self.text, r"The draw list `[^`]+`, sha256 [0-9a-f]{64}, \d+ CVE ids, of which 37 are among "
+                                    r"the 74 CVEs these runs read\.")
 
 
 class TestEndToEndOnTheMock(unittest.TestCase):
@@ -253,16 +285,22 @@ class TestEndToEndOnTheMock(unittest.TestCase):
             raise unittest.SkipTest("set VB_VENS_AFTER and VB_VENS_BEFORE to run a mock campaign")
         cls.tmp = tempfile.TemporaryDirectory()
         cls.camp, cls.fb = os.path.join(cls.tmp.name, "c1"), os.path.join(cls.tmp.name, "fallback")
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": cls.tmp.name}
-        for out, replicates, extra in ((cls.camp, 2, {}), (cls.fb, 1, {"VENS_MOCK_LLM_CANNOT_TELL": "1"})):
-            argv = ["--campaign", os.path.basename(out), "--out", out, "--before", cls.before, "--before-commit",
-                    s.BEFORE_SHA, "--after", cls.after, "--after-commit", s.AFTER_SHA, "--model", "mock/mock",
-                    "--replicates", str(replicates), "--retry-cap", "2", "--timeout", "120", "--parallel", "4"]
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                code = ctx_runner.main(argv, environ={**env, **extra})
-            if code != 0:
-                raise AssertionError(f"{out}: the runner exited {code}")
+        cls.off = os.path.join(cls.tmp.name, "off")
+        for out, replicates, extra in ((cls.camp, 2, {}), (cls.fb, 1, {"VENS_MOCK_LLM_CANNOT_TELL": "cannot_tell"}),
+                                       (cls.off, 1, {"VENS_MOCK_LLM_CANNOT_TELL": "0"})):
+            cls.campaign(out, replicates, extra, ["--scenario", "wrong_yaml"] if out == cls.off else [])
         cls.code, cls.text, cls.err = analyze("--fallback", cls.fb, cls.camp)
+
+    @classmethod
+    def campaign(cls, out, replicates, extra, only):
+        argv = ["--campaign", os.path.basename(out), "--out", out, "--before", cls.before, "--before-commit",
+                s.BEFORE_SHA, "--after", cls.after, "--after-commit", s.AFTER_SHA, "--model", "mock/mock",
+                "--replicates", str(replicates), "--retry-cap", "2", "--timeout", "120", "--parallel", "4", *only]
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": cls.tmp.name, **extra}
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = ctx_runner.main(argv, environ=env)
+        if code != 0:
+            raise AssertionError(f"{out}: the runner exited {code}")
 
     @classmethod
     def tearDownClass(cls):
@@ -277,23 +315,31 @@ class TestEndToEndOnTheMock(unittest.TestCase):
                        "reachability"):
             self.assertIn(f"#### {family}\n", self.text)
         # exposure's step in the after is Size's, set by Go from the declared exposure
-        self.assertIn("| the score not falling | after | carried | mock/mock | expo_internal / expo_private | ", self.text)
+        self.assertIn("| the score not falling | after | carried | c1 · mock/mock | expo_internal / expo_private | ",
+                      self.text)
         self.assertIn("e.g. r1: S 4->6 (config/config)", self.text)
+        self.assertIn("| r1-r2: SL ED A constant; M O EE LC LI LAV LAC FD RD PV answer; S ID NC config | Go's x2;",
+                      self.text)
         self.assertIn("showcase_high_to_low: CVSS 10.0 RCE -> expect LOW; showcase_med_to_high: CVSS 6.5 leak -> "
                       "expect HIGH.", self.text)
 
     def test_the_targets_and_the_null_table(self):
-        self.assertIn("| after | mock/mock | 46 | 92 | 92/92 (1.000) | none | 92/92 (1.000) |", self.text)
-        self.assertIn("| before | mock/mock | 46 | 92 | 92/92 (1.000) | none | 92/92 (1.000) |", self.text)
-        rows = [ln for ln in self.text.splitlines() if ln.startswith("| ") and "mock/mock after:" in ln]
+        self.assertIn("| after | c1 · mock/mock | 46 | 92 | 92/92 (1.000) | none | 92/92 (1.000) |", self.text)
+        self.assertIn("| before | c1 · mock/mock | 46 | 92 | 92/92 (1.000) | none | 92/92 (1.000) |", self.text)
+        rows = [ln for ln in self.text.splitlines() if ln.startswith("| ") and "c1 · mock/mock after:" in ln]
         self.assertEqual(len(rows), 46)
         self.assertTrue(all(not ln.endswith("| n/a |") for ln in rows))
-        self.assertIn("from the campaign given.", self.text)
+        self.assertIn(f"from campaign fallback (`{self.fb}`), vens {s.AFTER_SHA}, vens's mock with "
+                      "VENS_MOCK_LLM_CANNOT_TELL=cannot_tell.", self.text)
 
     def test_a_campaign_that_is_no_fallback_is_refused(self):
-        code, _, err = analyze("--fallback", self.camp, self.camp)
+        for campaign, why in ((self.camp, "VENS_MOCK_LLM_CANNOT_TELL is ''"),
+                              (self.off, "VENS_MOCK_LLM_CANNOT_TELL is '0'")):
+            code, _, err = analyze("--fallback", campaign, self.camp)
+            self.assertEqual(code, 1, campaign)
+            self.assertIn("not the after's fallback: " + why, err)
+        code, _, err = analyze("--fallback", self.fb, "--commit", "after=" + "f" * 40, self.camp)
         self.assertEqual(code, 1)
-        self.assertIn("not a fallback campaign", err)
 
 
 if __name__ == "__main__":

@@ -62,11 +62,11 @@ def rescored(rating):
 
 
 def run_targets(rec, arm, report_ids, legal=None):
-    """Targets (i) and (ii) of one run: {cves, over, legal, recomputable, severity_ok}. report_ids None: over the
-    run's rated CVEs, the report not given. legal: {CVE: accepted}, None when the Java check did not run."""
+    """Targets (i) and (ii) of one complete run over its report's CVEs, a CVE the VEX does not rate failing both, and
+    a run without a VEX failing every CVE: {cves, vex, legal, recomputable, severity_ok}. legal: {CVE: accepted},
+    None when the Java check did not run."""
     ratings = rec["ratings"] or {}
-    over = "the report's CVEs" if report_ids is not None else "the VEX's rated CVEs (no report given)"
-    ids = sorted(report_ids) if report_ids is not None else sorted(ratings)
+    ids = sorted(report_ids)
     recomputable = severity_ok = 0
     for vid in ids:
         r = ratings.get(vid)
@@ -76,84 +76,118 @@ def run_targets(rec, arm, report_ids, legal=None):
         recomputable += Fraction(r["score"]) == score
         severity_ok += r["severity"] == severity
     n_legal = None if legal is None else sum(1 for vid in ids if legal.get(vid))
-    return {"cves": len(ids), "over": over, "legal": n_legal, "recomputable": recomputable,
+    return {"cves": len(ids), "vex": rec["ratings"] is not None, "legal": n_legal, "recomputable": recomputable,
             "severity_ok": severity_ok}
 
 
+NO_REPORT = "unavailable: the scanner's report is not given (--demo names the vens-demo tree that holds it)"
+
+
 def targets(cells, report_of, legal_of=None):
-    """{cell: {replicate: run_targets}} over every replicate's run that published a VEX. report_of(rec): the
-    report's CVE ids or None; legal_of(rec): {CVE: accepted} or None."""
+    """{cell: {replicate: run_targets, or {"unavailable": why}}} over every replicate's complete run. report_of(rec):
+    the report's CVE ids, None when not given; legal_of(rec): {CVE: accepted}, None without the Java check."""
     out = {}
     for k, c in sorted(cells.items(), key=lambda kv: str(kv[0])):
-        runs = cellmod.complete_runs(c)
-        if runs:
-            out[k] = {rep: run_targets(rec, k[1], report_of(rec), legal_of(rec) if legal_of else None)
-                      for rep, rec in runs.items()}
+        if k.arm not in cellmod.ARMS:
+            continue
+        per = {}
+        for rep, rec in cellmod.complete_runs(c).items():
+            ids = report_of(rec)
+            per[rep] = {"unavailable": NO_REPORT} if ids is None else \
+                run_targets(rec, k.arm, ids, legal_of(rec) if legal_of else None)
+        if per:
+            out[k] = per
     return out
 
 
 def by_model(cells, corpus=cellmod.DEMO):
-    """{(model, unit): {arm: cell}} of one corpus's cells with runs, the model as provider/model."""
-    out = collections.defaultdict(dict)
+    """{(campaign, model, unit): {arm: cell}} of one corpus's cells with runs, the model as provider/model; a group
+    whose arm holds two vens commits is left out, compared with nothing."""
+    out, clash = collections.defaultdict(dict), set()
     for k, c in cells.items():
-        if k[0] == corpus and c["runs"]:
-            out[(cellmod.model_of(k), k[4])][k[1]] = c
-    return dict(out)
+        if k.corpus == corpus and c["runs"] and k.arm in cellmod.ARMS:
+            g = (k.campaign, cellmod.model_of(k), k.unit)
+            if k.arm in out[g]:
+                clash.add(g)
+            out[g][k.arm] = c
+    return {g: arms for g, arms in out.items() if g not in clash}
 
 
 def model_pairs(cells, corpus=cellmod.DEMO):
-    """{(unit, arm): {model: cell}} of one corpus's cells with runs, the models paired only at one batch size."""
+    """{(campaign, unit, arm): {model: cell}} of one corpus's cells with runs, models paired only at one batch size,
+    the arm labelled with it where a campaign holds several."""
     per = collections.defaultdict(dict)
-    for k, c in cells.items():
-        if k[0] == corpus and c["runs"]:
-            per[(k[4], k[1], k[5])][cellmod.model_of(k)] = c
-    return {(u, arm): models for (u, arm, _), models in per.items()} if len({b for _, _, b in per}) <= 1 else \
-        {(u, f"{arm}, batch {b}"): models for (u, arm, b), models in per.items()}
+    for (campaign, model, u), arms in by_model(cells, corpus).items():
+        for arm, c in arms.items():
+            batch = next(k.batch for k, x in cells.items() if x is c)
+            per[(campaign, u, arm, batch)][model] = c
+    batches = collections.defaultdict(set)
+    for campaign, _, _, b in per:
+        batches[campaign].add(b)
+    return {(cp, u, arm if len(batches[cp]) <= 1 else f"{arm}, batch {b}"): models
+            for (cp, u, arm, b), models in per.items()}
 
 
 def runs_of(c):
     return [c["runs"][r] for r in sorted(c["runs"])]
 
 
-def _wh(runs, ids, value="score"):
-    m = cellmod.matrix(runs, ids, value)
-    return {"W": [float(x) for x in stats.run_spread(m)], "H": [float(x) for x in stats.run_entropy(m)],
-            "replicates": [r["what"]["replicate"] for r in runs], "cves": len(ids)}
+def _wh(runs, value="score"):
+    """W and H of each run over its own CVEs."""
+    per = [list(cellmod.scores(r, value).values()) for r in runs]
+    return {"W": [float(stats.run_spread([x])[0]) for x in per], "H": [stats.entropy(x) for x in per],
+            "replicates": [r["what"]["replicate"] for r in runs], "cves": [len(x) for x in per]}
+
+
+def cohort(arms):
+    """The CVEs one arm's runs rate and the other's do not, each way, and the runs whose CVEs differ from their
+    arm's."""
+    sets = {arm: [set(cellmod.scores(r)) for r in runs_of(c)] for arm, c in arms.items()}
+    union = {arm: set().union(*xs) for arm, xs in sets.items()}
+    out = {"only": {arm: sorted(union[arm] - union[other]) for arm, other in (("after", "before"), ("before", "after"))
+                    if arm in union and other in union},
+           "uneven": {arm: sum(1 for x in xs if x != union[arm]) for arm, xs in sets.items()}}
+    return out
 
 
 def spreads(cells):
-    """Per (model, context): W and H per run in each arm over the CVEs both arms rate, and the after against the
-    before and against the before rescored."""
+    """Per (campaign, model, context): W and H of each run over its own CVEs in each arm, the cohorts' mismatch, and
+    the after against the before and against the before rescored."""
     out = {}
-    for (model, ctx), arms in sorted(by_model(cells).items()):
-        ids = cellmod.common([r for c in arms.values() for r in runs_of(c)])
-        row = {arm: _wh(runs_of(c), ids) for arm, c in arms.items()}
+    for g, arms in sorted(by_model(cells).items(), key=lambda kv: str(kv[0])):
+        row = {arm: _wh(runs_of(c)) for arm, c in arms.items()}
         if "before" in arms:
-            row["before rescored"] = _wh(runs_of(arms["before"]), ids, rescored)
+            row["before rescored"] = _wh(runs_of(arms["before"]), rescored)
+        row["cohort"] = cohort(arms)
         for base in ("before", "before rescored"):
             if "after" in row and base in row:
                 row[f"after / {base}"] = {s: stats.noninferiority(row["after"][s], row[base][s]) for s in ("W", "H")}
-        out[(model, ctx)] = row
+        out[g] = row
     return out
 
 
 def cross_model(cells):
-    """Per (context, arm, model a, model b): the CVEs, the two within-model MPDs, the cross MPD, Delta and its p,
-    and the band agreement, cross and within each model."""
+    """Per (campaign, context, arm, model a, model b): the CVEs, the two within-model MPDs, the cross MPD, Delta and
+    its p, and the band agreement, cross and within each model."""
     out = {}
-    for (ctx, arm), models in sorted(model_pairs(cells).items()):
+    for (campaign, ctx, arm), models in sorted(model_pairs(cells).items(), key=lambda kv: str(kv[0])):
         for a, b in itertools.combinations(sorted(models), 2):
             ra, rb = runs_of(models[a]), runs_of(models[b])
             ids = cellmod.common(ra + rb)
             ma, mb = cellmod.matrix(ra, ids), cellmod.matrix(rb, ids)
-            d, p = stats.gap_test(ma, mb, stats.rng_for(f"gap|{arm}|{ctx}|{a}|{b}"))
+            d, p = stats.gap_test(ma, mb, stats.rng_for(gap_key(campaign, arm, ctx, a, b)))
             sa, sb = cellmod.matrix(ra, ids, "severity"), cellmod.matrix(rb, ids, "severity")
-            out[(ctx, arm, a, b)] = {
+            out[(campaign, ctx, arm, a, b)] = {
                 "cves": len(ids), "replicates": (sorted(models[a]["runs"]), sorted(models[b]["runs"])),
                 "mpd": (stats.mpd(ma), stats.mpd(mb)), "cross": stats.cross_mpd(ma, mb), "delta": d, "p": p,
                 "bands": stats.agreement(sa, sb),
                 "bands_within": (stats.within_agreement(sa), stats.within_agreement(sb))}
     return out
+
+
+def gap_key(campaign, arm, ctx, a, b):
+    """The gap test's key: its draws come from SeedSequence([310, crc32(key)])."""
+    return f"gap|{campaign}|{arm}|{ctx}|{a}|{b}"
 
 
 def impact_report(rec):
@@ -170,40 +204,52 @@ def impact_report(rec):
 
 def impacts(cells):
     return {k: {rep: impact_report(rec) for rep, rec in sorted(c["runs"].items())}
-            for k, c in sorted(cells.items(), key=lambda kv: str(kv[0])) if k[0] == cellmod.DEMO and c["runs"]}
+            for k, c in sorted(cells.items(), key=lambda kv: str(kv[0])) if k.corpus == cellmod.DEMO and c["runs"]}
 
 
 def floors(cells):
-    """Per (model, context, arm): stats.floor over its runs."""
+    """Per (campaign, model, context, arm): stats.floor over its runs."""
     out = {}
-    for (model, ctx), arms in sorted(by_model(cells).items()):
+    for (campaign, model, ctx), arms in sorted(by_model(cells).items(), key=lambda kv: str(kv[0])):
         for arm, c in sorted(arms.items()):
             runs = runs_of(c)
-            out[(model, ctx, arm)] = {**stats.floor(cellmod.matrix(runs, cellmod.common(runs))),
-                                      "replicates": sorted(c["runs"])}
+            out[(campaign, model, ctx, arm)] = {**stats.floor(cellmod.matrix(runs, cellmod.common(runs))),
+                                                "replicates": sorted(c["runs"])}
     return out
 
 
-def opportunity(cells, listed):
-    """Per (model, context): for the CVEs in the list and outside it, the count of CVEs, the after's Opportunity
-    answers over its runs and their mean level; an unrated entry and a CVE with no answer to it are left out."""
+def _o_answers(rec):
+    """{CVE: (answer, level)} of a run's Opportunity answers: a rated entry whose question was asked."""
     out = {}
-    for (model, ctx), arms in sorted(by_model(cells).items()):
+    for vid, e in ((rec["answers"] or {}).get("per_cve") or {}).items():
+        o = e["factors"].get("O")
+        if o is not None and not e["unrated"] and o["answer"] is not None:
+            out[vid] = (str(o["answer"]), o["level"])
+    return out
+
+
+def opportunity(cells, listed, report_of=lambda rec: None):
+    """Per (campaign, model, context): for the CVEs in the list and outside it, the CVEs (the report's, else the
+    runs' rated ones), those an Opportunity answer was read for, the others (not asked, unrated or not rated), and the
+    after's answers over its runs with their mean level."""
+    out = {}
+    for (campaign, model, ctx), arms in sorted(by_model(cells).items(), key=lambda kv: str(kv[0])):
         if "after" not in arms:
             continue
-        tally = {IN: collections.Counter(), OUT: collections.Counter()}
-        levels, cves = {IN: [], OUT: []}, {IN: set(), OUT: set()}
-        for rec in runs_of(arms["after"]):
-            for vid, e in ((rec["answers"] or {}).get("per_cve") or {}).items():
-                o = e["factors"].get("O")
-                if o is None or e["unrated"] or o["answer"] is None:
-                    continue
+        runs = runs_of(arms["after"])
+        cves = set().union(*[report_of(r) or set(r["ratings"] or {}) for r in runs])
+        tally, levels, answered = {IN: collections.Counter(), OUT: collections.Counter()}, {IN: [], OUT: []}, set()
+        for rec in runs:
+            for vid, (answer, level) in _o_answers(rec).items():
                 side = IN if vid in listed else OUT
-                tally[side][str(o["answer"])] += 1
-                levels[side].append(o["level"])
-                cves[side].add(vid)
-        out[(model, ctx)] = {s: {"cves": len(cves[s]), "answers": dict(sorted(tally[s].items())),
-                                 "mean_level": sum(levels[s]) / len(levels[s]) if levels[s] else None}
-                             for s in (IN, OUT)}
-        out[(model, ctx)]["replicates"] = sorted(arms["after"]["runs"])
+                tally[side][answer] += 1
+                levels[side].append(level)
+                answered.add(vid)
+        row = {}
+        for side in (IN, OUT):
+            mine = {v for v in cves if (v in listed) == (side == IN)}
+            row[side] = {"cves": len(mine), "answered": len(mine & answered), "dropped": len(mine - answered),
+                         "answers": dict(sorted(tally[side].items())),
+                         "mean_level": sum(levels[side]) / len(levels[side]) if levels[side] else None}
+        out[(campaign, model, ctx)] = {**row, "replicates": sorted(arms["after"]["runs"]), "cves_read": cves}
     return out

@@ -23,7 +23,7 @@ class TestStability(unittest.TestCase):
         two = {"CVE-A": r.rating(MOTIVE_4), "CVE-B": r.rating(OTHER, severity="low")}
         recs = [after_run(1, one, {v: r.factors(x["vector"]) for v, x in one.items()}),
                 after_run(2, two, {v: r.factors(x["vector"]) for v, x in two.items()})]
-        got = kpi.stability(cellmod.group(recs))[(MODEL, "internal", "after")]
+        got = kpi.stability(cellmod.group(recs))[(None, MODEL, "internal", "after")]
         # Motive differs on CVE-A alone: half; every other factor agrees
         self.assertEqual(got["factor"]["M"], 0.5)
         self.assertEqual({f for f, v in got["factor"].items() if v != 1.0}, {"M"})
@@ -31,13 +31,14 @@ class TestStability(unittest.TestCase):
 
     def test_one_run_says_nothing_of_stability(self):
         got = kpi.stability(cellmod.group([after_run(1, {"CVE-A": r.rating(s.VECTOR)}, None)]))
-        row = got[(MODEL, "internal", "after")]
+        row = got[(None, MODEL, "internal", "after")]
         self.assertEqual((row["vector"], row["severity_unchanged"]), (None, None))
 
 
 class TestSensitivity(unittest.TestCase):
     def test_model_sensitivity(self):
-        recs = [r.record("before", "internal", 1, r.scored([1, 2])), r.record("before", "internal", 2, r.scored([3, 6])),
+        recs = [r.record("before", "internal", 1, r.scored([1, 2])),
+                r.record("before", "internal", 2, r.scored([3, 6])),
                 r.record("before", "internal", 1, r.scored([5, 4]), model="m2"),
                 r.record("before", "internal", 2, r.scored([7, 4]), model="m2")]
         (got,) = kpi.model_sensitivity(cellmod.group(recs)).values()
@@ -47,12 +48,12 @@ class TestSensitivity(unittest.TestCase):
     def test_context_sensitivity_and_discrimination(self):
         ls = {"internal": [1, 2], "internal-api": [2, 1], "internet-facing": [3, 3]}
         cells = cellmod.group([r.record("after", ctx, rep, r.scored(x)) for ctx, x in ls.items() for rep in (1, 2)])
-        got = kpi.context_sensitivity(cells)[(MODEL, "after")]
+        got = kpi.context_sensitivity(cells)[(None, MODEL, "after")]
         # CVE 0 rises 1, 2, 3; CVE 1 falls from 2 to 1
         self.assertEqual((got["cves"], got["in_order"]), (2, 0.5))
         self.assertEqual(got["pairs"][("internal", "internal-api")], {"gap": 1.0, "noise": 0.0, "answers": {}})
         # the per-CVE means 1, 2, 2, 1, 3, 3: mean 2, squares 1, 0, 0, 1, 1, 1 over 5
-        d = kpi.discrimination(cells)[(MODEL, "after")]
+        d = kpi.discrimination(cells)[(None, MODEL, "after")]
         self.assertAlmostEqual(d["sd"], math.sqrt(4 / 5))
         self.assertEqual(d["values"], 6)
 

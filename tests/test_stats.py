@@ -79,6 +79,12 @@ class TestNonInferiority(unittest.TestCase):
         self.assertAlmostEqual(bound, math.exp(math.log(1.5) - stats.Z * math.log(2) / 2), places=12)
         self.assertEqual(verdict, "fail")
 
+    def test_bound_with_both_cells_varying(self):
+        # ratio 3 / (9.5 / 3); each cell's leave-one-out log ratios vary, both enter the variance
+        ratio, bound, _ = stats.noninferiority([2, 4, 3], [3, 3, 3.5])
+        self.assertAlmostEqual(ratio, 0.9473684210526316)
+        self.assertAlmostEqual(bound, 0.6799092334100059)
+
     def test_zeros(self):
         self.assertEqual(stats.noninferiority([1, 2], [0, 0]), (None, None, "pass"))
         self.assertEqual(stats.noninferiority([0, 0], [1, 2]), (0.0, 0.0, "fail"))

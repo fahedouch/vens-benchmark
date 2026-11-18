@@ -31,14 +31,22 @@ NONE, GO, MODEL, MIXED = "none", "Go's", "the model's", "mixed"
 NULL_FIELD = {"T": "technical_impact", "B": "business_impact"}
 
 
+def who(cell):
+    """A campaign's model: the campaign, then provider/model."""
+    return f"{cell.campaign} · {cellmod.model_of(cell)}"
+
+
 def scenario_runs(cells):
-    """{(model, scenario, arm): {"runs": {replicate: record}, "replicates": every replicate attempted}}."""
-    out = {}
+    """{(campaign's model, scenario, arm): {"runs": {replicate: record}, "replicates": every replicate attempted}}; a
+    scenario whose arm holds two vens commits in one campaign is left out."""
+    out, clash = {}, set()
     for k, c in cells.items():
-        if k[0] == cellmod.SCENARIOS:
+        if k.corpus == cellmod.SCENARIOS and k.arm in cellmod.ARMS:
+            g = (who(k), k.unit, k.arm)
+            clash |= {g} if g in out else set()
             reps = {r["what"]["replicate"] for r in c["attempts"] if isinstance(r["what"].get("replicate"), int)}
-            out[(cellmod.model_of(k), k[4], k[1])] = {"runs": c["runs"], "replicates": reps | set(c["runs"])}
-    return out
+            out[g] = {"runs": c["runs"], "replicates": reps | set(c["runs"])}
+    return {g: r for g, r in out.items() if g not in clash}
 
 
 def _cve(rec):

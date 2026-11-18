@@ -53,12 +53,15 @@ def _moves(row):
 
 
 def _sources(row):
-    """The after's sources of the quantity's factors in the first replicate read, a / b where they differ."""
-    found = next((p["sources"] for p in row["per"] if p.get("sources")), None)
-    if not found:
-        return ""
+    """The after's sources of the quantity's factors, replicate by replicate, a / b where the two differ; replicates
+    with the same sources share one entry."""
     word = lambda a, b: str(a) if a == b else f"{a}/{b}"
-    return "; ".join(f"{' '.join(fs)} {word(a, b)}" for (a, b), fs in found.items())
+    groups = {}
+    for p in row["per"]:
+        if p.get("sources"):
+            text = "; ".join(f"{' '.join(fs)} {word(a, b)}" for (a, b), fs in p["sources"].items())
+            groups.setdefault(text, []).append(p["replicate"])
+    return " | ".join(f"{cellmod.replicates(reps)}: {text}" for text, reps in groups.items())
 
 
 def _check_rows(rows):
@@ -76,8 +79,8 @@ def families_section(sc):
     out = ["### The families, the showcases and reachability", "",
            "Per check, arm and model, replicate by replicate, a pair's two runs of one replicate together; a "
            "diagnostic is printed and judged by nothing. The medians are over each scenario's runs, the most common "
-           "value for a severity or an answer. The after's sources: where each factor of the quantity took its level "
-           "in the first replicate read, a / b where the two differ. The move, in the after: none, Go's (levels Go "
+           "value for a severity or an answer. The after's sources: where each factor of the quantity took its level, "
+           "replicate by replicate, a / b where the two differ. The move, in the after: none, Go's (levels Go "
            "set, or one answer Go crossed with a declared field), the model's (answers that differ), or mixed.", ""]
     by_family = collections.OrderedDict()
     for r in sc["rows"]:
@@ -125,12 +128,18 @@ def wrong_yaml(sc):
                   else ["Not run.", ""])
 
 
+def _fallback(fb):
+    if fb is None:
+        return "not given (--fallback)."
+    return (f"from campaign {fb['campaign']} (`{fb['path']}`), vens {fb['commit']}, vens's mock with "
+            f"VENS_MOCK_LLM_CANNOT_TELL={fb['flag']}.")
+
+
 def null_table(sc):
     out = ["### Against the null model (diagnostic)", "",
            "baseline.py's four aggregates per scenario, scored under the before's rule and under the after's; each "
            "arm's median score and most common severity per model (runs); and the after's conservative fallback, "
-           "every answer cannot_tell, " + ("from the campaign given." if sc["fallback"] else
-                                           "not given (--fallback).") + " The fallback is not a null model.", ""]
+           "every answer cannot_tell, " + _fallback(sc["fallback"]) + " The fallback is not a null model.", ""]
     rows = []
     for t in sc["null"]:
         n, rules, fb = t["null"], t["rules"], t["fallback"]
@@ -152,32 +161,34 @@ def scenarios(data):
 
 def _stability(k):
     rows = []
-    for (model, ctx, arm), s in ordered(k["stability"]):
+    for (campaign, model, ctx, arm), s in ordered(k["stability"]):
         low = sorted((v, f) for f, v in s["factor"].items() if v is not None)[:3]
         answers = ", ".join(f"{f} {num(v, 2)}" for f, v in (s.get("answers") or {}).items())
-        rows.append([model, ctx, arm, cellmod.replicates(s["replicates"]), s["cves"], num(s["vector"]),
+        rows.append([f"{campaign} · {model}", ctx, arm, cellmod.replicates(s["replicates"]), s["cves"],
+                     num(s["vector"]),
                      ", ".join(f"{f} {num(v, 2)}" for v, f in low) or NA, num(s["severity_unchanged"]),
                      answers or NA])
     return ["### Stability", "", "Each model's MPD and run spreads are the floor's, above. Agreement is the mean over "
             "the CVEs of the share of run pairs alike, n/a below two runs; the factors listed are the three least "
             "stable.", ""] + \
-        (table(["model", "context", "arm", "replicates", "CVEs", "vector agreement", "least stable factors",
+        (table(["campaign · model", "context", "arm", "replicates", "CVEs", "vector agreement", "least stable factors",
                 "severity unchanged in every run", "answer agreement per question"], rows) if rows
          else ["No demo-scan run.", ""])
 
 
 def _context(k):
     rows = []
-    for (model, arm), c in ordered(k["context"]):
+    for (campaign, model, arm), c in ordered(k["context"]):
         for (x, y), p in c["pairs"].items():
             ans = ", ".join(f"{f} {num(a, 2)}/{num(w, 2)}" for f, (a, w) in (p.get("answers") or {}).items())
-            rows.append([model, arm, _reps_by(c["replicates"]), c["cves"], num(c["in_order"]), f"{x} -> {y}",
+            rows.append([f"{campaign} · {model}", arm, _reps_by(c["replicates"]), c["cves"], num(c["in_order"]),
+                         f"{x} -> {y}",
                          num(p["gap"]),
                          num(p["noise"]), ans or NA])
     return ["### Context sensitivity", "", "The share of CVEs whose mean L does not fall from internal to internal-api "
             "to internet-facing; per context pair, the mean gap in L against the noise floor (the mean of the two "
             "contexts' MPDs of L); for the after, per question, answer agreement across the pair / within it.", ""] + \
-        (table(["model", "arm", "replicates", "CVEs", "in order", "pair", "gap in L", "noise floor",
+        (table(["campaign · model", "arm", "replicates", "CVEs", "in order", "pair", "gap in L", "noise floor",
                 "answers across/within"], rows)
          if rows else ["Needs the three contexts: not all read here.", ""])
 
@@ -211,17 +222,18 @@ def kpis(data):
     out += _stability(k)
     out += ["### Model sensitivity", "", "The mean per-CVE gap of the two models' mean scores, and the CVEs whose "
             "ranges over the runs do not overlap; Delta, its gap test and band agreement are above.", ""]
-    rows = [[ctx, arm, a, b, " / ".join(cellmod.replicates(x) for x in m["replicates"]), m["cves"], num(m["gap"], 2),
-             m["apart"]] for (ctx, arm, a, b), m in ordered(k["model"])]
-    out += table(["context", "arm", "model a", "model b", "replicates a / b", "CVEs", "mean gap", "CVEs apart"],
+    rows = [[campaign, ctx, arm, a, b, " / ".join(cellmod.replicates(x) for x in m["replicates"]), m["cves"],
+             num(m["gap"], 2), m["apart"]] for (campaign, ctx, arm, a, b), m in ordered(k["model"])]
+    out += table(["campaign", "context", "arm", "model a", "model b", "replicates a / b", "CVEs", "mean gap",
+                  "CVEs apart"],
                  rows) if rows else \
         ["Needs two models: none here.", ""]
     out += _context(k)
     out += ["### Discrimination", "", "W and H per run are above; across the contexts, the SD of each CVE's mean "
             "score pooled over them.", ""]
-    out += table(["model", "arm", "replicates", "values", "pooled SD"],
-                 [[m, a, _reps_by(d["replicates"]), d["values"], num(d["sd"], 2)]
-                  for (m, a), d in ordered(k["discrimination"])])
+    out += table(["campaign · model", "arm", "replicates", "values", "pooled SD"],
+                 [[f"{cp} · {m}", a, _reps_by(d["replicates"]), d["values"], num(d["sd"], 2)]
+                  for (cp, m, a), d in ordered(k["discrimination"])])
     out += _failures(k)
     out += ["### Cost per run", "", "Calls and wall time are counted from the records; the dollars are the estimate "
             "above, not the usage exports'.", ""]
@@ -236,8 +248,8 @@ def kpis(data):
 
 
 SCOPE = (
-    "Batch interaction: every run is at batch 1, one CVE per call, on both corpora; the scenarios hold one CVE each, "
-    "so within-project spread, ranking entropy, the cross-model spread and the floor are the demo scan's.",
+    "Batch interaction: the scenarios hold one CVE each, so within-project spread, ranking entropy, the cross-model "
+    "spread and the floor are the demo scan's.",
     "Grype: both corpora are Trivy reports.",
     "The adjustment: no scenario is flagged; the demo scan holds the flagged CVEs, none without a description.",
     "Motive, reward and reputation: no scenario varies them.",
@@ -254,5 +266,9 @@ SCOPE = (
     "models, is consistency, not correctness.")
 
 
-def scope():
-    return ["## What these records cannot show", ""] + [f"- {s}" for s in SCOPE] + [""]
+def scope(data):
+    batches = data.get("batches") or []
+    line = ("every run read is at batch 1, one CVE per call: batch interaction is not measured" if batches == [1] else
+            f"the runs read are at batch sizes {', '.join(map(str, batches))}; each size is its own cell, never "
+            f"pooled, and no statistic here compares two sizes" if batches else "no run read")
+    return ["## What these records cannot show", "", f"- Batch size: {line}."] + [f"- {s}" for s in SCOPE] + [""]

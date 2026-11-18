@@ -47,7 +47,8 @@ def record(arm, unit, replicate, ratings, *, scenario=False, provider="openai", 
             "scenario": unit if scenario else None, "context": None if scenario else unit,
             "corpus": f"scenarios/{unit}/report.json" if scenario else "runs/2026-09-23/scan/scan.json"}
     per_cve = None if answers is None else {
-        vid: {"unrated": False, "adjustment": "not_asked", "counters": [], "factors": fs} for vid, fs in answers.items()}
+        vid: {"unrated": False, "adjustment": "not_asked", "counters": [], "factors": fs}
+        for vid, fs in answers.items()}
     return {"folder": None, "what": what, "outcome": outcome, "excluded": excluded, "scores_usable": usable,
             "ratings": ratings if outcome == "complete" else None,
             "answers": None if per_cve is None else {"per_cve": per_cve, "counters": {}, "defects": {}},

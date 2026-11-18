@@ -9,7 +9,7 @@ from chain import cells as cellmod
 from tests import records as r
 from tests import support as s
 
-MODEL = f"openai/{s.MODEL}"
+MODEL = f"c1 · openai/{s.MODEL}"
 # the after's severity from its likelihood and impact bands, every likelihood factor at the first level, every
 # impact factor at the second; the before's from one aggregate in every group, its score that aggregate squared
 SEVERITY_LEVELS = {"info": (1, 1), "low": (4, 2), "medium": (4, 4), "high": (9, 4), "critical": (9, 9)}
@@ -94,6 +94,63 @@ class TestEachFamily(unittest.TestCase):
         self.assertEqual((got["per"], got["missing"], got["median"][-1]), ([], [1], None))
 
 
+C, N, D = verdicts.CARRIED, verdicts.NEW, verdicts.DIAGNOSTIC
+BOTH = lambda kind: {"before": kind, "after": kind}
+# Each check's kind in each arm it reads, as the families' table states them, written here apart from
+# chain/verdicts.py: data sensitivity's T and compliance's B carried in the before, whose prompts differ, and
+# diagnostic in the after, where Go's column or the framework alone moves them.
+KINDS = {
+    ("1 Exposure", "the score not falling"): BOTH(C), ("1 Exposure", "L not falling"): BOTH(D),
+    ("1 Exposure", "TA not falling"): BOTH(D), ("1 Exposure", "M not falling"): {"after": N},
+    ("1 Exposure", "O not falling"): {"after": N},
+    ("2 Controls", "VU, ctrl_on at most ctrl_off"): BOTH(C),
+    ("2 Controls", "EE, ctrl_on at most ctrl_off"): {"after": N},
+    ("3 Data sensitivity", "T not falling"): {"before": C, "after": D},
+    ("3 Data sensitivity", "LC's extent answer the same"): {"after": D},
+    ("3 Data sensitivity", "LI not falling"): {"after": D},
+    ("4 Business criticality", "B not falling"): BOTH(C), ("4 Business criticality", "FD not falling"): {"after": D},
+    ("4 Business criticality", "RD not falling"): {"after": D},
+    ("5 Compliance", "B not falling"): {"before": C, "after": D},
+    ("5 Compliance", "NC's answer under GDPR, at least Go's 2 without"): {"after": D},
+    ("5 Compliance", "FD not lower with the framework"): {"after": D},
+    ("5 Compliance", "RD not lower with the framework"): {"after": D},
+    ("5 Compliance", "PV not lower with the framework"): {"after": D},
+    ("6 DoS discriminator", "T below the null model's"): {"before": C, "after": D},
+    ("6 DoS discriminator", "LAV's answer"): {"after": D},
+    ("6 DoS discriminator", "without a vector: T below the null model's"): BOTH(D),
+    ("6 DoS discriminator", "without a vector: LC's extent answer"): {"after": D},
+    ("6 DoS discriminator", "without a vector: LI's answer"): {"after": D},
+    ("7 Accountability discriminator", "T above the null model's"): BOTH(D),
+    ("7 Accountability discriminator", "LAC's answer defeats_attribution, traceability per_individual"): {"after": N},
+    ("7 Accountability discriminator", "without a vector: T above the null model's"): BOTH(D),
+    ("7 Accountability discriminator", "without a vector: LC's extent answer"): {"after": D},
+    ("7 Accountability discriminator", "without a vector: LI's answer"): {"after": D},
+    ("8 Relevant against irrelevant control", "VU, ctrl_on below ctrl_off"): BOTH(D),
+    ("8 Relevant against irrelevant control", "EE, ctrl_on below ctrl_off"): {"after": N},
+    ("8 Relevant against irrelevant control", "EE the same with and without the irrelevant WAF"): {"after": N},
+    ("9 DoS, telegraphed or not", "T's drift"): BOTH(D), ("9 DoS, telegraphed or not", "LAV's drift"): {"after": D},
+    ("9 DoS, telegraphed or not", "without a vector: T's drift"): BOTH(D),
+    ("9 DoS, telegraphed or not", "without a vector: LC's extent answer's drift"): {"after": D},
+    ("9 DoS, telegraphed or not", "without a vector: LI's drift"): {"after": D},
+    ("10 Accountability, telegraphed or not", "T's drift"): BOTH(D),
+    ("10 Accountability, telegraphed or not", "LAC's answer's drift"): {"after": D},
+    ("10 Accountability, telegraphed or not", "without a vector: T's drift"): BOTH(D),
+    ("10 Accountability, telegraphed or not", "without a vector: LC's extent answer's drift"): {"after": D},
+    ("10 Accountability, telegraphed or not", "without a vector: LI's drift"): {"after": D},
+    ("11 Irrelevant WAF on the local bug", "VU not lower with the WAF"): BOTH(D),
+    ("11 Irrelevant WAF on the local bug", "EE not lower with the WAF"): {"after": N},
+    ("showcases", "showcase_high_to_low low"): BOTH(C), ("showcases", "showcase_med_to_high high or critical"): BOTH(C),
+    ("reachability", "the score above the unreachable one's by more than 0.5"): BOTH(C),
+    ("reachability", "O, unreachable at most reachable"): {"after": N},
+    ("reachability", "EE, unreachable at most reachable"): {"after": N},
+}
+
+
+class TestTheKinds(unittest.TestCase):
+    def test_every_check_has_the_kind_the_table_states(self):
+        self.assertEqual({(c.family, c.label): dict(c.kinds) for c in verdicts.CHECKS}, KINDS)
+
+
 class TestTheVerdictOnTheMedians(unittest.TestCase):
     def test_over_replicates(self):
         check = next(c for c in verdicts.CHECKS if c.label == "VU, ctrl_on at most ctrl_off")
@@ -108,7 +165,8 @@ class TestTheVerdictOnTheMedians(unittest.TestCase):
     def test_the_kind_decides_the_wording(self):
         rows = families.evaluate(cellmod.group([run("after", "ctrl_on", 3, "VU"), run("after", "ctrl_off", 5, "VU"),
                                                 run("before", "ctrl_on", 3, "VU"), run("before", "ctrl_off", 5, "VU")]),
-                                 {}, [c for c in verdicts.CHECKS if c.family == "8 Relevant against irrelevant control"])
+                                 {}, [c for c in verdicts.CHECKS
+                                      if c.family == "8 Relevant against irrelevant control"])
         text = "\n".join(report_scen.families_section({"rows": rows, "moves": {}}))
         self.assertIn("| VU, ctrl_on below ctrl_off | after | diagnostic |", text)
         self.assertIn("judged by nothing", text)
@@ -148,6 +206,17 @@ class TestMoves(unittest.TestCase):
         counter = families.family_moves(self.rows([sens_run("sens_low", 2, "minimal"),
                                                    sens_run("sens_high", 6, "extensive")]))
         self.assertFalse(families.all_gos(counter[("3 Data sensitivity", MODEL)]))
+
+    def test_the_sources_replicate_by_replicate(self):
+        recs = [sens_run("sens_low", 2, "minimal"), sens_run("sens_high", 6, "minimal")]
+        floored = sens_run("sens_low", 2, None, "floor")
+        floored["what"]["replicate"] = 2
+        second = sens_run("sens_high", 6, "minimal")
+        second["what"]["replicate"] = 2
+        rows = self.rows(recs + [floored, second])
+        t = next(x for x in rows if x["check"].quantity == "T" and x["arm"] == "after")
+        self.assertEqual(report_scen._sources(t["row"]),
+                         "r1: LC LI LAV LAC answer | r2: LC floor/answer; LI LAV LAC answer")
 
     def test_the_before_is_not_attributed(self):
         rows = [x for x in self.rows([run("before", "sens_low", 3, "T"), run("before", "sens_high", 5, "T")])

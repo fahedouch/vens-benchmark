@@ -8,18 +8,21 @@ step 5 reads (venslabs/vens#310 step 4).
 DIR is what `python3 -m chain.read` reads: baseline.yml's downloads on the demo scan (a workflow run's folder or a
 campaign's, failed jobs included), or a scenario campaign (ctx_runner.py). Every attempt is read by chain/read.py,
 with the same options; nothing here parses a record again. --demo names a vens-demo tree, where each download's
-archived scan is read for its report's CVEs; without it the targets read the VEX's rated CVEs and say so.
+archived scan is read for its report's CVEs; without it the two targets are unavailable, and say why.
 --fallback names a scenario campaign of the after on vens's mock with every answer cannot_tell
-(VENS_MOCK_LLM_CANNOT_TELL), the after's conservative fallback. --usage names the providers' usage exports copied into
-one CSV (chain/usage.py), the measured cost. --draw-list names the CVE ids earlier draws used, one per line or a TSV
-with a cve column: Opportunity's answers on the CVEs outside it are reported apart. --jar names the OWASP
-calculator's 1.0.1 JAR, its sha256 checked, for target (i); the JDK is $VB_JDK, $JAVA_HOME/bin or javac's folder.
+(VENS_MOCK_LLM_CANNOT_TELL=cannot_tell), the after's conservative fallback: refused unless its flag names cannot_tell,
+its model is mock/mock, its after is the after's commit and every after answer it holds is cannot_tell. --usage names
+the providers' usage exports copied into one CSV with a campaign column (chain/usage.py), the measured cost.
+--draw-list names the CVE ids earlier draws used, one per line or a TSV with a cve column: Opportunity's answers on the
+CVEs outside it are reported apart. --jar names the OWASP calculator's 1.0.1 JAR, its sha256 checked, for target (i);
+the JDK is $VB_JDK, $JAVA_HOME/bin or javac's folder.
 
 The report is Markdown, on stdout or in --out: each figure names the cell and the replicates it read, the records
 section names each replicate's attempt, and the measured cost never mixes with the estimates. Exit 0 once written,
 1 when a reader refuses an input or an input is wrong, 2 on a usage error.
 """
 import argparse
+import hashlib
 import os
 import sys
 
@@ -30,6 +33,7 @@ from chain.errors import Refused
 from chain.javarun import own_commit
 
 CANNOT_TELL_ENV = "VENS_MOCK_LLM_CANNOT_TELL"
+CANNOT_TELL = "cannot_tell"
 # The showcases' headings, the CVSS score each text gives and the verdict expected of it.
 SHOWCASES = {"showcase_high_to_low": "CVSS 10.0 RCE -> expect LOW",
              "showcase_med_to_high": "CVSS 6.5 leak -> expect HIGH"}
@@ -37,6 +41,11 @@ SHOWCASES = {"showcase_high_to_low": "CVSS 10.0 RCE -> expect LOW",
 
 class InputError(Exception):
     pass
+
+
+def digest(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
 
 
 def draw_list(path):
@@ -50,6 +59,21 @@ def draw_list(path):
         col = header.index("cve")
         return {ln.split("\t")[col] for ln in lines[1:]}
     return {ln.strip() for ln in lines}
+
+
+def campaigns(inputs, lines):
+    """campaign_of(record) and {input: [campaigns]}: a record's campaign is its campaign.json's, else its run's in the
+    dispatch log, else its input's own name."""
+    logged = {run_id: line["campaign"] for run_id, attempts in (dispatch.index(lines) if lines else {}).items()
+              for line in attempts.values()}
+    named, per_input = {}, {}
+    for path, records in inputs:
+        for rec in records:
+            w = rec["what"]
+            named[id(rec)] = w.get("campaign") or logged.get(w.get("run_id")) or \
+                os.path.basename(os.path.normpath(path))
+        per_input[path] = sorted({named[id(r)] for r in records}, key=str)
+    return (lambda rec: named.get(id(rec))), per_input
 
 
 class Reports:
@@ -84,7 +108,8 @@ class Reports:
 
 
 def java_targets(cells, reports, jar):
-    """{id(record): {CVE: accepted}} for every run that published a VEX; None without a JAR."""
+    """{id(record): {CVE: accepted}} for every complete run whose report is known, a run without a VEX failing every
+    CVE; None without a JAR."""
     if jar is None:
         return None
     jdk = javacheck.jdk_bin()
@@ -92,21 +117,60 @@ def java_targets(cells, reports, jar):
         raise InputError("--jar given, but no JDK: set VB_JDK or JAVA_HOME")
     items, recs = {}, {}
     for k, c in cells.items():
+        if k.arm not in cellmod.ARMS:
+            continue
         for rec in cellmod.complete_runs(c).values():
             ids = reports.ids(rec)
-            name = str(len(items))
-            items[name] = (k[1], legal.vex_path(rec), ids if ids is not None else set(rec["ratings"]))
-            recs[name] = rec
+            if ids is not None:
+                name = str(len(items))
+                items[name], recs[name] = (k.arm, legal.vex_path(rec), ids), rec
     got = legal.accepted(items, jdk, jar)
     return {id(recs[n]): {vid: r["accepted"] for vid, r in got[n].items()} for n in got}
 
 
-def fallback_records(path):
-    """A fallback campaign's records; refused unless its campaign ran vens's mock with every answer cannot_tell."""
+def _unqualified(doc, records, after_commit):
+    """Why a campaign is not the after's fallback; empty when it is."""
+    flag = (doc.get("mock_env") or {}).get(CANNOT_TELL_ENV, "")
+    why = [] if CANNOT_TELL in [v.strip() for v in flag.split(",")] else [
+        f"{CANNOT_TELL_ENV} is {flag!r}: every question is forced to cannot_tell only when the list names "
+        f"{CANNOT_TELL}"]
+    models = [(m["provider"], m["model"]) for m in doc["models"]]
+    why += [] if models == [("mock", "mock")] else [f"its models are {models}, not mock/mock alone"]
+    got = doc["arms"]["after"]["vens_sha"]
+    why += [f"its after is {got}, not {after_commit}"] if got != after_commit else []
+    after = [r for r in records if r["what"].get("arm") == "after" and r["outcome"] == "complete"]
+    n = sum(r["answers"] is None for r in after)
+    why += [f"{n} complete after run(s) without answers.json"] if n else []
+    other = sum(f.get("answer") not in (None, CANNOT_TELL) for r in after for e in (r["answers"] or {}).get(
+        "per_cve", {}).values() for f in e["factors"].values())
+    return why + ([f"{other} answer(s) other than {CANNOT_TELL}"] if other else [])
+
+
+def fallback(path, after_commit):
+    """A fallback campaign's records and what names it in the report; refused unless it is the after's own binary on
+    vens's mock with every answer cannot_tell."""
+    if after_commit is None:
+        raise InputError(f"{path}: no after commit to check the fallback against: give --commit after=SHA or a "
+                         f"scenario campaign")
     doc = campaign._campaign(path)
-    if CANNOT_TELL_ENV not in (doc.get("mock_env") or {}):
-        raise InputError(f"{path}: not a fallback campaign, its mock_env has no {CANNOT_TELL_ENV}")
-    return read.read_any(path)
+    records = read.read_any(path, commits={"after": after_commit, "before": doc["arms"]["before"]["vens_sha"]})
+    why = _unqualified(doc, records, after_commit)
+    if why:
+        raise InputError(f"{path}: not the after's fallback: {'; '.join(why)}")
+    flag = doc["mock_env"][CANNOT_TELL_ENV]
+    return records, {"path": path, "campaign": doc["campaign"], "commit": after_commit, "flag": flag}
+
+
+def after_commit(a, inputs):
+    """The after's commit: --commit after=SHA, else the one the scenario campaigns' after ran; None otherwise."""
+    given = dict(a.commit).get("after")
+    if given:
+        return given
+    seen = {r["what"].get("vens_commit") for _, recs in inputs for r in recs
+            if cellmod.corpus(r) == cellmod.SCENARIOS and r["what"].get("arm") == "after"} - {None}
+    if len(seen) > 1:
+        raise InputError(f"the scenario campaigns' after ran at {len(seen)} commits; give --commit after=SHA")
+    return next(iter(seen), None)
 
 
 def scenario_info(inputs):
@@ -117,24 +181,29 @@ def scenario_info(inputs):
     return None
 
 
-def compute(inputs, reports, jar=None, fallback=None, usage_rows=None, listed=None):
-    """Every section's figures, from the records of inputs, [(path, records)]."""
-    cells = cellmod.group([r for _, recs in inputs for r in recs])
+def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, lines=None):
+    """Every section's figures, from the records of inputs, [(path, records)]; fallback: (records, its name) of the
+    after's fallback campaign; usage: the measured usage, {rows, name, sha256}; draws: {ids, name, sha256}."""
+    campaign_of, per_input = campaigns(inputs, lines)
+    records = [r for _, recs in inputs for r in recs]
+    cells = cellmod.group(records, campaign_of=campaign_of)
     java = java_targets(cells, reports, jar)
-    out = {"inputs": [(p, len(recs)) for p, recs in inputs], "cells": cells, "java": java is not None,
+    out = {"inputs": [(p, len(recs)) for p, recs in inputs], "campaigns": per_input, "cells": cells,
+           "conflicts": cellmod.conflicts(cells), "java": java is not None, "usage": usage, "draws": draws,
+           "batches": sorted({r["what"].get("batch_size") for r in records} - {None}),
            "targets": demo.targets(cells, reports.ids, (lambda r: java.get(id(r))) if java is not None else None),
            "spreads": demo.spreads(cells), "cross": demo.cross_model(cells), "impacts": demo.impacts(cells),
-           "floors": demo.floors(cells), "ledgers": ledger.ledgers(cells), "usage": usage_rows,
-           "opportunity": demo.opportunity(cells, listed) if listed is not None else None, "scenarios": None,
+           "floors": demo.floors(cells), "ledgers": ledger.ledgers(cells), "scenarios": None,
+           "opportunity": demo.opportunity(cells, draws["ids"], reports.ids) if draws is not None else None,
            "kpi": {"stability": kpi.stability(cells), "model": kpi.model_sensitivity(cells),
                    "context": kpi.context_sensitivity(cells), "discrimination": kpi.discrimination(cells),
                    "failures": kpi.failures(cells), "cost": kpi.cost(cells)}}
     scen = scenario_info(inputs)
     if scen is not None:
         rows = families.evaluate(cells, scen)
-        fb = diagnostics.fallback_cells(fallback) if fallback is not None else None
-        out["scenarios"] = {"rows": rows, "moves": families.family_moves(rows), "fallback": fb is not None,
-                            "headings": SHOWCASES,
+        fb = diagnostics.fallback_cells(fallback[0]) if fallback is not None else None
+        out["scenarios"] = {"rows": rows, "moves": families.family_moves(rows),
+                            "fallback": fallback[1] if fallback is not None else None, "headings": SHOWCASES,
                             "consistency": diagnostics.consistency(cells), "wrong_yaml": diagnostics.wrong_yaml(cells),
                             "null": diagnostics.null_table(cells, scen, fb)}
     return out
@@ -155,8 +224,10 @@ def parse(argv):
     ap.add_argument("--failures", action="append", default=[])
     ap.add_argument("--freeze-sha256")
     ap.add_argument("--demo", help="a vens-demo tree, for each download's archived scan")
-    ap.add_argument("--fallback", help="a scenario campaign of the after's mock with every answer cannot_tell")
-    ap.add_argument("--usage", help="the providers' usage exports as one CSV (chain/usage.py)")
+    ap.add_argument("--fallback", help="a scenario campaign of the after's mock with every answer cannot_tell "
+                                       "(VENS_MOCK_LLM_CANNOT_TELL=cannot_tell), at the after's commit")
+    ap.add_argument("--usage", help="the providers' usage exports as one CSV, a campaign column naming each row's "
+                                    "campaign (chain/usage.py)")
     ap.add_argument("--draw-list", help="the CVE ids earlier draws used")
     ap.add_argument("--jar", help="the OWASP calculator's 1.0.1 JAR, for target (i)")
     ap.add_argument("--out")
@@ -180,9 +251,11 @@ def run(a):
     reports = Reports(a.demo)
     for path, records in inputs:
         reports.note(path, records)
-    data = compute(inputs, reports, jar=a.jar, fallback=fallback_records(a.fallback) if a.fallback else None,
-                   usage_rows=usage.load(a.usage) if a.usage else None,
-                   listed=draw_list(a.draw_list) if a.draw_list else None)
+    named = lambda path: {"name": os.path.basename(path), "sha256": digest(path)}
+    data = compute(inputs, reports, jar=a.jar, lines=lines,
+                   fallback=fallback(a.fallback, after_commit(a, inputs)) if a.fallback else None,
+                   usage={"rows": usage.load(a.usage), **named(a.usage)} if a.usage else None,
+                   draws={"ids": draw_list(a.draw_list), **named(a.draw_list)} if a.draw_list else None)
     return report.render(data, reader=own_commit())
 
 

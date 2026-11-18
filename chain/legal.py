@@ -27,12 +27,14 @@ class LegalError(Exception):
 
 
 def vex_path(rec):
-    return attemptmod._files(rec["folder"])["vex"] if rec.get("folder") else None
+    """The run's VEX, None when the attempt left none."""
+    return attemptmod._files(rec["folder"])["vex"] if rec.get("folder") and rec.get("ratings") is not None else None
 
 
 def _rows_by_cve(vex):
+    """Each CVE's rows; none without a VEX, so that every CVE of the report fails as missing."""
     out = {}
-    for row in cdx.vex_rows(vex):
+    for row in cdx.vex_rows(vex) if vex else ():
         out.setdefault(row[0], []).append(row)
     return out
 

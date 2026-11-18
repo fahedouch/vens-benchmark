@@ -60,9 +60,9 @@ def _reps(runs):
 def _by_arm(cells):
     """{(model, arm): {context: runs}} of the demo scan."""
     out = collections.defaultdict(dict)
-    for (model, ctx), arms in demo.by_model(cells).items():
+    for (campaign, model, ctx), arms in demo.by_model(cells).items():
         for arm, c in arms.items():
-            out[(model, arm)][ctx] = demo.runs_of(c)
+            out[(campaign, model, arm)][ctx] = demo.runs_of(c)
     return dict(out)
 
 
@@ -70,7 +70,7 @@ def stability(cells):
     """Per (model, context, arm): factor and vector agreement, the share of severities unchanged, and the after's
     answer agreement per question."""
     out = {}
-    for (model, ctx), arms in sorted(demo.by_model(cells).items()):
+    for (campaign, model, ctx), arms in sorted(demo.by_model(cells).items(), key=lambda kv: str(kv[0])):
         for arm, c in sorted(arms.items()):
             runs = demo.runs_of(c)
             ids = cellmod.common(runs)
@@ -86,7 +86,7 @@ def stability(cells):
                 per = [_answers(r) for r in runs]
                 row["answers"] = {f: a for f in cdx.FACTORS if (a := _mean(
                     [diagnostics.agreement(_given(per, v, f)) for v in ids])) is not None}
-            out[(model, ctx, arm)] = row
+            out[(campaign, model, ctx, arm)] = row
     return out
 
 
@@ -94,7 +94,7 @@ def model_sensitivity(cells):
     """Per (context, arm, model a, model b): the mean per-CVE gap of the two mean scores and the CVEs whose ranges
     over the runs do not overlap."""
     out = {}
-    for (ctx, arm), cs in sorted(demo.model_pairs(cells).items()):
+    for (campaign, ctx, arm), cs in sorted(demo.model_pairs(cells).items(), key=lambda kv: str(kv[0])):
         models = {m: demo.runs_of(c) for m, c in cs.items()}
         for a, b in itertools.combinations(sorted(models), 2):
             ids = cellmod.common(models[a] + models[b])
@@ -104,8 +104,8 @@ def model_sensitivity(cells):
                 xa, xb = [s[v] for s in sa], [s[v] for s in sb]
                 gaps.append(abs(statistics.mean(xa) - statistics.mean(xb)))
                 apart += max(xa) < min(xb) or max(xb) < min(xa)
-            out[(ctx, arm, a, b)] = {"cves": len(ids), "gap": _mean(gaps), "apart": apart,
-                                     "replicates": (_reps(models[a]), _reps(models[b]))}
+            out[(campaign, ctx, arm, a, b)] = {"cves": len(ids), "gap": _mean(gaps), "apart": apart,
+                                               "replicates": (_reps(models[a]), _reps(models[b]))}
     return out
 
 
@@ -114,7 +114,7 @@ def context_sensitivity(cells):
     likelihood order, and per context pair the mean gap in L against the noise floor, with the after's answer
     agreement across the pair against within it."""
     out = {}
-    for (model, arm), ctxs in sorted(_by_arm(cells).items()):
+    for (campaign, model, arm), ctxs in sorted(_by_arm(cells).items(), key=lambda kv: str(kv[0])):
         if not set(CONTEXT_ORDER) <= set(ctxs):
             continue
         ids = cellmod.common([r for c in CONTEXT_ORDER for r in ctxs[c]])
@@ -127,7 +127,7 @@ def context_sensitivity(cells):
                              "noise": _mean([stats.mpd(cellmod.matrix(ctxs[c], ids, "L")) for c in (x, y)])}
             if arm == "after":
                 pairs[(x, y)]["answers"] = answers_across(ctxs[x], ctxs[y], ids)
-        out[(model, arm)] = {"cves": len(ids), "in_order": order / len(ids) if ids else None, "pairs": pairs,
+        out[(campaign, model, arm)] = {"cves": len(ids), "in_order": order / len(ids) if ids else None, "pairs": pairs,
                              "replicates": {c: _reps(ctxs[c]) for c in CONTEXT_ORDER}}
     return out
 
@@ -151,12 +151,12 @@ def answers_across(runs_x, runs_y, ids):
 def discrimination(cells):
     """Per (model, arm): the SD of each CVE's mean score pooled over the contexts, and what it read."""
     out = {}
-    for (model, arm), ctxs in sorted(_by_arm(cells).items()):
+    for (campaign, model, arm), ctxs in sorted(_by_arm(cells).items(), key=lambda kv: str(kv[0])):
         pooled = []
         for ctx, runs in sorted(ctxs.items()):
             ss = [cellmod.scores(r) for r in runs]
             pooled += [statistics.mean(s[v] for s in ss) for v in cellmod.common(runs)]
-        out[(model, arm)] = {"contexts": sorted(ctxs), "values": len(pooled),
+        out[(campaign, model, arm)] = {"contexts": sorted(ctxs), "values": len(pooled),
                              "replicates": {c: _reps(runs) for c, runs in ctxs.items()},
                              "sd": statistics.stdev(pooled) if len(pooled) > 1 else None}
     return out
