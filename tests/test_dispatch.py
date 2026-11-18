@@ -278,16 +278,17 @@ class TestPending(Base):
         pages = [c for c in self.calls() if c[:1] == ["api"] and "/actions/workflows/" in c[1]]
         self.assertEqual(len(pages), GITHUB_CAP // dispatch.PER_PAGE)
 
-    def test_no_run_refused_while_a_run_the_log_does_not_name_is_near(self):
+    def test_no_run_refused_while_a_run_the_log_does_not_name_came_after_it(self):
         pending = self.failed_dispatch()
         self.go(arm="before", vens_ref="43ab10b")
-        far = dispatch._parse(pending["time"]) + dispatch.NEAR + datetime.timedelta(minutes=1)
-        self.add_run(13, "baseline · other", dispatch._stamp(far))
-        self.add_run(12, "baseline.yml", pending["time"])
-        with self.assertRaisesRegex(Refused, r"runs \[12\], which no line of the log names, were created within"):
+        since = dispatch._parse(pending["time"])
+        self.add_run(11, "baseline · older", dispatch._stamp(since - dispatch.SKEW - datetime.timedelta(minutes=1)))
+        # created three minutes after the request, under the workflow's default title
+        self.add_run(13, "baseline.yml", dispatch._stamp(since + datetime.timedelta(minutes=3)))
+        with self.assertRaisesRegex(Refused, r"runs \[13\], which no line of the log names, were created since"):
             dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
         state = self.load()
-        del state["runs"]["12"]
+        del state["runs"]["13"]
         self.save(state)
         self.assertEqual(dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)["action"], "abandoned")
 

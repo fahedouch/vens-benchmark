@@ -64,8 +64,6 @@ PER_PAGE, MAX_PAGES = 100, 20
 LISTING_CAP = 1000
 SETTLE = datetime.timedelta(minutes=15)
 SKEW = datetime.timedelta(minutes=2)
-# A run of any title created this close to a pending dispatch may be the one it started under another title.
-NEAR = datetime.timedelta(minutes=2)
 
 
 class DispatchError(Exception):
@@ -253,7 +251,7 @@ def runs_since(gh, repo, since, pages=None):
     """The workflow_dispatch runs of baseline.yml created from since on, clock skew allowed, newest first, and
     whether the listing reached since: it stops at an older run or at the list's end, and falls short when the pages
     run out first or GitHub's cap on a filtered listing is met, whose next page is empty whatever is older."""
-    floor, out, listed = since - max(SKEW, NEAR), [], 0
+    floor, out, listed = since - SKEW, [], 0
     for page in range(1, (pages or MAX_PAGES) + 1):
         runs = _api(gh, f"repos/{repo}/actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch&per_page="
                         f"{PER_PAGE}&page={page}").get("workflow_runs") or []
@@ -382,7 +380,7 @@ def resolve(a, gh, now=utc_now):
     """Closes a pending dispatch: attaches the run it started, its title, its run_attempt 1 and its creation after
     the pending line checked; or, with no_run, records that it started none, no sooner than 15 minutes after it and
     only when the run list, read back to its time, holds no run of its title and no run the log does not name
-    created within NEAR of it, whatever its title."""
+    created since it, whatever its title: GitHub may create the run minutes after the request, under any title."""
     with locked(a.log):
         lines = load(a.log)
         k = (a.campaign, a.arm, a.provider, a.model, a.replicate)
@@ -402,10 +400,10 @@ def resolve(a, gh, now=utc_now):
             found = _titled(runs, want, known)
             if found:
                 raise Refused(f"runs {found} carry the pending dispatch's title: resolve it with --run-id")
-            near = sorted(r["id"] for r in runs
-                          if r["id"] not in known and abs(_parse(r["created_at"]) - since) <= NEAR)
-            if near:
-                raise Refused(f"runs {near}, which no line of the log names, were created within {NEAR} of the pending "
+            unlogged = sorted(r["id"] for r in runs
+                              if r["id"] not in known and _parse(r["created_at"]) >= since - SKEW)
+            if unlogged:
+                raise Refused(f"runs {unlogged}, which no line of the log names, were created since the pending "
                               f"dispatch of {pending['time']}: nothing abandoned while one of them may be its run")
             line = {**pending, "time": _stamp(now()), "action": ABANDONED}
         else:
