@@ -54,9 +54,9 @@ jobs:
         with:
           python-version: "3.12.12"
 
-      # PyYAML also reads baseline.yml in the workflow tests
-      - name: Install the corpus's packages at requirements.txt's versions
-        run: python3 -m pip install --disable-pip-version-check -c requirements.txt PyYAML cvss
+      # PyYAML also reads baseline.yml in the workflow tests; numpy runs the analysis's statistics
+      - name: Install the chain's packages at requirements.txt's versions
+        run: python3 -m pip install --disable-pip-version-check -c requirements.txt PyYAML cvss numpy
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:

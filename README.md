@@ -23,7 +23,7 @@ A constant "always 7.5" guess scores 1.57. A model above that isn't worth the ca
 
 **Short version:** sonnet if you sign or audit the output, gpt-5.4-mini for cheap-and-good, flash-lite for throwaway triage. Don't pay for gpt-5.5.
 
-Context sensitivity, the two showcases (Log4Shell 10.0 → LOW, an axios leak 5.3 → HIGH), and where models fail are in `report.html`.
+Context sensitivity, the two showcases (Log4Shell 10.0 → LOW, an axios leak 5.3 → HIGH), and where models fail, as published, are in `report.html` at the [`paper-v1`](https://github.com/venslabs/vens-benchmark/tree/paper-v1) tag, with the paper's extra statistics (`stats_extra.py`). That Half B ran on an unreleased `+dirty` vens build that no ref names, so its figures cannot be rebuilt from a named ref.
 
 ## Benchmark your own model
 
@@ -48,7 +48,7 @@ python3 ctx_runner.py --campaign c1 --out measurements/c1 \
 python3 -m chain.read measurements/c1                 # every attempt, failed ones included, one JSON per line
 ```
 
-Each arm runs on its own key, `OPENAI_API_KEY_BEFORE` and `OPENAI_API_KEY_AFTER` (or `ANTHROPIC_API_KEY_...`); `--key-suffix SCENARIOS` reads `OPENAI_API_KEY_BEFORE_SCENARIOS` and so on, so that a scenario campaign's spend shows on keys of its own. Models go by their dated ids. `--model mock/mock` runs vens's own mock LLM, free. The campaign folder is the archive, `SHA256SUMS` included; `ctx_runner.py` documents the order, the retries and the record. `ctx_analyze.py` still reads the published Half B's `results/context.json`, the old runner's format (at `paper-v1`), until the analysis is rebuilt on the runner's archives.
+Each arm runs on its own key, `OPENAI_API_KEY_BEFORE` and `OPENAI_API_KEY_AFTER` (or `ANTHROPIC_API_KEY_...`); `--key-suffix SCENARIOS` reads `OPENAI_API_KEY_BEFORE_SCENARIOS` and so on, so that a scenario campaign's spend shows on keys of its own. Models go by their dated ids. `--model mock/mock` runs vens's own mock LLM, free. The campaign folder is the archive, `SHA256SUMS` included; `ctx_runner.py` documents the order, the retries and the record. `python3 ctx_analyze.py measurements/c1` reads the campaign through the same reader and writes the analysis as Markdown; it reads `baseline.yml`'s downloads of the demo scan too (`ctx_analyze.py` documents its options). The published Half B and its analysis are at `paper-v1`.
 
 ## What the two halves measure
 
