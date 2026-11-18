@@ -350,7 +350,7 @@ def showcase_by_detection(scen):
     """{showcase: {detection: the severities attainable in the after}}, the other values as declared."""
     return {sid: {det: sorted(after_single("severity", scen[sid], {"detection": _detection(det)}),
                               key=SEVERITIES.index) for det in DETECTIONS}
-            for sid in ("showcase_high_to_low", "showcase_med_to_high")}
+            for sid in ("showcase_high_to_low", "showcase_med_to_high") if sid in scen}
 
 
 # ---- the corpus and the runs ----

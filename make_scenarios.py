@@ -525,6 +525,11 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def source_digest(name):
+    with open(os.path.join(HERE, name), "rb") as fh:
+        return sha256(fh.read())
+
+
 def corpus():
     """{scenario id: (cve, config, expect, the scenario it copies or None)}: the scenarios with a vector, then the
     copies without one."""
@@ -563,8 +568,7 @@ def files():
     out["scenarios/manifest.json"] = json.dumps(manifest, indent=2).encode()
     with_vector = sum(1 for v in vectors.values() if v)
     freeze = {
-        "generator": {name: sha256(open(os.path.join(HERE, name), "rb").read())
-                      for name in ("make_scenarios.py", "requirements.txt")},
+        "generator": {name: source_digest(name) for name in ("make_scenarios.py", "requirements.txt")},
         "python": platform.python_version(),
         "pyyaml": yaml.__version__,
         "schema_version": SCHEMA_VERSION,
