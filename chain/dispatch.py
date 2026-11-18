@@ -256,8 +256,9 @@ def open_reruns(lines):
 
 
 def abandoned_dispatch(lines, k):
-    """The pending line of replicate k's last dispatch when that dispatch was abandoned and nothing came after."""
-    mine = [l for l in lines if key(l) == k]
+    """The pending line of replicate k's last dispatch when that dispatch was abandoned and nothing came after; a
+    stray line, the late run of an earlier abandoned dispatch, leaves it recoverable."""
+    mine = [l for l in lines if key(l) == k and l["action"] != STRAY]
     if not mine or mine[-1]["action"] != ABANDONED:
         return None
     return next(l for l in reversed(mine) if l["action"] == PENDING and l["dispatch_id"] == mine[-1]["dispatch_id"])

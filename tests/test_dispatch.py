@@ -395,6 +395,22 @@ class TestLateRuns(Base):
     def test_a_cancelled_late_run_recorded_as_a_stray(self):
         self.stray("cancelled")
 
+    def test_a_newer_late_run_attached_after_an_older_one_recorded_stray(self):
+        older = self.abandoned()
+        newer = self.abandoned()
+        self.late(older)
+        self.finish(4000, "success")
+        self.assertEqual(dispatch.resolve(self.args(run_id=4000, stray=True), self.gh)["action"], "stray")
+        self.late(newer, run_id=4001)
+        with self.assertRaisesRegex(Refused, r"runs \[4001\] carry the dispatch id"):
+            self.go(arm="before", vens_ref="43ab10b")
+        line = dispatch.resolve(self.args(run_id=4001), self.gh)
+        self.assertEqual((line["action"], line["dispatch_id"]), ("resolved", newer["dispatch_id"]))
+        self.assertEqual(self.actions(), ["pending", "abandoned", "pending", "abandoned", "stray", "resolved"])
+        with self.assertRaisesRegex(Refused, "already run 4001"):
+            self.go()
+        self.assertEqual(self.go(arm="before", vens_ref="43ab10b")["action"], "dispatch")
+
     def test_check_late(self):
         pending = self.abandoned()
         self.go()
