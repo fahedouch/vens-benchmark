@@ -10,14 +10,14 @@
       "Vulnerabilities": [
         {
           "VulnerabilityID": "CVE-2099-0021",
-          "PkgName": "xmlflat",
+          "PkgName": "fieldmatch",
           "InstalledVersion": "2.0.0",
           "Severity": "HIGH",
           "PkgIdentifier": {
-            "PURL": "pkg:deb/debian/xmlflat@2.0.0"
+            "PURL": "pkg:deb/debian/fieldmatch@2.0.0"
           },
-          "Title": "Entity expansion in xmlflat",
-          "Description": "xmlflat expands nested entity references in incoming documents. A small crafted document expands to many gigabytes in memory and the parser process is killed before it returns a response. CVSS 7.5.",
+          "Title": "Pattern evaluation issue in fieldmatch",
+          "Description": "fieldmatch checks a request field against a pattern with nested repetition. For some short crafted values the evaluation time grows exponentially with the value's length, and the thread serving the request stays at full CPU until the request is abandoned. CVSS 7.5.",
           "PrimaryURL": "https://example.test/CVE-2099-0021",
           "SeveritySource": "nvd",
           "VendorSeverity": {

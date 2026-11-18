@@ -209,9 +209,10 @@ CVES = {
                 desc="Server-side template injection in tmplengine lets a remote attacker run "
                      "arbitrary code by submitting a crafted template expression. CVSS {score}.",
                 vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", source=WRITTEN),
-    # ---- NON-TELEGRAPHED variants (construct validity): same mechanism as their
-    # telegraphed twins, but title + description no longer name the impact class or
-    # assert "no C/I impact" -- the model must INFER the factor, not keyword-match.
+    # ---- NON-TELEGRAPHED variants (construct validity): title + description no
+    # longer name the impact class or assert "no C/I impact", so the factor has to
+    # be inferred from what the flaw does. Each DoS and accountability twin keeps
+    # its telegraphed twin's mechanism; locallib_nt keeps the exploit shape only.
     # Each takes its twin's vector, so a twin pair differs in its text alone. ----
     "dos_nt": dict(id="CVE-2099-0020", pkg="bufpool", ver="1.0.0", sev="HIGH",
                 title="Resource handling issue in bufpool",
@@ -219,11 +220,12 @@ CVES = {
                      "upper bound. A remote request carrying a large value drives memory use up "
                      "until the operating system terminates the worker process. CVSS {score}.",
                 twin="dos"),
-    "dos_nt2": dict(id="CVE-2099-0021", pkg="xmlflat", ver="2.0.0", sev="HIGH",
-                title="Entity expansion in xmlflat",
-                desc="xmlflat expands nested entity references in incoming documents. A small "
-                     "crafted document expands to many gigabytes in memory and the parser process "
-                     "is killed before it returns a response. CVSS {score}.",
+    "dos_nt2": dict(id="CVE-2099-0021", pkg="fieldmatch", ver="2.0.0", sev="HIGH",
+                title="Pattern evaluation issue in fieldmatch",
+                desc="fieldmatch checks a request field against a pattern with nested repetition. "
+                     "For some short crafted values the evaluation time grows exponentially with "
+                     "the value's length, and the thread serving the request stays at full CPU "
+                     "until the request is abandoned. CVSS {score}.",
                 twin="dos2"),
     "audit_nt": dict(id="CVE-2099-0022", pkg="trailkeep", ver="1.3.0", sev="MEDIUM",
                 title="Record handling flaw in trailkeep",
@@ -237,6 +239,9 @@ CVES = {
                      "they reach durable storage, so a later review cannot reconstruct what was "
                      "modified. No stored business data is read or changed. CVSS {score}.",
                 twin="audit2"),
+    # The irrelevant-WAF family's local bug, its exploit shape kept: code run from a
+    # file the attacker writes on the host, through configuration directives rather
+    # than deserialization, so not serdes's mechanism.
     "locallib_nt": dict(id="CVE-2099-0024", pkg="cfgloader", ver="1.0.0", sev="HIGH",
                 title="Unsafe load in cfgloader",
                 desc="cfgloader executes embedded directives when it reads a configuration file "
@@ -369,7 +374,8 @@ SCENARIOS = {
               data_sensitivity="low", business_criticality="low"),
               "final risk LOW"),
 
-    # ---- FAMILY: data_sensitivity ladder (info-leak = a real C/I breach). ----
+    # ---- FAMILY: data_sensitivity ladder (info-leak: confidentiality only, its vector
+    # flooring integrity and availability). ----
     "sens_low": ("infoleak", cfg("svc", "service", "present", exposure="internet",
                  data_sensitivity="low", business_criticality="high"),
                  "technical_impact + final: low end of sensitivity ladder"),
@@ -485,8 +491,9 @@ SCENARIOS = {
                             "local bug, no controls: vulnerability baseline for the WAF test"),
 
     # ---- NON-TELEGRAPHED discriminators: identical context to the telegraphed disc_*
-    # twin; only the CVE text changes (impact class no longer named). Pairing measures
-    # whether a right answer came from reasoning or from keyword-matching the CVE. ----
+    # twin; only the CVE text changes (impact class no longer named). A pair shows how
+    # far the answers move once the class is not named: a diagnostic, which alone
+    # cannot tell reasoning from keyword matching. ----
     "disc_dos_nt": ("dos_nt", cfg("svc", "streaming service", "present", exposure="internet",
                     data_sensitivity="critical", business_criticality="high",
                     availability_requirement="high"),
