@@ -130,6 +130,14 @@ class Base(unittest.TestCase):
                                       "conclusion": None, "created_at": created_at}
         self.save(state)
 
+    def failed_dispatch(self):
+        self.set(workflow_fails=True)
+        with self.assertRaises(dispatch.DispatchError):
+            self.go()
+        self.set(workflow_fails=False)
+        (pending,) = dispatch.open_pending(dispatch.load(self.log))
+        return pending
+
     def title(self, line):
         return dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA, line["dispatch_id"])
 
@@ -214,14 +222,6 @@ class TestConcurrentCommands(Base):
 
 
 class TestPending(Base):
-    def failed_dispatch(self):
-        self.set(workflow_fails=True)
-        with self.assertRaises(dispatch.DispatchError):
-            self.go()
-        self.set(workflow_fails=False)
-        (pending,) = dispatch.open_pending(dispatch.load(self.log))
-        return pending
-
     def test_a_failure_after_the_dispatch_keeps_its_pending_line(self):
         self.set(print_url=False, copies=2)
         with self.assertRaises(dispatch.DispatchError):
@@ -315,6 +315,47 @@ class TestPending(Base):
         del state["runs"]["13"]
         self.save(state)
         self.assertEqual(dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)["action"], "abandoned")
+
+
+class TestLateRuns(Base):
+    def abandoned(self):
+        pending = self.failed_dispatch()
+        dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
+        # GitHub starts the abandoned dispatch's run after all
+        self.add_run(4000, self.title(pending), dispatch._stamp(dispatch.utc_now()))
+        return pending
+
+    def test_a_late_run_blocks_any_new_dispatch_until_cancelled(self):
+        self.abandoned()
+        for kw in ({}, {"arm": "before", "vens_ref": "43ab10b"}):
+            with self.assertRaisesRegex(Refused, r"runs \[4000\] carry the dispatch id of an abandoned dispatch"):
+                self.go(**kw)
+        self.assertEqual(len(self.workflow_runs()), 1)
+        self.finish(4000, "cancelled")
+        self.assertEqual(self.go()["run_id"], 5001)
+        self.assertEqual(self.actions(), ["pending", "abandoned", "pending", "dispatch"])
+
+    def test_a_late_run_attached_to_its_abandoned_dispatch(self):
+        pending = self.abandoned()
+        self.add_run(4001, self.title({"dispatch_id": "0123456789ab"}), dispatch._stamp(dispatch.utc_now()))
+        with self.assertRaisesRegex(Refused, "not the pending dispatch"):
+            dispatch.resolve(self.args(run_id=4001), self.gh)
+        line = dispatch.resolve(self.args(run_id=4000), self.gh)
+        self.assertEqual((line["action"], line["run_id"], line["dispatch_id"], line["time"]),
+                         ("resolved", 4000, pending["dispatch_id"], pending["time"]))
+        self.assertEqual(self.actions(), ["pending", "abandoned", "resolved"])
+        with self.assertRaisesRegex(Refused, "already run 4000"):
+            self.go()
+        self.assertEqual(self.go(arm="before", vens_ref="43ab10b")["action"], "dispatch")
+
+    def test_no_dispatch_while_the_run_list_does_not_reach_the_abandoned_dispatch(self):
+        pending = self.failed_dispatch()
+        dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
+        for n in range(11, 15):
+            self.add_run(n, "baseline · other", dispatch._stamp(dispatch.utc_now()))
+        with mock.patch.object(dispatch, "PER_PAGE", 2), mock.patch.object(dispatch, "MAX_PAGES", 1):
+            with self.assertRaisesRegex(Refused, f"did not reach {pending['time']}, the oldest abandoned dispatch"):
+                self.go(arm="before", vens_ref="43ab10b")
 
 
 class TestPairingAndCap(Base):
@@ -478,6 +519,19 @@ class TestTheLog(Base):
         self.write(*self.started(), self.line(action="rerun-pending", run_id=1, run_attempt=2, replaces=1,
                                               dispatch_id="d2"))
         with self.assertRaisesRegex(dispatch.DispatchError, "a rerun changes"):
+            dispatch.load(self.log)
+
+    def test_a_late_run_resolved_after_its_abandoned_dispatch(self):
+        late = self.line(action="resolved", run_id=1, run_attempt=1)
+        self.write(self.line(action="pending"), self.line(action="abandoned"), late)
+        self.assertEqual([l["action"] for l in dispatch.load(self.log)], ["pending", "abandoned", "resolved"])
+        self.write(self.line(action="pending"), self.line(action="abandoned"), self.line(action="pending",
+                                                                                         dispatch_id="d2"), late)
+        with self.assertRaisesRegex(dispatch.DispatchError, r"changes \['dispatch_id'\]"):
+            dispatch.load(self.log)
+        self.write(self.line(action="pending"), self.line(action="abandoned"), self.line(action="dispatch", run_id=1,
+                                                                                         run_attempt=1))
+        with self.assertRaisesRegex(dispatch.DispatchError, "a dispatch line with no pending dispatch"):
             dispatch.load(self.log)
 
     def test_a_run_of_two_replicates(self):

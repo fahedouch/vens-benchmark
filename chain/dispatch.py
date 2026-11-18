@@ -18,10 +18,12 @@ action is one of:
     pending          written before `gh workflow run`, run_id and run_attempt null: a run may exist no line names
     dispatch         the pending dispatch's run, read back from the API, run_attempt 1
     resolved         the pending dispatch's run attached by hand: its title, its run_attempt 1 and its creation after
-                     the pending line checked
+                     the pending line checked; or, the same checks made, the late run of an abandoned dispatch whose
+                     replicate was not dispatched again
     abandoned        a pending dispatch that started no run: at least 15 minutes old, and the run list, read back to
                      its time within GitHub's cap, holds no run of its title and no run the log does not name created
-                     within two minutes of it
+                     within two minutes of it. A run of its id that appears later blocks every new dispatch until it
+                     is attached with resolve --run-id or cancelled
     rerun-pending    written before `gh run rerun --failed`, run_attempt the attempt it asks for
     rerun-failed     that attempt, read back from the API, replacing the attempt before it
     rerun-abandoned  a pending rerun that started no attempt: at least 15 minutes old, the run still at the attempt
@@ -111,7 +113,7 @@ def load(path):
     (run id, run attempt) logged once."""
     if not os.path.exists(path):
         return []
-    lines, pending, started, attempts, owner, reruns = [], {}, {}, {}, {}, {}
+    lines, pending, started, attempts, owner, reruns, abandoned = [], {}, {}, {}, {}, {}, {}
     with open(path, encoding="utf-8") as fh:
         for n, text in enumerate(fh, 1):
             if not text.strip():
@@ -131,14 +133,20 @@ def load(path):
                 if k in pending or k in started:
                     raise DispatchError(f"{where}: a second dispatch of replicate {line['replicate']} of {line['arm']}")
                 pending[k] = line
+                abandoned.pop(k, None)
             elif action in STARTS + (ABANDONED,):
-                if k not in pending:
+                # A resolved line may also attach the late run of the replicate's abandoned dispatch.
+                before = pending.get(k) or (abandoned.get(k) if action == RESOLVED else None)
+                if before is None:
                     raise DispatchError(f"{where}: a {action} line with no pending dispatch before it")
-                changed = [f for f in SAME if line[f] != pending[k][f]]
+                changed = [f for f in SAME if line[f] != before[f]]
                 if changed:
                     raise DispatchError(f"{where}: a {action} line changes {changed} of its pending dispatch")
-                del pending[k]
-                if action != ABANDONED:
+                pending.pop(k, None)
+                abandoned.pop(k, None)
+                if action == ABANDONED:
+                    abandoned[k] = line
+                else:
                     _start(line, where, owner, attempts)
                     started[k] = line
             elif action in (RERUN_PENDING, RERUN, RERUN_ABANDONED):
@@ -209,6 +217,14 @@ def open_reruns(lines):
     return out
 
 
+def abandoned_dispatch(lines, k):
+    """The pending line of replicate k's last dispatch when that dispatch was abandoned and nothing came after."""
+    mine = [l for l in lines if key(l) == k]
+    if not mine or mine[-1]["action"] != ABANDONED:
+        return None
+    return next(l for l in reversed(mine) if l["action"] == PENDING and l["dispatch_id"] == mine[-1]["dispatch_id"])
+
+
 def line_for(idx, run_id, attempt, folder):
     """The line of a downloaded attempt; Refused for a run no line names or an attempt no line logs."""
     if run_id not in idx:
@@ -238,6 +254,12 @@ def title(archived_run, provider, model, batch, commit, dispatch_id=None):
 
 def new_dispatch_id():
     return secrets.token_hex(6)
+
+
+def dispatch_id_of(run):
+    """The dispatch id a run's title ends with, None when it has none."""
+    m = re.search(r" · dispatch (\S+)$", run.get("display_title") or "")
+    return m.group(1) if m else None
 
 
 def inputs(a, commit, dispatch_id):
@@ -323,6 +345,26 @@ def _check_cap(lines, status, cap):
                       f"dispatches, at the cap of {cap} side by side")
 
 
+def _check_late_runs(gh, repo, lines):
+    """Refused while a run the log does not name, and not cancelled, carries the dispatch id of an abandoned
+    dispatch: GitHub started it late, and a new dispatch could pay for its replicate twice. The run list is read back
+    to the oldest abandoned dispatch; refused when it cannot be."""
+    ids = {l["dispatch_id"] for l in lines if l["action"] == ABANDONED}
+    if not ids:
+        return
+    since = min(_parse(l["time"]) for l in lines if l["action"] == PENDING and l["dispatch_id"] in ids)
+    runs, reached = runs_since(gh, repo, since)
+    if not reached:
+        raise Refused(f"the run list did not reach {_stamp(since)}, the oldest abandoned dispatch, within GitHub's cap "
+                      f"of {LISTING_CAP} runs and {MAX_PAGES} pages: no new dispatch while a late run of it may exist")
+    known = set(index(lines))
+    late = sorted(r["id"] for r in runs if r["id"] not in known and r.get("conclusion") != "cancelled"
+                  and dispatch_id_of(r) in ids)
+    if late:
+        raise Refused(f"runs {late} carry the dispatch id of an abandoned dispatch: attach each to its replicate with "
+                      f"resolve --run-id, or cancel it, before any new dispatch")
+
+
 def _dispatched(lines, campaign, provider, model):
     """The replicates of one campaign and model a run or an open pending dispatch holds: {(arm, replicate)}."""
     same = lambda l: (l["campaign"], l["provider"], l["model"]) == (campaign, provider, model)
@@ -371,6 +413,7 @@ def _dispatch(a, gh, now, sleep):
         raise Refused(f"replicate {a.replicate} of the {a.arm} is already run {started[0]['run_id']}; rerun it instead")
     _check_pairing(lines, a, status)
     _check_cap(lines, status, a.max_side_by_side)
+    _check_late_runs(gh, a.repo, lines)
     commit = _api(gh, f"repos/venslabs/vens/commits/{a.vens_ref}")["sha"]
     did = new_dispatch_id()
     want = title(a.archived_run, a.provider, a.model, a.batch_size, commit, did)
@@ -398,11 +441,15 @@ def resolve(a, gh, now=utc_now):
     """Closes a pending dispatch: attaches the run it started, its title, its run_attempt 1 and its creation after
     the pending line checked; or, with no_run, records that it started none, no sooner than 15 minutes after it and
     only when the run list, read back to its time, holds no run of its title and no run the log does not name
-    created since it, whatever its title: GitHub may create the run minutes after the request, under any title."""
+    created since it, whatever its title: GitHub may create the run minutes after the request, under any title.
+    With a run id and no pending dispatch, attaches the late run of the replicate's abandoned dispatch, the same
+    checks made, when the replicate was not dispatched again."""
     with locked(a.log):
         lines = load(a.log)
         k = (a.campaign, a.arm, a.provider, a.model, a.replicate)
         pending = next((l for l in open_pending(lines) if key(l) == k), None)
+        if pending is None and not a.no_run:
+            pending = abandoned_dispatch(lines, k)
         if pending is None:
             raise Refused(f"replicate {a.replicate} of the {a.arm} has no pending dispatch")
         want = title(pending["archived_run"], pending["provider"], pending["model"], pending["batch_size"],
