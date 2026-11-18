@@ -590,6 +590,17 @@ class TestSealing(Base):
                 self.main()
         campaign.check_sums(self.out)
 
+    def test_an_error_while_finishing_still_sweeps_the_keys_out_before_the_sums(self):
+        environ = self.env(VENS_MOCK_LLM_SKIP=KEYS["OPENAI_API_KEY_BEFORE"], **KEYS)
+        with mock.patch.object(campaign, "write_failures", side_effect=RuntimeError("disk full")):
+            with self.assertRaisesRegex(RuntimeError, "disk full"):
+                self.main(models=("mock/mock", DATED), environ=environ)
+        self.assertEqual(self.key_forms_held(), [])
+        campaign.check_sums(self.out)
+        doc = self.doc()
+        self.assertTrue(doc["stopped"].startswith("runner error: a form of a key was in "), doc["stopped"])
+        self.assertIn(campaign.CAMPAIGN, doc["redacted"])
+
     def test_an_error_in_the_runner_names_its_cause(self):
         def failing_drain(*args):
             raise OSError("disk full")

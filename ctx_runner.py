@@ -377,24 +377,28 @@ def _sweep(ctx):
 def _seal(ctx, doc, error):
     """The archive finished, whatever stopped the campaign: campaign.json with its end, why it stopped and the files
     a key was cut out of; failures.jsonl; every key's forms swept out of every file, campaign.json included, a form
-    found then stopping the campaign; SHA256SUMS last, written even when finishing fails. Returns the error the
-    campaign ends on."""
+    found then stopping the campaign; SHA256SUMS last. An error writing campaign.json or failures.jsonl is kept, the
+    sweep and the sums made all the same, and raised then. Returns the error the campaign ends on."""
     path = os.path.join(ctx.out, campaign.CAMPAIGN)
+    unwritten = None
     try:
         runvens.write_json(path, {**doc, "ended_at": runvens.utc(), "redacted": sorted(set(ctx.redacted)),
                                   "stopped": None if error is None else _why(error)})
         campaign.write_failures(ctx.out)
-        # the second sweep reads what the first one's marks rewrote; the marks never hold a key, only paths
-        for _ in range(2):
-            found = _sweep(ctx)
-            if not found:
-                break
-            error = error or RunnerError(f"a form of a key was in {', '.join(found)}, now cut out")
-            sealed = load_object(path)
-            runvens.write_json(path, {**sealed, "redacted": sorted(set(sealed.get("redacted") or []) | set(found)),
-                                      "stopped": sealed.get("stopped") or _why(error)})
-    finally:
-        campaign.write_sums(ctx.out)
+    except Exception as e:
+        unwritten = e
+    # the second sweep reads what the first one's marks rewrote; the marks never hold a key, only paths
+    for _ in range(2):
+        found = _sweep(ctx)
+        if not found:
+            break
+        error = error or RunnerError(f"a form of a key was in {', '.join(found)}, now cut out")
+        sealed = load_object(path)
+        runvens.write_json(path, {**sealed, "redacted": sorted(set(sealed.get("redacted") or []) | set(found)),
+                                  "stopped": sealed.get("stopped") or _why(error)})
+    campaign.write_sums(ctx.out)
+    if unwritten is not None:
+        raise unwritten
     return error
 
 
