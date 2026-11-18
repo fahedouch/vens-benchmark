@@ -92,12 +92,24 @@ def _demo_rows(data, field):
     return rows
 
 
+def _short(commits, n=12):
+    """Each commit by its shortest prefix, at least n long, that no other commit of the table shares."""
+    commits = sorted(set(commits))
+    out = {}
+    for c in commits:
+        k = n
+        while k < len(c) and any(o != c and o.startswith(c[:k]) for o in commits):
+            k += 1
+        out[c] = c[:k]
+    return out
+
+
 def _scenario_rows(data, field):
     agg = {}
     for k, per in ordered(data["targets"]):
         if k.corpus != cellmod.SCENARIOS:
             continue
-        a = agg.setdefault((k.arm, f"{k.campaign} · {cellmod.model_of(k)}", str(k.commit)[:12]),
+        a = agg.setdefault((k.arm, f"{k.campaign} · {cellmod.model_of(k)}", str(k.commit)),
                            {"k": 0, "n": 0, "scenarios": 0, "below": [], "sev": 0})
         a["scenarios"] += 1
         for rep, t in sorted(per.items()):
@@ -109,8 +121,9 @@ def _scenario_rows(data, field):
             a["sev"] += t["severity_ok"]
             if t[field] < t["cves"]:
                 a["below"].append(f"{k.unit} r{rep}" + ("" if t["vex"] else " no VEX"))
-    return [[arm, model, commit, a["scenarios"], a["n"], share(a["k"], a["n"]), ", ".join(a["below"]) or "none"]
-            + ([share(a["sev"], a["n"])] if field == "recomputable" else [])
+    short = _short(commit for _, _, commit in agg)
+    return [[arm, model, short[commit], a["scenarios"], a["n"], share(a["k"], a["n"]),
+             ", ".join(a["below"]) or "none"] + ([share(a["sev"], a["n"])] if field == "recomputable" else [])
             for (arm, model, commit), a in sorted(agg.items())]
 
 

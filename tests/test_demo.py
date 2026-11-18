@@ -153,6 +153,19 @@ class TestTargets(unittest.TestCase):
         self.assertIn(f"| after | {model} | {s.AFTER_SHA[:12]} | 1 | 1 | 1/1 (1.000) | none | 1/1 (1.000) |", text)
         self.assertIn(f"| after | {model} | {'c' * 12} | 1 | 1 | 0/1 (0.000) | wrong_yaml r1 | 1/1 (1.000) |", text)
 
+    def test_scenario_targets_keep_apart_commits_sharing_a_prefix(self):
+        vid = "CVE-2099-0001"
+        a, b = "a" * 40, "a" * 12 + "b" * 28
+        recs = [r.record("after", "wrong_yaml", 1, {vid: r.rating(s.VECTOR)}, scenario=True, commit=a),
+                r.record("after", "wrong_yaml", 1, {vid: r.rating(s.VECTOR, score=s.SCORE + 1)}, scenario=True,
+                         commit=b)]
+        text = "\n".join(report.targets({"targets": demo.targets(cellmod.group(recs), lambda rec: {vid}),
+                                         "java": False}))
+        model = f"c1 · openai/{s.MODEL}"
+        self.assertIn(f"| after | {model} | {'a' * 13} | 1 | 1 | 1/1 (1.000) | none | 1/1 (1.000) |", text)
+        self.assertIn(f"| after | {model} | {'a' * 12 + 'b'} | 1 | 1 | 0/1 (0.000) | wrong_yaml r1 | 1/1 (1.000) |",
+                      text)
+
     def test_without_the_report_the_targets_are_unavailable(self):
         rec = r.record("before", CTX, 1, {"CVE-A": r.rating(r.group_vector(3, 4, 2, 3), "before")})
         per = next(iter(demo.targets(cellmod.group([rec]), lambda x: None).values()))
