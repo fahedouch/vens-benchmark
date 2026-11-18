@@ -42,7 +42,7 @@ class TestSensitivity(unittest.TestCase):
                 r.record("before", "internal", 2, r.scored([7, 4]), model="m2")]
         (got,) = kpi.model_sensitivity(cellmod.group(recs)).values()
         # CVE 0: means 2 and 6, ranges 1-3 and 5-7 apart; CVE 1: means 4 and 4, overlapping
-        self.assertEqual(got, {"cves": 2, "gap": 2.0, "apart": 1})
+        self.assertEqual(got, {"cves": 2, "gap": 2.0, "apart": 1, "replicates": ([1, 2], [1, 2])})
 
     def test_context_sensitivity_and_discrimination(self):
         ls = {"internal": [1, 2], "internal-api": [2, 1], "internet-facing": [3, 3]}
@@ -77,9 +77,9 @@ class TestFailuresAndCost(unittest.TestCase):
                 r.record("after", "internal", 2, r.scored([1, 2]), recovery={"llm_calls": 12, "recovery_calls": 2},
                          cost={"total": 0.3}, steps=steps("2026-11-20T10:02:00Z"))]
         (got,) = kpi.cost(cellmod.group(recs)).values()
-        self.assertEqual({k: round(v, 6) for k, v in got.items()},
-                         {"runs": 2, "calls_per_run": 11.0, "calls_per_cve": 5.5, "recovery_per_run": 1.0,
-                          "wall_seconds": 90.0, "usd_per_run": 0.2, "usd_per_cve": 0.1})
+        self.assertEqual({k: v if k == "replicates" else round(v, 6) for k, v in got.items()},
+                         {"runs": 2, "replicates": [1, 2], "calls_per_run": 11.0, "calls_per_cve": 5.5,
+                          "recovery_per_run": 1.0, "wall_seconds": 90.0, "usd_per_run": 0.2, "usd_per_cve": 0.1})
 
 
 if __name__ == "__main__":

@@ -52,6 +52,15 @@ def _moves(row):
         f"{f} {a}->{b} ({sa}/{sb}{', same answer' if same else ''})" for f, a, b, sa, sb, same in example["moved"])
 
 
+def _sources(row):
+    """The after's sources of the quantity's factors in the first replicate read, a / b where they differ."""
+    found = next((p["sources"] for p in row["per"] if p.get("sources")), None)
+    if not found:
+        return ""
+    word = lambda a, b: str(a) if a == b else f"{a}/{b}"
+    return "; ".join(f"{' '.join(fs)} {word(a, b)}" for (a, b), fs in found.items())
+
+
 def _check_rows(rows):
     out = []
     for r in rows:
@@ -59,7 +68,7 @@ def _check_rows(rows):
         item = " / ".join(row["item"]) if c.pairs() else row["item"]
         out.append([c.label, r["arm"], r["kind"], r["model"], item, _diffs(row, c), _medians(row, c),
                     _verdict(row, r["kind"]), cellmod.replicates(row["missing"]) if row["missing"] else "none",
-                    _moves(row)])
+                    _sources(row) if c.pairs() else "", _moves(row)])
     return out
 
 
@@ -67,8 +76,9 @@ def families_section(sc):
     out = ["### The families, the showcases and reachability", "",
            "Per check, arm and model, replicate by replicate, a pair's two runs of one replicate together; a "
            "diagnostic is printed and judged by nothing. The medians are over each scenario's runs, the most common "
-           "value for a severity or an answer. The move, in the after: none, Go's (levels Go set, or one answer Go "
-           "crossed with a declared field), the model's (answers that differ), or mixed.", ""]
+           "value for a severity or an answer. The after's sources: where each factor of the quantity took its level "
+           "in the first replicate read, a / b where the two differ. The move, in the after: none, Go's (levels Go "
+           "set, or one answer Go crossed with a declared field), the model's (answers that differ), or mixed.", ""]
     by_family = collections.OrderedDict()
     for r in sc["rows"]:
         by_family.setdefault(r["check"].family, []).append(r)
@@ -77,11 +87,12 @@ def families_section(sc):
         if family == "showcases":
             out += ["; ".join(f"{sid}: {text}" for sid, text in (sc.get("headings") or {}).items()) + ".", ""]
         out += table(["check", "arm", "kind", "model", "scenarios", "values", "medians", "verdict", "missing",
-                      "moves"], _check_rows(rows))
+                      "sources (after)", "moves"], _check_rows(rows))
         for (fam, model), counter in sorted(sc["moves"].items()):
             if fam == family and counter:
                 word = ("all Go's: the after's move here is Go's, not the model's reading"
-                        if families.all_gos(counter) else "not all Go's")
+                        if families.all_gos(counter) else "no factor moved" if set(counter) == {families.NONE}
+                        else "not all Go's")
                 out += [f"After, {model}: moves {_tally(counter.elements())}; {word}.", ""]
     return out
 
@@ -160,13 +171,19 @@ def _context(k):
     for (model, arm), c in ordered(k["context"]):
         for (x, y), p in c["pairs"].items():
             ans = ", ".join(f"{f} {num(a, 2)}/{num(w, 2)}" for f, (a, w) in (p.get("answers") or {}).items())
-            rows.append([model, arm, c["cves"], num(c["in_order"]), f"{x} -> {y}", num(p["gap"]),
+            rows.append([model, arm, _reps_by(c["replicates"]), c["cves"], num(c["in_order"]), f"{x} -> {y}",
+                         num(p["gap"]),
                          num(p["noise"]), ans or NA])
     return ["### Context sensitivity", "", "The share of CVEs whose mean L does not fall from internal to internal-api "
             "to internet-facing; per context pair, the mean gap in L against the noise floor (the mean of the two "
             "contexts' MPDs of L); for the after, per question, answer agreement across the pair / within it.", ""] + \
-        (table(["model", "arm", "CVEs", "in order", "pair", "gap in L", "noise floor", "answers across/within"], rows)
+        (table(["model", "arm", "replicates", "CVEs", "in order", "pair", "gap in L", "noise floor",
+                "answers across/within"], rows)
          if rows else ["Needs the three contexts: not all read here.", ""])
+
+
+def _reps_by(by_context):
+    return "; ".join(f"{ctx} {cellmod.replicates(reps)}" for ctx, reps in sorted(by_context.items()))
 
 
 def _tally_dict(d):
@@ -194,21 +211,24 @@ def kpis(data):
     out += _stability(k)
     out += ["### Model sensitivity", "", "The mean per-CVE gap of the two models' mean scores, and the CVEs whose "
             "ranges over the runs do not overlap; Delta, its gap test and band agreement are above.", ""]
-    rows = [[ctx, arm, a, b, m["cves"], num(m["gap"], 2), m["apart"]] for (ctx, arm, a, b), m in ordered(k["model"])]
-    out += table(["context", "arm", "model a", "model b", "CVEs", "mean gap", "CVEs apart"], rows) if rows else \
+    rows = [[ctx, arm, a, b, " / ".join(cellmod.replicates(x) for x in m["replicates"]), m["cves"], num(m["gap"], 2),
+             m["apart"]] for (ctx, arm, a, b), m in ordered(k["model"])]
+    out += table(["context", "arm", "model a", "model b", "replicates a / b", "CVEs", "mean gap", "CVEs apart"],
+                 rows) if rows else \
         ["Needs two models: none here.", ""]
     out += _context(k)
     out += ["### Discrimination", "", "W and H per run are above; across the contexts, the SD of each CVE's mean "
             "score pooled over them.", ""]
-    out += table(["model", "arm", "contexts", "values", "pooled SD"],
-                 [[m, a, ", ".join(d["contexts"]), d["values"], num(d["sd"], 2)]
+    out += table(["model", "arm", "replicates", "values", "pooled SD"],
+                 [[m, a, _reps_by(d["replicates"]), d["values"], num(d["sd"], 2)]
                   for (m, a), d in ordered(k["discrimination"])])
     out += _failures(k)
     out += ["### Cost per run", "", "Calls and wall time are counted from the records; the dollars are the estimate "
             "above, not the usage exports'.", ""]
-    out += table(["cell", "runs", "calls per run", "calls per CVE", "recovery calls per run", "wall time per run, s",
-                  "estimate per run, USD", "estimate per CVE, USD"],
-                 [[cellmod.label(key), c["runs"], num(c["calls_per_run"], 1), num(c["calls_per_cve"], 2),
+    out += table(["cell", "replicates", "calls per run", "calls per CVE", "recovery calls per run",
+                  "wall time per run, s", "estimate per run, USD", "estimate per CVE, USD"],
+                 [[cellmod.label(key), cellmod.replicates(c["replicates"]), num(c["calls_per_run"], 1),
+                   num(c["calls_per_cve"], 2),
                    num(c["recovery_per_run"], 2), num(c["wall_seconds"], 0), num(c["usd_per_run"], 4),
                    num(c["usd_per_cve"], 5)] for key, c in ordered(k["cost"])])
     return out + ["Conformance's checks with known expectations are vens's own Go tests on each commit, and the Java "

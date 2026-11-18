@@ -91,6 +91,18 @@ def moved(rec_a, rec_b, quantity):
     return out
 
 
+def sources(rec_a, rec_b, quantity):
+    """{(source a, source b): [factors]} of the quantity's factors, None without answers.json."""
+    fa, fb = factors(rec_a), factors(rec_b)
+    if fa is None or fb is None:
+        return None
+    names = (quantity.split()[1],) if quantity.startswith("answer ") else GROUPS.get(quantity, (quantity,))
+    out = {}
+    for f in names:
+        out.setdefault(((fa.get(f) or {}).get("source"), (fb.get(f) or {}).get("source")), []).append(f)
+    return out
+
+
 def move(rec_a, rec_b, quantity):
     """none, Go's, the model's or mixed (above); None when it cannot be told."""
     if quantity.startswith("answer "):
@@ -146,7 +158,8 @@ def pair(check, arm, a, b, model, runs):
             continue
         per.append({"replicate": rep, "a": va, "b": vb, "ok": ok,
                     "move": move(x, y, check.quantity) if arm == "after" else None,
-                    "moved": moved(x, y, check.quantity) if arm == "after" else None})
+                    "moved": moved(x, y, check.quantity) if arm == "after" else None,
+                    "sources": sources(x, y, check.quantity) if arm == "after" else None})
     ma = _summary([value(r, check.quantity) for r in ra["runs"].values()])
     mb = _summary([value(r, check.quantity) for r in rb["runs"].values()])
     return {"item": (a, b), "per": per, "missing": missing, "median": (ma, mb, _ok_pair(check, ma, mb))}

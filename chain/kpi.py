@@ -53,6 +53,10 @@ def _given(per, v, f):
     return [x for x in (_answer(a[v], f) for a in per if v in a) if x is not None]
 
 
+def _reps(runs):
+    return sorted(r["what"]["replicate"] for r in runs)
+
+
 def _by_arm(cells):
     """{(model, arm): {context: runs}} of the demo scan."""
     out = collections.defaultdict(dict)
@@ -100,7 +104,8 @@ def model_sensitivity(cells):
                 xa, xb = [s[v] for s in sa], [s[v] for s in sb]
                 gaps.append(abs(statistics.mean(xa) - statistics.mean(xb)))
                 apart += max(xa) < min(xb) or max(xb) < min(xa)
-            out[(ctx, arm, a, b)] = {"cves": len(ids), "gap": _mean(gaps), "apart": apart}
+            out[(ctx, arm, a, b)] = {"cves": len(ids), "gap": _mean(gaps), "apart": apart,
+                                     "replicates": (_reps(models[a]), _reps(models[b]))}
     return out
 
 
@@ -122,7 +127,8 @@ def context_sensitivity(cells):
                              "noise": _mean([stats.mpd(cellmod.matrix(ctxs[c], ids, "L")) for c in (x, y)])}
             if arm == "after":
                 pairs[(x, y)]["answers"] = answers_across(ctxs[x], ctxs[y], ids)
-        out[(model, arm)] = {"cves": len(ids), "in_order": order / len(ids) if ids else None, "pairs": pairs}
+        out[(model, arm)] = {"cves": len(ids), "in_order": order / len(ids) if ids else None, "pairs": pairs,
+                             "replicates": {c: _reps(ctxs[c]) for c in CONTEXT_ORDER}}
     return out
 
 
@@ -151,6 +157,7 @@ def discrimination(cells):
             ss = [cellmod.scores(r) for r in runs]
             pooled += [statistics.mean(s[v] for s in ss) for v in cellmod.common(runs)]
         out[(model, arm)] = {"contexts": sorted(ctxs), "values": len(pooled),
+                             "replicates": {c: _reps(runs) for c, runs in ctxs.items()},
                              "sd": statistics.stdev(pooled) if len(pooled) > 1 else None}
     return out
 
@@ -203,7 +210,8 @@ def cost(cells):
         n_cves = [len(r["ratings"] or {}) for r in runs]
         calls = [(r.get("recovery") or {}).get("llm_calls") for r in runs]
         usd = [(r.get("cost_estimate") or {}).get("total") for r in runs]
-        out[k] = {"runs": len(runs), "calls_per_run": _mean(calls), "calls_per_cve": _ratio(calls, n_cves),
+        out[k] = {"runs": len(runs), "replicates": _reps(runs), "calls_per_run": _mean(calls),
+                  "calls_per_cve": _ratio(calls, n_cves),
                   "recovery_per_run": _mean([(r.get("recovery") or {}).get("recovery_calls") for r in runs]),
                   "wall_seconds": _mean([ledger.wall_seconds(r) for r in runs]),
                   "usd_per_run": _mean(usd), "usd_per_cve": _ratio(usd, n_cves)}

@@ -166,9 +166,17 @@ def cross(data):
              r["cves"], num(r["mpd"][0], 2), num(r["mpd"][1], 2), num(r["cross"], 2), num(r["delta"], 2),
              num(r["p"], 4), num(r["bands"]), num(r["bands_within"][0]), num(r["bands_within"][1])]
             for (ctx, arm, a, b), r in ordered(data["cross"])]
-    return out + (table(["context", "arm", "model a", "model b", "replicates a / b", "CVEs", "MPD a", "MPD b",
-                         "cross MPD", "Delta", "gap p", "bands", "bands a", "bands b"], rows) if rows
-                  else ["Needs two models with runs in one context and arm: none here.", ""])
+    if not rows:
+        return out + ["Needs two models with runs in one context and arm: none here.", ""]
+    largest = {}
+    for (ctx, arm, a, b), r in ordered(data["cross"]):
+        if r["delta"] is not None and r["delta"] >= largest.get((ctx, arm), (float("-inf"),))[0]:
+            largest[(ctx, arm)] = (r["delta"], f"{a} / {b}")
+    out += table(["context", "arm", "model a", "model b", "replicates a / b", "CVEs", "MPD a", "MPD b", "cross MPD",
+                  "Delta", "gap p", "bands", "bands a", "bands b"], rows)
+    return out + (["The largest Delta over the pairs, which step 5's target bounds: " + "; ".join(
+        f"{ctx}, {arm}: {num(d, 2)} ({pair})" for (ctx, arm), (d, pair) in sorted(largest.items())) + ".", ""]
+                  if largest else [])
 
 
 def impacts(data):
