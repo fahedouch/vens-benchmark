@@ -16,7 +16,9 @@ attempt.json, the attempt record, is written before `vens generate` runs and com
      "archive_check": "success" | "failure" | "skipped" | "cancelled",                       baseline.yml
      "provenance": true | false}                                                             baseline.yml
 
-A field not yet written is absent or null. Times are UTC, ISO 8601.
+A field not yet written is absent or null. Times are UTC, ISO 8601. The reader tells four outcomes apart: a scoring
+that did not complete; a scoring that completed and a later step that failed; a scoring interrupted, its start
+recorded and no exit status; a complete attempt. What a folder does not say stays an explicit unknown.
 """
 import json
 import os
@@ -30,11 +32,17 @@ COMPLETE, FAILED = "complete", "failed"
 SCORING, LATER_STEP, INTERRUPTED = "scoring", "later_step", "interrupted"
 CONTEXTS = ("internet-facing", "internal", "internal-api")
 NO_PROVENANCE = "no provenance.json: the job failed before writing it"
-_UNTIMED = ("generate.started_at", "generate.ended_at", "enrich.started_at", "enrich.ended_at", "vens_binary_sha256")
+STOPPED = ("cancelled", "timed_out", "failure")
+# What the record adds to a download made before it.
+RECORD = ("generate.started_at", "generate.ended_at", "generate.exit_status", "enrich.started_at",
+          "enrich.ended_at", "enrich.exit_status", "archive_check", "vens_binary_sha256")
+IDENTITY = ("run_id", "run_attempt", "job", "context", "replicate", "provider", "model", "llm_batch_size",
+            "vens_ref", "vens_sha")
 
 
 class Refused(Exception):
-    """A folder the reader will not read: a download it cannot tell from another, or one its dispatch log contradicts."""
+    """A folder the reader will not read: a download it cannot tell from another, or one its dispatch log or its
+    expected commits contradict."""
 
 
 def parse_name(name):
@@ -96,6 +104,21 @@ def run_meta(run):
             "batch_size": int(m.group(4)), "replicates": int(m.group(5)), "vens_ref": m.group(6)}
 
 
+def check_name(folder, name, rj, prov):
+    """Refused when the folder's name and its records disagree on the attempt, replicate, context or model."""
+    if name is None:
+        return
+    wanted = {"run_attempt": name["attempt"], "replicate": name["replicate"], "context": name["context"],
+              "model": name["model"]}
+    for source, doc in (("attempt.json", rj), ("provenance.json", prov)):
+        for field, value in wanted.items():
+            got = (doc or {}).get(field)
+            if field == "context" and got is not None:
+                got = os.path.basename(got).replace(".yaml", "")
+            if got is not None and got != value:
+                raise Refused(f"{folder}: the name gives {field} {value}, {source} {got}")
+
+
 def _what(rj, prov, name, line, arm, meta=None):
     rj, prov, name, line, meta = rj or {}, prov or {}, name or {}, line or {}, meta or {}
     context = _pick(rj.get("context"), name.get("context"),
@@ -129,54 +152,101 @@ def _failure(kind, step, cause, source):
     return {"kind": kind, "step": step, "cause": cause, "cause_source": source if cause else None}
 
 
-def _from_record(rj, provenance_present, job):
-    """(outcome, failure, steps, unknown) from attempt.json: the first step that did not end with 0, in order."""
+def _job_cause(job, step):
+    """A step left without its exit status: (cause, source, problem). A job that stopped gives the cause; a job that
+    succeeded contradicts the record."""
     conclusion = (job or {}).get("conclusion")
-    by_job = (f"job {conclusion}", "jobs.json") if conclusion else (None, None)
+    if conclusion in STOPPED:
+        return f"job {conclusion}", "jobs.json", None
+    if conclusion is None:
+        return None, None, None
+    return None, None, f"job {conclusion}, yet attempt.json gives {step} no exit status"
+
+
+def _record_fields(rj):
     gen, enrich = rj.get("generate") or {}, rj.get("enrich") or {}
+    fields = {"generate.started_at": gen.get("started_at"), "generate.ended_at": gen.get("ended_at"),
+              "generate.exit_status": gen.get("exit_status"), "vens_binary_sha256": rj.get("vens_binary_sha256")}
+    if rj.get("runner") == "baseline.yml":
+        fields.update({"enrich.started_at": enrich.get("started_at"), "enrich.ended_at": enrich.get("ended_at"),
+                       "enrich.exit_status": enrich.get("exit_status"), "archive_check": rj.get("archive_check")})
+    return fields
+
+
+def _from_record(rj, provenance_present, job):
+    """(outcome, failure, steps, unknown, problems) from attempt.json: the first step that did not end with 0."""
+    gen, enrich = rj.get("generate") or {}, rj.get("enrich") or {}
+    baseline = rj.get("runner") == "baseline.yml"
     steps = {"generate": gen, "enrich": enrich or None, "archive_check": rj.get("archive_check"),
              "provenance": provenance_present}
-    unknown = [f"generate.{k}" for k in ("started_at", "ended_at", "exit_status") if gen.get(k) is None]
-    unknown += [] if rj.get("vens_binary_sha256") else ["vens_binary_sha256"]
+    unknown = [f for f, v in _record_fields(rj).items() if v is None]
+    problems = [f"attempt.json lacks {f}" for f in IDENTITY if baseline and rj.get(f) is None]
     if gen.get("exit_status") is None:
-        cause = ("timeout", "attempt.json") if gen.get("timed_out") else by_job
-        return FAILED, _failure(INTERRUPTED, "generate", *cause), steps, unknown
+        if gen.get("started_at") is None:
+            return FAILED, _failure(None, None, None, None), steps, unknown + ["failure.kind"], problems + [
+                "attempt.json records neither the start nor the exit status of vens generate"]
+        if gen.get("timed_out"):
+            return FAILED, _failure(INTERRUPTED, "generate", "timeout", "attempt.json"), steps, unknown, problems
+        cause, source, problem = _job_cause(job, "vens generate")
+        if problem:
+            return FAILED, _failure(None, "generate", None, None), steps, unknown + ["failure.kind"], problems + [
+                problem]
+        return FAILED, _failure(INTERRUPTED, "generate", cause, source), steps, unknown, problems
     if gen["exit_status"] != 0:
-        return FAILED, _failure(SCORING, "generate", None, None), steps, unknown
-    if rj.get("runner") != "baseline.yml":
-        return COMPLETE, None, steps, unknown
+        return FAILED, _failure(SCORING, "generate", None, None), steps, unknown, problems
+    if not baseline:
+        return COMPLETE, None, steps, unknown, problems
     if enrich.get("exit_status") is None:
-        return FAILED, _failure(LATER_STEP, "enrich", *by_job), steps, unknown + ["enrich.exit_status"]
+        cause, source, problem = _job_cause(job, "vens enrich")
+        return FAILED, _failure(LATER_STEP, "enrich", cause, source), steps, unknown, problems + (
+            [problem] if problem else [])
     if enrich["exit_status"] != 0:
         return FAILED, _failure(LATER_STEP, "enrich", f"vens enrich exited {enrich['exit_status']}",
-                                "attempt.json"), steps, unknown
+                                "attempt.json"), steps, unknown, problems
     check = rj.get("archive_check")
+    if check is None:
+        cause, source, problem = _job_cause(job, "the archive check")
+        return FAILED, _failure(LATER_STEP, "archive_check", cause, source), steps, unknown, problems + (
+            [problem] if problem else [])
     if check != "success":
-        cause = (f"archive check {check}", "attempt.json") if check else by_job
-        return FAILED, _failure(LATER_STEP, "archive_check", *cause), steps, unknown
+        return FAILED, _failure(LATER_STEP, "archive_check", f"archive check {check}", "attempt.json"), steps, \
+            unknown, problems
+    if rj.get("provenance") and not provenance_present:
+        problems.append("attempt.json says provenance.json was written; the download holds none")
     if not (rj.get("provenance") and provenance_present):
-        return FAILED, _failure(LATER_STEP, "provenance", "provenance.json not written", "attempt.json"), steps, unknown
-    return COMPLETE, None, steps, unknown
+        return FAILED, _failure(LATER_STEP, "provenance", "provenance.json not written", "attempt.json"), steps, \
+            unknown, problems
+    return COMPLETE, None, steps, unknown, problems
 
 
-def _without_record(folder, files, failure_line):
+def _without_record(files, failure_line):
     """(outcome, failure, steps, implied, unknown) for a download made before the record: provenance.json, written
-    last, means every step passed (baseline.yml's order under set -euo pipefail); without it, the attempt failed
-    at a step the download does not name."""
+    last, means every step passed (baseline.yml's order under set -euo pipefail); without it the attempt failed at a
+    step the download does not name, its VEX, if one is there, outside the scores."""
     if files["provenance"] is not None:
         steps = {"generate": {"exit_status": 0}, "enrich": {"exit_status": 0}, "archive_check": "success",
                  "provenance": True}
         implied = ["generate.exit_status", "enrich.exit_status", "archive_check"]
-        return COMPLETE, None, steps, implied, list(_UNTIMED)
-    if files["vex"] is not None:
-        raise Refused(f"{folder}: a VEX but no provenance.json and no attempt.json; a truncated download is not a "
-                      f"failed job")
+        return COMPLETE, None, steps, implied, [f for f in RECORD if f not in implied]
     error = (failure_line or {}).get("error")
     failure = {**_failure(None, None, error, "failures.txt"), "reason": NO_PROVENANCE}
     steps = {"generate": None, "enrich": None, "archive_check": None, "provenance": False}
-    unknown = list(_UNTIMED) + ["generate.exit_status", "enrich.exit_status", "archive_check", "failure.kind",
-                                "failure.step"]
-    return FAILED, failure, steps, [], unknown + ([] if error else ["failure.cause"])
+    unknown = list(RECORD) + ["failure.kind", "failure.step"] + ([] if error else ["failure.cause"])
+    return FAILED, failure, steps, [], unknown
+
+
+def _cross_check(outcome, failure, summary, gen_exit):
+    """The run summary against the exit status: a run vens says failed is a failed scoring whatever its exit."""
+    if summary is None:
+        return outcome, failure, []
+    said = summary.get("failed")
+    scored = outcome == COMPLETE or (failure or {}).get("kind") == LATER_STEP
+    if said is True and scored:
+        return FAILED, _failure(SCORING, "generate", None, None), [
+            f"vens generate exited {gen_exit if gen_exit is not None else 0}, yet its run summary says failed=true"]
+    if said is False and (failure or {}).get("kind") == SCORING:
+        return outcome, failure, [f"vens generate exited {gen_exit}, yet its run summary says failed=false"]
+    return outcome, failure, []
 
 
 def _run_failed(summary, outcome, failure):
@@ -189,41 +259,50 @@ def _run_failed(summary, outcome, failure):
     return True if failure["kind"] in (SCORING, INTERRUPTED) else None
 
 
-def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, meta=None):
+def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, meta=None, commits=None):
     """The record of one attempt. arm: 'before' or 'after' when the caller knows it (the dispatch log's line gives
     it otherwise); line: the dispatch log's line for this attempt; job: its jobs.json entry; failure_line: the
     failures.txt entry for its job (downloads made before the record); meta: its run's dispatch metadata
-    (run_meta), the last source of what was dispatched."""
+    (run_meta), the last source of what was dispatched; commits: {arm: vens commit}, each arm's expected commit."""
     files = _files(folder)
     rj, prov = _json(files["record"]), _json(files["provenance"])
     name = parse_name(os.path.basename(os.path.normpath(folder)))
     if rj is None and prov is None and name is None:
         raise Refused(f"{folder}: no attempt.json, no provenance.json and not an artefact's name")
+    check_name(folder, name, rj, prov)
     what = _what(rj, prov, name, line, arm, meta)
     problems = []
     for source, value in (("argument", arm), ("dispatch log", (line or {}).get("arm")), ("attempt.json",
                                                                                          (rj or {}).get("arm"))):
         if value is not None and value != what["arm"]:
             problems.append(f"arm {value} from the {source}, {what['arm']} taken")
+    if commits and what["arm"] in commits and what["vens_commit"] not in (None, commits[what["arm"]]):
+        raise Refused(f"{folder}: vens {what['vens_commit']} is not the {what['arm']}'s {commits[what['arm']]}")
     if rj is not None:
-        outcome, failure, steps, unknown = _from_record(rj, files["provenance"] is not None, job)
+        outcome, failure, steps, unknown, found = _from_record(rj, files["provenance"] is not None, job)
         implied = []
+        problems += found
     else:
-        outcome, failure, steps, implied, unknown = _without_record(folder, files, failure_line)
+        outcome, failure, steps, implied, unknown = _without_record(files, failure_line)
+    if what["vens_commit"] is None:
+        unknown.append("vens_commit")
 
     recs = venslog.read(files["log"]) if files["log"] else None
     if recs is None:
         unknown += ["log", "summary"]
     summary = venslog.summary(recs) if recs is not None else None
+    gen_exit = ((rj or {}).get("generate") or {}).get("exit_status")
+    outcome, failure, found = _cross_check(outcome, failure, summary, gen_exit)
+    problems += found
     if failure is not None and failure["kind"] == SCORING and recs is not None:
         failure = {**failure, "cause": venslog.cause(recs), "cause_source": "vens log"}
-    if failure is not None and failure["kind"] in (SCORING, INTERRUPTED) and recs is None and failure["cause"] is None:
-        unknown += ["failure.cause"]
+    if failure is not None and failure["cause"] is None:
+        unknown.append("failure.cause")
 
     run_dirs = files["run_dirs"]
     archived = callmod.load(run_dirs[0]) if run_dirs and len(run_dirs) == 1 else None
     if archived is None:
-        unknown += ["calls"]
+        unknown.append("calls")
     kinds, why = callmod.classify(archived, what["arm"]) if archived is not None else (None, None)
     if why:
         problems.append(why)
@@ -232,7 +311,9 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     estimate = cost.estimate(archived, kinds, what["model"])
 
     evidence = cdx.evidence(files["attestation"]) if files["attestation"] else None
-    attested = sorted({(e.get("provider"), e.get("model")) for e in evidence}) if evidence is not None else None
+    attested = [[e.get("provider"), e.get("model")] for e in evidence] if evidence is not None else None
+    if attested is None:
+        unknown.append("models_attested")
     if evidence is not None and archived is not None:
         check = callmod.archive_check(run_dirs, archived, evidence, what["provider"], what["model"])
     else:
@@ -243,7 +324,8 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     answers = None
     if doc is not None:
         rated, unrated = answersmod.entries(doc)
-        found = answersmod.unrated_shape(doc) + (answersmod.check(doc, ratings) if ratings is not None else [])
+        found = (answersmod.duplicates(doc) + answersmod.unrated_shape(doc)
+                 + (answersmod.check(doc, ratings) if ratings is not None else []))
         answers = {"rated": len(rated), "unrated": len(unrated), "counters": doc["counters"],
                    "defects": doc["defects"], "problems": found,
                    "per_cve": {vid: answersmod.per_cve(e) for vid, e in {**rated, **unrated}.items()}}
@@ -256,7 +338,7 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     if outcome == COMPLETE and ratings is None:
         incomplete.append("a complete attempt without a VEX")
     usable = (outcome == COMPLETE and ratings is not None and not vex_problems and check[0] is True
-              and not incomplete)
+              and not incomplete and not (answers or {}).get("problems"))
     if outcome == COMPLETE and check[0] is not True:
         problems.append(f"archive check, restated: {check[1]}")
     return {
@@ -272,18 +354,33 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     }
 
 
-def without_artefact(job, model, run_id):
-    """An attempt jobs.json lists, failed or interrupted, with no artefact downloaded: its job's conclusion only."""
+def without_artefact(job, model, run_id, line=None):
+    """An attempt jobs.json lists with no artefact downloaded, whatever its job's conclusion: a failed attempt of
+    which only the job is known."""
     m = re.fullmatch(r"(.+) · run (\d+)", job["name"])
     conclusion = job.get("conclusion")
     kind = INTERRUPTED if conclusion in ("cancelled", "timed_out") else None
     what = {"runner": "baseline.yml", "context": m.group(1) if m else None,
             "replicate_in_run": int(m.group(2)) if m else None, "model": model, "run_id": run_id,
-            "run_attempt": job.get("run_attempt"), "job": job["name"]}
+            "run_attempt": job.get("run_attempt"), "job": job["name"], "arm": (line or {}).get("arm"),
+            "replicate": (line or {}).get("replicate")}
+    unknown = list(RECORD) + ["artefact", "calls", "log", "summary", "vens_commit", "models_attested", "failure.step"]
     return {"folder": None, "record": None, "what": what, "models_attested": None, "outcome": FAILED,
-            "failure": _failure(kind, None, f"job {conclusion}", "jobs.json"),
-            "steps": {"generate": None, "enrich": None, "archive_check": None, "provenance": False}, "implied": [],
-            "unknown": ["artefact", "calls", "log", "summary"], "job": job, "summary": None,
+            "failure": _failure(kind, None, f"artefact missing; job {conclusion}", "jobs.json"),
+            "steps": {"generate": None, "enrich": None, "archive_check": None, "provenance": None}, "implied": [],
+            "unknown": sorted(unknown + ([] if kind else ["failure.kind"])), "job": job, "summary": None,
             "calls": {"archived": None, "with_reply": None, "kinds": None}, "recovery": None, "cost_estimate": None,
             "archive_check": {"passed": None, "reason": "no artefact"}, "answers": None, "ratings": None,
-            "vex_problems": [], "scores_usable": False, "incomplete": [], "problems": []}
+            "vex_problems": [], "scores_usable": False, "incomplete": [], "problems": ["artefact missing"]}
+
+
+def not_downloaded(line, why):
+    """A run attempt the dispatch log names with no artefact folder and no job: flagged, its outcome unknown."""
+    what = {"runner": "baseline.yml", "arm": line.get("arm"), "model": line.get("model"),
+            "replicate": line.get("replicate"), "run_id": line.get("run_id"), "run_attempt": line.get("run_attempt"),
+            "vens_commit": line.get("vens_commit")}
+    return {"folder": None, "record": None, "what": what, "models_attested": None, "outcome": None, "failure": None,
+            "steps": None, "implied": [], "unknown": ["outcome"] + list(RECORD), "job": None, "summary": None,
+            "calls": {"archived": None, "with_reply": None, "kinds": None}, "recovery": None, "cost_estimate": None,
+            "archive_check": {"passed": None, "reason": "not downloaded"}, "answers": None, "ratings": None,
+            "vex_problems": [], "scores_usable": False, "incomplete": [], "problems": [why]}

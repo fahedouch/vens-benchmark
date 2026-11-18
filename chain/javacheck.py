@@ -1,6 +1,10 @@
-"""The Java check (venslabs/vens#310 step 4, section 2.4): the OWASP reference calculator's 1.0.1 JAR over every
-OWASP rating of every VEX the chain collects, each VEX declared with its arm and the CVE ids its report gives, and the
-driver, which records every exit and verdict against the one its input must give.
+"""The Java check: the OWASP reference calculator's 1.0.1 JAR over every OWASP rating of every VEX the chain
+collects, each VEX declared with its arm and the CVE ids its report gives, and the driver, which records every exit
+and verdict against the one its input must give.
+
+An after rating must parse and score, its sub-scores be the level sums /8, /4 and /4, its severity OWASP's matrix on
+the calculator's bands with max(T, B) and its score L x max(T, B); in either arm a VEX must hold exactly its report's
+CVE ids, each rated once. A before vector the calculator refuses has its other checks not applicable.
 
     python3 -m chain.javacheck fetch-jar DIR      download the JAR into DIR and check its sha256
 """
@@ -22,7 +26,8 @@ JAR_SHA256 = "9b66d91d1ff61f99e320466ff451555696f139147260528591ff1718c5605d1c"
 JAVA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "java")
 OTHER = "CVE-2099-9999"  # an id no corpus holds, for the controls that swap one in
 ABSENT, EXTRA = "a CVE of the report missing from the VEX", "a CVE the report does not hold"
-_LINE = re.compile(r"(?P<label>.+): (?P<kind>after|before|refused); VEX files \d+; .*; (?P<verdict>PASS|FAIL: .+)")
+_LINE = re.compile(r"(?P<label>.+): (?P<kind>after|before|refused); VEX files (?P<files>\d+); .*; "
+                   r"(?P<verdict>PASS|FAIL: .+)")
 
 
 class JarError(Exception):
@@ -93,8 +98,33 @@ class Result:
     lines: tuple
     stderr: str
 
+    def labels(self):
+        """[(label, kind, VEX files, verdict)], one per label line Check4 printed."""
+        return [(m.group("label"), m.group("kind"), int(m.group("files")), m.group("verdict"))
+                for m in map(_LINE.fullmatch, self.lines) if m]
+
     def verdicts(self):
-        return {m.group("label"): m.group("verdict") for m in map(_LINE.fullmatch, self.lines) if m}
+        return {label: verdict for label, _, _, verdict in self.labels()}
+
+    def last(self):
+        return self.lines[-1] if self.lines else None
+
+
+def expect_output(expect, res, wanted, what):
+    """Check4's output against what it must hold: exactly the labels wanted, {label: (kind, VEX files, verdict)},
+    one line each with its kind, VEX count and verdict, and the last line those verdicts give. An exit of 0 with
+    labels or verdicts missing fails here."""
+    got = res.labels()
+    expect(f"{what}: labels", sorted(label for label, _, _, _ in got), sorted(wanted))
+    for label, (kind, files, verdict) in sorted(wanted.items()):
+        lines = [g for g in got if g[0] == label]
+        expect(f"{what}, {label}: verdict lines", len(lines), 1)
+        if len(lines) == 1:
+            expect(f"{what}, {label}: kind and VEX files", lines[0][1:3], (kind, files))
+            expect(f"{what}, {label}: verdict", lines[0][3], verdict)
+    failed = sum(1 for _, _, verdict in wanted.values() if verdict != "PASS")
+    last = "Check4: every label passes" if not failed else f"Check4: FAIL in {failed} of {len(wanted)} labels"
+    expect(f"{what}: last line", res.last(), last)
 
 
 def run(jdk, jar, classes, lines, stub=None):
@@ -184,9 +214,8 @@ def run_cases(jdk, jar, classes, stub, cases, expect, want_rc=None):
         res = run(jdk, jar, classes, declare("case", case.kind, "case", case.expected, case.rows),
                   stub=stub if case.stub else None)
         expect(f"{case.name}: exit", res.rc, case.rc if want_rc is None else want_rc)
-        verdict = res.verdicts().get("case", "no output")
-        expect(f"{case.name}: verdict", verdict, case.verdict())
-        out.append((case, res.rc, verdict))
+        expect_output(expect, res, {"case": (case.kind, 1, case.verdict())}, case.name)
+        out.append((case, res.rc, res.verdicts().get("case", "no output")))
     return out
 
 
@@ -195,18 +224,23 @@ def control_rows():
     return [("X", "/".join(f"{f}:9" for f in cdx.FACTORS), "critical", "81.0")]
 
 
+CONTROL = "control, one off-enumeration vector (NC 9)"
+
+
 def check_vexes(jdk, jar, classes, groups, expect):
-    """Check4 over every VEX of groups, [(label, kind, [(vex, report), ...])], and the refused control; the exit
-    and every label's verdict recorded against PASS. Returns the Result."""
-    lines = []
+    """Check4 over every VEX of groups, [(label, kind, [(vex, report), ...])], and the refused control; its exit
+    and its whole output recorded against what they must be: every label once, its VEX count, PASS. Returns the
+    Result."""
+    lines, wanted = [], {CONTROL: ("refused", 1, "PASS")}
     for label, kind, pairs in groups:
         for vex, report in pairs:
             lines += declare(label, kind, vex, cdx.report_ids(report), cdx.vex_rows(vex))
-    lines += declare("control, one off-enumeration vector (NC 9)", "refused", "control", {"X"}, control_rows())
+        files = wanted.get(label, (kind, 0, "PASS"))[1]
+        wanted = {**wanted, label: (kind, files + len(pairs), "PASS")}
+    lines += declare(CONTROL, "refused", "control", {"X"}, control_rows())
     res = run(jdk, jar, classes, lines)
     expect("Check4 over every VEX and the control: exit", res.rc, 0)
-    for label, verdict in sorted(res.verdicts().items()):
-        expect(f"Check4, {label}: verdict", verdict, "PASS")
+    expect_output(expect, res, wanted, "Check4")
     return res
 
 

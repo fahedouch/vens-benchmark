@@ -58,7 +58,7 @@ class TestMockAttempts(MockRuns):
         for arm, calls in (("after", 11), ("before", 1)):
             rec = attempt.read_attempt(self.runs[(arm, "complete")])
             self.assertEqual((rec["outcome"], rec["scores_usable"], rec["problems"]), ("complete", True, []), arm)
-            self.assertEqual(rec["models_attested"], [("mock", "mock")])
+            self.assertEqual(rec["models_attested"], [["mock", "mock"]] * calls)
             self.assertEqual((rec["recovery"]["planned"], rec["recovery"]["recovery_calls"]), (calls, 0))
             self.assertEqual(set(rec["calls"]["kinds"]), {"planned"})
         rec = attempt.read_attempt(self.runs[("after", "complete")])
@@ -107,8 +107,8 @@ class TestTheRecordFromMockRuns(MockRuns):
                 shutil.copy(os.path.join(source, src), os.path.join(folder, dst))
         with open(os.path.join(source, "attempt.json")) as fh:
             gen = json.load(fh)["generate"]
-        base = {"provider": "mock", "model": "mock", "llm_batch_size": 1, "vens_sha": s.AFTER_SHA, "run_id": 2001,
-                "run_attempt": int(name)}
+        base = {"provider": "mock", "model": "mock", "llm_batch_size": 1, "vens_ref": s.AFTER_SHA,
+                "vens_sha": s.AFTER_SHA, "run_id": 2001, "run_attempt": int(name)}
         if provenance:
             s.write(os.path.join(folder, "provenance.json"), {**base, "context": "contexts/internal.yaml",
                                                               "replicate": 1})
@@ -204,12 +204,35 @@ class TestTheJavaRun(MockRuns):
             code = javarun.main(["--vens", self.after, "--commit", s.AFTER_SHA, "--scenarios", SCENARIOS, "--demo",
                                  demo, "--quickstart", quick, "--jar", jar, "--out", out, "--before", self.before,
                                  "--before-commit", s.BEFORE_SHA])
-        with open(os.path.join(out, "java-check.txt")) as fh:
+        archive = os.path.join(out, "archive")
+        with open(os.path.join(archive, "java-check.txt")) as fh:
             text = fh.read()
         self.assertEqual(code, 0, text[-2000:])
         self.assertIn("Check4: every label passes", text)
         self.assertIn("unexpected 0", text)
         self.assertIn("problems 0", text)
+        self.assertIn("not read 0", text)
+        files = sorted(os.path.relpath(os.path.join(d, f), archive) for d, _, names in os.walk(archive) for f in names)
+        self.assertEqual({os.path.basename(f) for f in files},
+                         {"vex.cdx.json", "answers.json", "java-check.txt", "manifest.json", "SHA256SUMS"})
+        self.assertEqual(sum(f.endswith("vex.cdx.json") for f in files), 35 + 3 + 2 + 35 + 3)
+        self.assertEqual(sum(f.endswith("answers.json") for f in files), 35 + 3 + 2)
+        self.assertFalse(any("calls" in f.split(os.sep) for f in files))
+        with open(os.path.join(archive, "SHA256SUMS")) as fh:
+            sums = dict(reversed(line.rstrip("\n").split("  ", 1)) for line in fh)
+        self.assertEqual(sorted(sums), [f for f in files if f != "SHA256SUMS"])
+        self.assertTrue(all(runvens.sha256(os.path.join(archive, p)) == h for p, h in sums.items()))
+        for name in ("manifest.json", "java-check.txt"):
+            with open(os.path.join(archive, name)) as fh:
+                content = fh.read()
+            self.assertNotIn(self.dir, content)
+            self.assertNotIn(os.path.expanduser("~"), content)
+        with open(os.path.join(archive, "manifest.json")) as fh:
+            manifest = json.load(fh)
+        self.assertEqual(manifest["vens"]["after"]["commit"], s.AFTER_SHA)
+        self.assertEqual(manifest["vens"]["before"]["binary_sha256"], runvens.sha256(self.before))
+        self.assertIn("vens-demo/runs/2026-09-23/scan/scan.json", manifest["inputs"])
+        self.assertEqual(manifest["unexpected"], 0)
 
 
 if __name__ == "__main__":

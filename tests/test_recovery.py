@@ -1,5 +1,5 @@
-"""Q14: the recovery calls, asked_again + 2 x splits, by kind, on synthetic summaries, logs and archives with known
-counts; vens's mock never asks again after an unreadable reply nor splits a call."""
+"""The recovery calls, every call beyond the planned ones, asked_again + 2 x splits, by kind, on synthetic summaries,
+logs and archives with known counts; vens's mock never asks again after an unreadable reply nor splits a call."""
 import os
 import tempfile
 import unittest
@@ -30,7 +30,8 @@ def counts(out):
 
 class TestRecoveryCalls(unittest.TestCase):
     def test_an_ask_again_after_an_omission(self):
-        calls = [(s.SYSTEM, s.after_human(Q, [A]), s.reply([A], skip=[A])), (s.SYSTEM, s.after_human(Q, [A]), s.reply([A]))]
+        calls = [(s.SYSTEM, s.after_human(Q, [A]), s.reply([A], skip=[A])),
+                 (s.SYSTEM, s.after_human(Q, [A]), s.reply([A]))]
         out, kinds, _ = case(calls, [s.again_line("M", [A]), s.scored_line(A)],
                              dict(llm_calls=2, asked_again=1, splits=0, failed=False))
         self.assertEqual(kinds, ["planned", "again_omission"])

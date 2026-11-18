@@ -1,4 +1,4 @@
-"""The reader against 0B's (step 4, PR 1): on 0B's two archived phases, actual baseline.yml downloads with failed
+"""The reader against 0B's: on 0B's two archived phases, actual baseline.yml downloads with failed
 jobs among them, the new reader gives read0b.py's per-CVE score, T and B, and reads the failed attempts, the ones
 whose calls/ alone is archived, as 0B's amended reader does (its A6).
 
@@ -88,23 +88,18 @@ class TestAgainst0B(unittest.TestCase):
 
     def test_score_t_and_b_as_read0b_reads_them(self):
         path = s.env("VB_0B_READ0B")
-        read0b = None
-        if path is not None:
-            try:
-                read0b = load_read0b(path)
-            except ImportError as e:
-                self.skipTest(f"read0b.py does not import here: {e}")
+        if path is None:
+            self.skipTest("set VB_0B_READ0B to compare with read0b.py's own load_vex")
+        try:
+            read0b = load_read0b(path)
+        except ImportError as e:
+            self.skipTest(f"read0b.py does not import here: {e}")
         for phase in PHASES:
             for rec in (r for r in self.records[phase] if r["outcome"] == "complete"):
                 vex = [os.path.join(rec["folder"], n) for n in os.listdir(rec["folder"])
                        if n.startswith("vex-") and not n.endswith(".attestation.cdx.json")][0]
-                if read0b is not None:
-                    want, mismatch = quiet(read0b.load_vex, vex, rescore=False)
-                    self.assertEqual(mismatch, 0)
-                else:
-                    want = {vid: (((r["levels"]["SL"] + r["levels"]["ED"]) / 2) * ((r["levels"]["LC"]
-                                                                                       + r["levels"]["FD"]) / 2),
-                                  r["levels"]["LC"], r["levels"]["FD"]) for vid, r in rec["ratings"].items()}
+                want, mismatch = quiet(read0b.load_vex, vex, rescore=False)
+                self.assertEqual(mismatch, 0)
                 got = {vid: (r["score"], r["T"], r["B"]) for vid, r in rec["ratings"].items()}
                 self.assertEqual(got, want, rec["folder"])
 
@@ -124,6 +119,28 @@ class TestAgainst0B(unittest.TestCase):
             got = {(r["what"]["run_id"], r["what"]["context"], r["what"]["replicate_in_run"], r["what"]["run_attempt"],
                     r["failure"]["reason"]) for r in self.records[phase] if r["outcome"] == "failed"}
             self.assertEqual(got, want, phase)
+
+
+class TestKnownAnswers(unittest.TestCase):
+    """A 0B-style download of two before ratings, read as 0B's reader reads them, its expected values worked out by
+    hand: score ((SL + ED) / 2) x ((LC + FD) / 2), T and B the group means, here LC and FD."""
+
+    def test_score_t_and_b(self):
+        rows = [("CVE-2099-0001", "SL:3/M:3/O:3/S:3/ED:4/EE:4/A:4/ID:4/LC:2/LI:2/LAV:2/LAC:2/FD:3/RD:3/NC:3/PV:3",
+                 "low", 8.75),
+                ("CVE-2099-0002", "SL:7/M:7/O:7/S:7/ED:5/EE:5/A:5/ID:5/LC:9/LI:9/LAV:9/LAC:9/FD:1/RD:1/NC:1/PV:1",
+                 "medium", 30.0)]
+        want = {"CVE-2099-0001": (8.75, 2.0, 3.0),  # ((3 + 4) / 2) x ((2 + 3) / 2) = 3.5 x 2.5
+                "CVE-2099-0002": (30.0, 9.0, 1.0)}  # ((7 + 5) / 2) x ((9 + 1) / 2) = 6 x 5
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = s.baseline_folder(tmp, 4001, "internal", 1, 1, record=None, model="claude-sonnet-4-6",
+                                       provider="anthropic", commit="9ac9ef4d7d2f4042acf89ee0c628932b3d171b48",
+                                       arm="before")
+            s.write([os.path.join(folder, n) for n in os.listdir(folder)
+                     if n.startswith("vex-") and not n.endswith(".attestation.cdx.json")][0], s.vex(rows))
+            (rec,) = downloads.read_run(os.path.join(tmp, "4001"), arm="before")
+        self.assertEqual((rec["outcome"], rec["scores_usable"], rec["vex_problems"]), ("complete", True, []))
+        self.assertEqual({vid: (r["score"], r["T"], r["B"]) for vid, r in rec["ratings"].items()}, want)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-"""baseline.yml downloads read through the dispatch log (step 4, Q8): one-replicate runs all named r1, a failed
-attempt and its replacement under one run id, and the folders the reader refuses."""
+"""baseline.yml downloads read through the dispatch log: one-replicate runs all named r1, a failed
+attempt and its replacement under one run id, and the folders and jobs the reader refuses, records or flags."""
 import contextlib
 import io
 import json
@@ -7,12 +7,13 @@ import os
 import tempfile
 import unittest
 
-from chain import downloads, read
+from chain import attempt, downloads, read
 from chain.attempt import Refused
 from tests import support as s
 
 FAILED = {"generate": {"started_at": "2026-11-20T10:00:00Z", "ended_at": "2026-11-20T10:00:30Z", "exit_status": 1}}
 CAUSE = "failed to generate risk scores: LLM evaluation failed: 503"
+COMMITS = {"before": s.BEFORE_SHA, "after": s.AFTER_SHA}
 
 
 def log_line(run_id, replicate, attempt=1, arm="after", model=s.MODEL, commit=s.AFTER_SHA):
@@ -20,6 +21,16 @@ def log_line(run_id, replicate, attempt=1, arm="after", model=s.MODEL, commit=s.
             "provider": "openai", "model": model, "batch_size": 1, "archived_run": "2026-09-23",
             "replicate": replicate, "run_id": run_id, "run_attempt": attempt, "time": "2026-11-20T10:00:00Z",
             "action": "dispatch" if attempt == 1 else "rerun-failed", "replaces": None if attempt == 1 else attempt - 1}
+
+
+def as_logged(*lines):
+    """The lines as the dispatch script writes them: each dispatch after its pending line."""
+    out = []
+    for line in lines:
+        if line["action"] == "dispatch":
+            out.append({**line, "run_id": None, "run_attempt": None, "action": "pending"})
+        out.append(line)
+    return out
 
 
 class Base(unittest.TestCase):
@@ -45,13 +56,16 @@ class Base(unittest.TestCase):
         return s.baseline_folder(self.root, run_id, "internal", 1, attempt, record=FAILED, log=log, calls=calls,
                                  vex_file=False, provenance=False, answers=False)
 
+    def log_file(self, *lines):
+        return s.write(os.path.join(self.root, "log.jsonl"), "".join(json.dumps(l) + "\n" for l in as_logged(*lines)))
+
 
 class TestTheDispatchLog(Base):
     def test_two_downloads_both_r1_mapped_to_replicates_1_and_2(self):
         for run_id in (1001, 1002):
             self.complete(run_id)
             self.run_json(run_id)
-        recs = downloads.read_downloads(self.root, lines=[log_line(1001, 1), log_line(1002, 2)])
+        recs = downloads.read_downloads(self.root, lines=as_logged(log_line(1001, 1), log_line(1002, 2)))
         self.assertEqual([(r["what"]["run_id"], r["what"]["replicate_in_run"], r["what"]["replicate"]) for r in recs],
                          [(1001, 1, 1), (1002, 1, 2)])
         self.assertEqual({r["what"]["arm"] for r in recs}, {"after"})
@@ -62,7 +76,7 @@ class TestTheDispatchLog(Base):
         self.complete(1003, attempt=2)
         self.run_json(1003, attempts=2)
         recs = downloads.read_run(os.path.join(self.root, "1003"),
-                                  lines=[log_line(1003, 3), log_line(1003, 3, attempt=2)])
+                                  lines=as_logged(log_line(1003, 3), log_line(1003, 3, attempt=2)))
         got = [(r["what"]["run_attempt"], r["what"]["replicate"], r["outcome"]) for r in recs]
         self.assertEqual(got, [(1, 3, "failed"), (2, 3, "complete")])
         self.assertEqual(recs[0]["failure"]["cause"], CAUSE)
@@ -70,30 +84,67 @@ class TestTheDispatchLog(Base):
     def test_a_folder_no_line_names(self):
         self.complete(1004)
         with self.assertRaisesRegex(Refused, "no line of the dispatch log names run 1004"):
-            downloads.read_run(os.path.join(self.root, "1004"), lines=[log_line(1001, 1)])
+            downloads.read_run(os.path.join(self.root, "1004"), lines=as_logged(log_line(1001, 1)))
 
     def test_an_attempt_no_line_logs(self):
         self.failed(1005, attempt=1)
         self.complete(1005, attempt=2)
         with self.assertRaisesRegex(Refused, "attempt 2 is not in the dispatch log"):
-            downloads.read_run(os.path.join(self.root, "1005"), lines=[log_line(1005, 1)])
+            downloads.read_run(os.path.join(self.root, "1005"), lines=as_logged(log_line(1005, 1)))
 
     def test_a_record_with_another_commit(self):
         self.complete(1006, commit=s.BEFORE_SHA)
         with self.assertRaisesRegex(Refused, "gives vens"):
-            downloads.read_run(os.path.join(self.root, "1006"), lines=[log_line(1006, 1)])
+            downloads.read_run(os.path.join(self.root, "1006"), lines=as_logged(log_line(1006, 1)))
 
     def test_a_folder_of_another_model(self):
         self.complete(1007, model="claude-sonnet-4-6", provider="anthropic")
         with self.assertRaisesRegex(Refused, "gives model"):
-            downloads.read_run(os.path.join(self.root, "1007"), lines=[log_line(1007, 1)])
+            downloads.read_run(os.path.join(self.root, "1007"), lines=as_logged(log_line(1007, 1)))
 
     def test_two_runs_in_one_folder(self):
         self.complete(1008)
         self.run_json(1008)
         s.write(os.path.join(self.root, "1008", "run.json"), {"id": 999})
         with self.assertRaisesRegex(Refused, "one folder holds one workflow run"):
-            downloads.read_run(os.path.join(self.root, "1008"), lines=[log_line(1008, 1)])
+            downloads.read_run(os.path.join(self.root, "1008"), lines=as_logged(log_line(1008, 1)))
+
+    def test_a1_whose_record_says_attempt_2(self):
+        folder = self.complete(1009)
+        s.write(os.path.join(folder, "attempt.json"),
+                {"record": 1, "runner": "baseline.yml", "arm": "after", "run_id": 1009, "run_attempt": 2,
+                 **s.COMPLETE_RECORD})
+        with self.assertRaisesRegex(Refused, "the name gives run_attempt 1, attempt.json 2"):
+            downloads.read_run(os.path.join(self.root, "1009"),
+                               lines=as_logged(log_line(1009, 1), log_line(1009, 1, attempt=2)))
+
+    def test_a_logged_attempt_with_neither_folder_nor_job(self):
+        self.complete(1010)
+        self.run_json(1010, attempts=2)
+        recs = downloads.read_run(os.path.join(self.root, "1010"),
+                                  lines=as_logged(log_line(1010, 1), log_line(1010, 1, attempt=2)))
+        self.assertEqual([r["outcome"] for r in recs], ["complete", None])
+        self.assertEqual(recs[1]["problems"], ["run 1010 attempt 2 is in the dispatch log, with no artefact folder "
+                                               "and no job"])
+
+    def test_a_logged_run_not_downloaded_and_a_pending_dispatch(self):
+        self.complete(1011)
+        self.run_json(1011)
+        lines = as_logged(log_line(1011, 1), log_line(1012, 2))
+        pending = {**log_line(None, 3), "run_attempt": None, "action": "pending"}
+        recs = downloads.read_downloads(self.root, lines=lines + [pending])
+        self.assertEqual([r["outcome"] for r in recs], ["complete", None, None])
+        self.assertEqual(recs[1]["problems"], ["run 1012 attempt 1 is in the dispatch log, its download is not"])
+        self.assertEqual(recs[2]["problems"], ["a pending dispatch of replicate 3 of the after the log never "
+                                               "resolved"])
+
+    def test_the_commit_expected_of_each_arm(self):
+        self.complete(1013)
+        self.complete(1014, commit=s.BEFORE_SHA)
+        self.assertTrue(downloads.read_run(os.path.join(self.root, "1013"), arm="after", commits=COMMITS)[0][
+                            "scores_usable"])
+        with self.assertRaisesRegex(Refused, "is not the after's"):
+            downloads.read_run(os.path.join(self.root, "1014"), arm="after", commits=COMMITS)
 
 
 class TestCommandLine(Base):
@@ -107,8 +158,7 @@ class TestCommandLine(Base):
         for run_id in (1001, 1002):
             self.complete(run_id)
             self.run_json(run_id)
-        log = s.write(os.path.join(self.root, "log.jsonl"),
-                      "".join(json.dumps(line) + "\n" for line in (log_line(1001, 1), log_line(1002, 2))))
+        log = self.log_file(log_line(1001, 1), log_line(1002, 2))
         code, recs, _ = self.main("--dispatch-log", log, self.root)
         self.assertEqual((code, [r["what"]["replicate"] for r in recs]), (0, [1, 2]))
         code, recs, _ = self.main("--dispatch-log", log, os.path.join(self.root, "1002"))
@@ -116,13 +166,23 @@ class TestCommandLine(Base):
 
     def test_one_attempt_folder(self):
         folder = self.complete(1003)
-        code, recs, _ = self.main("--arm", "after", folder)
+        code, recs, _ = self.main("--arm", "after", "--commit", f"after={s.AFTER_SHA}", folder)
         self.assertEqual((code, len(recs), recs[0]["outcome"]), (0, 1, "complete"))
 
+    def test_one_attempt_folder_checked_against_the_log(self):
+        folder = self.complete(1004)
+        log = self.log_file(log_line(1004, 7))
+        code, recs, _ = self.main("--dispatch-log", log, folder)
+        self.assertEqual((code, recs[0]["what"]["replicate"]), (0, 7))
+        log = self.log_file(log_line(1001, 1))
+        code, recs, err = self.main("--dispatch-log", log, folder)
+        self.assertEqual((code, recs), (1, []))
+        self.assertIn("no line of the dispatch log names run 1004", err)
+
     def test_a_refused_folder(self):
-        self.complete(1004)
-        log = s.write(os.path.join(self.root, "log.jsonl"), json.dumps(log_line(1001, 1)) + "\n")
-        code, recs, err = self.main("--dispatch-log", log, os.path.join(self.root, "1004"))
+        self.complete(1005)
+        log = self.log_file(log_line(1001, 1))
+        code, recs, err = self.main("--dispatch-log", log, os.path.join(self.root, "1005"))
         self.assertEqual((code, recs), (1, []))
         self.assertIn("refused: ", err)
 
@@ -147,26 +207,59 @@ class TestJobsAndFailures(Base):
         self.assertEqual([(f["run_id"], f["attempt"], f["job_id"], f["job"], f["error"]) for f in got],
                          [(None, 1, 11, "internal · run 3", CAUSE), (1001, 2, 12, "internal-api · run 6", CAUSE)])
 
-    def test_a_failed_job_without_an_artefact(self):
-        self.complete(1009)
-        self.run_json(1009)
-        s.write(os.path.join(self.root, "1009", "jobs.json"),
+    def test_jobs_without_an_artefact_whatever_their_conclusion(self):
+        self.complete(1020)
+        self.run_json(1020)
+        s.write(os.path.join(self.root, "1020", "jobs.json"),
                 {"jobs": [{"id": 1, "run_attempt": 1, "name": "internal · run 1", "conclusion": "success"},
-                          {"id": 2, "run_attempt": 1, "name": "internal · run 2", "conclusion": "cancelled"},
-                          {"id": 3, "run_attempt": 1, "name": "internal · run 3", "conclusion": None}]})
-        recs = downloads.read_run(os.path.join(self.root, "1009"), lines=[log_line(1009, 1)])
-        self.assertEqual(len(recs), 2)
-        lost = recs[1]
-        self.assertEqual((lost["folder"], lost["outcome"], lost["failure"]["kind"], lost["failure"]["cause"]),
-                         (None, "failed", "interrupted", "job cancelled"))
-        self.assertIn("calls", lost["unknown"])
+                          {"id": 2, "run_attempt": 1, "name": "internal-api · run 1", "conclusion": "cancelled"},
+                          {"id": 3, "run_attempt": 1, "name": "internet-facing · run 1", "conclusion": "success"},
+                          {"id": 4, "run_attempt": 1, "name": "plan", "conclusion": "success"},
+                          {"id": 5, "run_attempt": 1, "name": "internal · run 2", "conclusion": None}]})
+        recs = downloads.read_run(os.path.join(self.root, "1020"), lines=as_logged(log_line(1020, 1)))
+        self.assertEqual(len(recs), 3)
+        for rec, kind, cause in ((recs[1], "interrupted", "artefact missing; job cancelled"),
+                                 (recs[2], None, "artefact missing; job success")):
+            self.assertEqual((rec["folder"], rec["outcome"], rec["failure"]["kind"], rec["failure"]["cause"]),
+                             (None, "failed", kind, cause))
+            self.assertEqual(rec["what"]["replicate"], 1)
+            for field in attempt.RECORD + ("calls", "vens_commit"):
+                self.assertIn(field, rec["unknown"])
+
+    def test_jobs_a_rerun_carries_over(self):
+        log = [s.summary_line(rows=1, cves=1, llm_calls=2, asked_again=0, splits=0, calls__M=1, calls__O=1,
+                              failed=False)]
+        s.baseline_folder(self.root, 1023, "internal-api", 1, 1, record=s.COMPLETE_RECORD, log=log)
+        self.failed(1023, attempt=1)
+        self.complete(1023, attempt=2)
+        self.run_json(1023, attempts=2)
+        done = {"started_at": "2026-11-20T10:00:00Z", "completed_at": "2026-11-20T10:05:00Z"}
+        s.write(os.path.join(self.root, "1023", "jobs.json"), {"jobs": [
+            {"id": 1, "run_attempt": 1, "name": "internal-api · run 1", "conclusion": "success", **done},
+            {"id": 2, "run_attempt": 1, "name": "internal · run 1", "conclusion": "failure",
+             "started_at": "2026-11-20T10:06:00Z", "completed_at": "2026-11-20T10:07:00Z"},
+            {"id": 3, "run_attempt": 2, "name": "internal-api · run 1", "conclusion": "success", **done},
+            {"id": 4, "run_attempt": 2, "name": "internal · run 1", "conclusion": "success",
+             "started_at": "2026-11-20T11:00:00Z", "completed_at": "2026-11-20T11:05:00Z"}]})
+        recs = downloads.read_run(os.path.join(self.root, "1023"),
+                                  lines=as_logged(log_line(1023, 1), log_line(1023, 1, attempt=2)))
+        self.assertEqual(sorted((r["what"]["context"], r["what"]["run_attempt"], r["outcome"]) for r in recs),
+                         [("internal", 1, "failed"), ("internal", 2, "complete"), ("internal-api", 1, "complete")])
+
+    def test_a_job_of_an_attempt_no_line_logs(self):
+        self.complete(1021)
+        self.run_json(1021, attempts=2)
+        s.write(os.path.join(self.root, "1021", "jobs.json"),
+                {"jobs": [{"id": 1, "run_attempt": 2, "name": "internal · run 1", "conclusion": "failure"}]})
+        with self.assertRaisesRegex(Refused, "attempt 2 is not in the dispatch log"):
+            downloads.read_run(os.path.join(self.root, "1021"), lines=as_logged(log_line(1021, 1)))
 
     def test_without_a_log_the_folders_must_agree(self):
-        self.complete(1010)
-        other = s.baseline_folder(self.root, 1010, "internal", 2, 1, record=None, commit=s.BEFORE_SHA)
+        self.complete(1022)
+        other = s.baseline_folder(self.root, 1022, "internal", 2, 1, record=None, commit=s.BEFORE_SHA)
         self.assertTrue(os.path.isdir(other))
         with self.assertRaisesRegex(Refused, "disagree"):
-            downloads.read_run(os.path.join(self.root, "1010"))
+            downloads.read_run(os.path.join(self.root, "1022"))
 
 
 if __name__ == "__main__":

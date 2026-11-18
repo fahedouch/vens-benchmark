@@ -1,5 +1,6 @@
 """The scanner's report, the VEX vens publishes and its attestation, read as published."""
 import base64
+import collections
 import json
 
 FACTORS = ("SL", "M", "O", "S", "ED", "EE", "A", "ID", "LC", "LI", "LAV", "LAC", "FD", "RD", "NC", "PV")
@@ -82,12 +83,17 @@ def vex_rows(path):
 
 
 def ratings(path):
-    """{vulnId: rating} for each CVE rated once, with its published vector, severity and score and the sub-scores
-    its vector gives; and the problems: a CVE listed without an OWASP rating, rated twice, or a vector that does not
-    read as 16 levels."""
+    """{vulnId: rating} for each CVE listed and rated once, with its published vector, severity and score and the
+    sub-scores its vector gives; and the problems: a CVE listed twice, listed without an OWASP rating, rated twice,
+    or a vector that does not read as 16 levels."""
     out, problems = {}, []
-    for v in _load(path).get("vulnerabilities") or []:
+    vulns = _load(path).get("vulnerabilities") or []
+    listed = collections.Counter(v.get("id") for v in vulns)
+    problems += [f"{vid}: listed {n} times in the VEX" for vid, n in sorted(listed.items(), key=str) if n > 1]
+    for v in vulns:
         owasp, vid = _owasp(v), v.get("id")
+        if listed[vid] > 1:
+            continue
         if len(owasp) != 1:
             problems.append(f"{vid}: {len(owasp)} OWASP ratings")
             continue

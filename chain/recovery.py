@@ -1,4 +1,4 @@
-"""The recovery calls of venslabs/vens#310 step 4, Q14: every call beyond the planned ones, asked_again + 2 x splits,
+"""The recovery calls: every call a run makes beyond the planned ones, asked_again + 2 x splits, counted
 by kind (an ask-again after an omission, one after an unreadable reply, a split half).
 
 The planned calls are one per batch and question asked, plus the adjustments. On a complete run the run summary's

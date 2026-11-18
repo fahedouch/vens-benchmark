@@ -1,4 +1,4 @@
-"""What an attempt's calls cost, estimated per kind of call (venslabs/vens#310 step 4, Q15).
+"""What an attempt's calls cost, estimated per kind of call.
 
 vens records no provider usage at either measured commit, so no record vens writes holds a call's tokens. The
 measured cost is the providers' usage exports, per campaign, day, key and model; this module gives only the
@@ -6,7 +6,7 @@ estimate beside it, from each archived call's prompts and reply, never added to 
 """
 import re
 
-# List prices per 1M tokens (input, output), standard tier, read 11/11/2026 on the providers' pricing pages.
+# List prices per 1M tokens (input, output), standard tier, the ones 0B's cost estimates used.
 PRICES = {"gpt-5.4-mini": (0.75, 4.50), "claude-sonnet-4-6": (3.0, 15.0)}
 CHARS_PER_TOKEN = 4.0
 LABEL = ("estimate, not measured: each archived call's prompt and reply characters at 4 per token and the model's "

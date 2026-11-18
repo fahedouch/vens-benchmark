@@ -3,6 +3,7 @@
 Per CVE, each factor's answer as the reply wrote it, its reading, its level and the level's source; a failed run also
 lists, marked `unrated`, the CVEs of its failing batch already answered, with their answers and readings only.
 """
+import collections
 import json
 
 from chain.cdx import FACTORS
@@ -23,8 +24,14 @@ def load(path):
     return doc
 
 
+def duplicates(doc):
+    """The problems of a CVE listed more than once, rated or unrated: its entries cannot be told apart."""
+    counts = collections.Counter(e["vulnId"] for e in doc["vulnerabilities"])
+    return [f"{vid}: listed {n} times in answers.json" for vid, n in sorted(counts.items()) if n > 1]
+
+
 def entries(doc):
-    """{vulnId: entry} split into the rated and the unrated."""
+    """{vulnId: entry} split into the rated and the unrated; a CVE listed twice is one of duplicates()'s."""
     rated = {e["vulnId"]: e for e in doc["vulnerabilities"] if not e.get("unrated")}
     unrated = {e["vulnId"]: e for e in doc["vulnerabilities"] if e.get("unrated")}
     return rated, unrated

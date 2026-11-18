@@ -1,4 +1,4 @@
-"""The attempt record (step 4, section 2.1): its four outcomes told apart, and a download made before the record
+"""The attempt record: its four outcomes told apart, and a download made before the record
 read with its added fields unknown, none inferred."""
 import os
 import tempfile
@@ -6,6 +6,8 @@ import unittest
 
 from chain import attempt
 from tests import support as s
+
+B = "CVE-2099-0002"
 
 A = "CVE-2099-0001"
 GEN_OK = {"started_at": "2026-11-20T10:00:00Z", "ended_at": "2026-11-20T10:01:00Z", "exit_status": 0}
@@ -34,6 +36,68 @@ class TestOutcomes(Base):
         self.assertEqual(rec["archive_check"], {"passed": True, "reason": ""})
         self.assertEqual(rec["ratings"][A]["vector"], s.VECTOR)
         self.assertEqual(rec["problems"], [])
+        self.assertEqual(rec["models_attested"], [["openai", s.MODEL], ["openai", s.MODEL]])
+
+    def test_exit_0_with_a_summary_that_says_failed(self):
+        log = [s.summary_line(rows=1, cves=1, llm_calls=2, asked_again=0, splits=0, calls__M=1, calls__O=1,
+                              failed=True), s.error_line(CAUSE)]
+        rec = attempt.read_attempt(self.folder(s.COMPLETE_RECORD, log=log))
+        self.assertEqual(rec["outcome"], "failed")
+        self.assertEqual(rec["failure"], {"kind": "scoring", "step": "generate", "cause": CAUSE,
+                                          "cause_source": "vens log"})
+        self.assertIn("vens generate exited 0, yet its run summary says failed=true", rec["problems"])
+        self.assertFalse(rec["scores_usable"])
+
+    def test_no_start_and_no_exit_is_not_interrupted(self):
+        rec = attempt.read_attempt(self.folder({"generate": {}}, log=[], vex_file=False, provenance=False,
+                                               answers=False))
+        self.assertEqual((rec["outcome"], rec["failure"]["kind"]), ("failed", None))
+        self.assertIn("failure.kind", rec["unknown"])
+        self.assertIn("attempt.json records neither the start nor the exit status of vens generate", rec["problems"])
+
+    def test_a_job_that_succeeded_without_an_exit_status(self):
+        job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
+        rec = attempt.read_attempt(self.folder({"generate": {"started_at": "2026-11-20T10:00:00Z"}}, log=[],
+                                               vex_file=False, provenance=False, answers=False), job=job)
+        self.assertEqual((rec["failure"]["kind"], rec["failure"]["cause"]), (None, None))
+        self.assertIn("job success, yet attempt.json gives vens generate no exit status", rec["problems"])
+
+    def test_the_commit_of_another_arm_is_refused(self):
+        folder = self.folder(s.COMPLETE_RECORD)
+        commits = {"before": s.BEFORE_SHA, "after": s.AFTER_SHA}
+        self.assertTrue(attempt.read_attempt(folder, commits=commits)["scores_usable"])
+        with self.assertRaisesRegex(attempt.Refused, "is not the before's"):
+            attempt.read_attempt(folder, arm="before", commits=commits)
+
+    def test_a_name_its_record_contradicts_is_refused(self):
+        folder = self.folder({**s.COMPLETE_RECORD, "run_attempt": 2})
+        with self.assertRaisesRegex(attempt.Refused, "the name gives run_attempt 1, attempt.json 2"):
+            attempt.read_attempt(folder)
+
+    def test_a_cve_twice_in_the_vex(self):
+        folder = self.folder(s.COMPLETE_RECORD)
+        s.write(os.path.join(folder, "vex-internal.cdx.json"),
+                s.vex([(A, s.VECTOR, s.SEVERITY, s.SCORE), (A, s.VECTOR, s.SEVERITY, s.SCORE)]))
+        rec = attempt.read_attempt(folder)
+        self.assertIn(f"{A}: listed 2 times in the VEX", rec["vex_problems"])
+        self.assertFalse(rec["scores_usable"])
+
+    def test_a_cve_twice_in_answers_json(self):
+        folder = self.folder(s.COMPLETE_RECORD)
+        path = os.path.join(folder, "calls", "run-1", "answers.json")
+        for doc in (s.answers_doc([(A, s.VECTOR), (A, s.VECTOR)]), s.answers_doc([(A, s.VECTOR)], [(A, ["M"])])):
+            s.write(path, doc)
+            rec = attempt.read_attempt(folder)
+            self.assertIn(f"{A}: listed 2 times in answers.json", rec["answers"]["problems"])
+            self.assertFalse(rec["scores_usable"])
+
+    def test_answers_json_off_its_vector(self):
+        folder = self.folder(s.COMPLETE_RECORD)
+        s.write(os.path.join(folder, "calls", "run-1", "answers.json"),
+                s.answers_doc([(A, s.VECTOR.replace("EE:5", "EE:3"))]))
+        rec = attempt.read_attempt(folder)
+        self.assertEqual(rec["answers"]["problems"], [f"{A}: answers.json's levels differ from the vector's"])
+        self.assertEqual((rec["outcome"], rec["scores_usable"]), ("complete", False))
 
     def test_a_scoring_that_fails(self):
         log = [s.again_line("M", [A]), s.summary_line(rows=1, cves=1, llm_calls=2, asked_again=1, splits=0,
@@ -160,10 +224,17 @@ class TestBeforeTheRecord(Base):
             self.assertIn(field, rec["unknown"])
         self.assertEqual(rec["implied"], [])
 
-    def test_a_vex_without_provenance_or_record_is_refused(self):
-        folder = self.folder(None, log=None, provenance=False)
-        with self.assertRaises(attempt.Refused):
-            attempt.read_attempt(folder, arm="before")
+    def test_a_vex_without_provenance_or_record_is_a_failed_attempt(self):
+        folder = self.folder(None, log=None, provenance=False, answers=False)
+        failure = {"attempt": 1, "job": "internal · run 1", "error": "vens enrich: exit 1"}
+        rec = attempt.read_attempt(folder, arm="before", failure_line=failure)
+        self.assertEqual(rec["outcome"], "failed")
+        self.assertEqual(rec["failure"], {"kind": None, "step": None, "cause": "vens enrich: exit 1",
+                                          "cause_source": "failures.txt", "reason": attempt.NO_PROVENANCE})
+        for field in ("failure.kind", "failure.step", "generate.exit_status", "enrich.exit_status", "archive_check"):
+            self.assertIn(field, rec["unknown"])
+        self.assertIsNotNone(rec["ratings"])
+        self.assertFalse(rec["scores_usable"])
 
 
 class TestNames(unittest.TestCase):

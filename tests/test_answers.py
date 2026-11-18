@@ -56,8 +56,19 @@ class TestAnswers(unittest.TestCase):
         with self.assertRaises(ValueError):
             load({"vulnerabilities": []})
 
+    def test_a_cve_listed_twice(self):
+        for doc in (s.answers_doc([(A, s.VECTOR), (A, s.VECTOR)]), s.answers_doc([(A, s.VECTOR)], [(A, ["M"])]),
+                    s.answers_doc([], [(A, ["M"]), (A, ["M", "O"])])):
+            self.assertEqual(answers.duplicates(load(doc)), [f"{A}: listed 2 times in answers.json"])
+        self.assertEqual(answers.duplicates(load(s.answers_doc([(A, s.VECTOR)], [(B, ["M"])]))), [])
+
 
 class TestVex(unittest.TestCase):
+    def test_a_cve_listed_twice(self):
+        r, problems = ratings([(A, s.VECTOR, s.SEVERITY, s.SCORE), (A, s.VECTOR, s.SEVERITY, s.SCORE),
+                               (B, s.VECTOR, s.SEVERITY, s.SCORE)])
+        self.assertEqual((sorted(r), problems), ([B], [f"{A}: listed 2 times in the VEX"]))
+
     def test_subscores(self):
         r, _ = ratings([(A, s.VECTOR, s.SEVERITY, s.SCORE)])
         got = r[A]
