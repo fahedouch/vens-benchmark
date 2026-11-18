@@ -1,0 +1,41 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:8b2120b0-ed60-4e50-878f-8ad71a5d2f5d",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-18T11:12:57Z",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "name": "vens",
+          "version": "(unknown)"
+        }
+      ]
+    }
+  },
+  "vulnerabilities": [
+    {
+      "id": "CVE-2099-0002",
+      "source": {
+        "name": "NVD",
+        "url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0002"
+      },
+      "ratings": [
+        {
+          "score": 61.625,
+          "severity": "critical",
+          "method": "OWASP",
+          "vector": "SL:9/M:1/O:7/S:9/ED:9/EE:5/A:9/ID:9/LC:9/LI:9/LAV:7/LAC:9/FD:1/RD:4/NC:2/PV:9"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "urn:cdx:00000000-0000-0000-0000-000000000001/1#pkg:deb/debian/jsoncfg@3.4.1"
+        }
+      ]
+    }
+  ]
+}
