@@ -154,6 +154,28 @@ def options(f, dep, floored, described=True):
     return dict(ANSWERS[f])
 
 
+def source(f, dep, floored, answer=None, described=True):
+    """Where factor f's level comes from, as answers.json names it: constant, config, floor or answer. An asked
+    Privacy violation's source is config where data_subjects caps the answer given."""
+    if f in CONSTANT:
+        return "constant"
+    if f == "S":
+        return "config"
+    if f in ("M", "O", "EE"):
+        # Without a description the level is cannot_tell's, still recorded as the answer's.
+        return "answer"
+    if not asked(f, dep, floored, described):
+        if f in ("ID", "NC"):
+            return "config"
+        if f == "PV":
+            return "floor" if "C" in floored else "config"
+        return "floor"
+    ds = dep["data_subjects"]
+    if f == "PV" and answer is not None and ds is not None and PV_CAP[ds] < ANSWERS["PV"][answer]:
+        return "config"
+    return "answer"
+
+
 def question_of(human_prompt):
     """The factor a call's question belongs to, from the answer ids its prompt lists; None for another call."""
     lines = human_prompt.split("\n")

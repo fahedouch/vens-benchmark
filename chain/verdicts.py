@@ -65,6 +65,13 @@ DOS_TWINS = (("disc_dos", "disc_dos_nt"), ("disc_dos2", "disc_dos_nt2"))
 AUDIT_TWINS = (("disc_audit", "disc_audit_nt"), ("disc_audit2", "disc_audit_nt2"))
 ACCOUNTABILITY = ("disc_audit", "disc_audit2", "disc_audit3", "disc_audit_nt", "disc_audit_nt2")
 REACH = (("reach_no", "reach_yes"), ("reach2_no", "reach2_yes"), ("reach3_no", "reach3_yes"))
+# The generator's copies of the DoS and accountability scenarios and twins without a CVSS vector.
+NOVEC = "_novec"
+DOS_COPIES = tuple(s + NOVEC for s in ("disc_dos", "disc_dos2", "disc_dos3", "disc_dos_nt", "disc_dos_nt2"))
+AUDIT_COPIES = tuple(s + NOVEC for s in ACCOUNTABILITY)
+DOS_COPY_TWINS = tuple((a + NOVEC, b + NOVEC) for a, b in DOS_TWINS)
+AUDIT_COPY_TWINS = tuple((a + NOVEC, b + NOVEC) for a, b in AUDIT_TWINS)
+BEFORE_ONLY = (("before", CARRIED), ("after", DIAGNOSTIC))
 
 # The families, read twice: on the sub-scores of the published vector, both arms, and for the after on the factors
 # that carry the contrast. A kind follows what the contrast can move, the comments saying why where it is not plain.
@@ -78,16 +85,19 @@ CHECKS = (
     # ctrl_on changes three controls and a note at once: the claim is theirs together.
     Check("2 Controls", "VU, ctrl_on at most ctrl_off", BOTH(CARRIED), CTRL, "VU", "le"),
     Check("2 Controls", "EE, ctrl_on at most ctrl_off", AFTER(NEW), CTRL, "EE", "le"),
-    # The leak's vector floors integrity: Loss of integrity is 1 on both sides and T rises with Go's column alone.
-    Check("3 Data sensitivity", "T not falling", BOTH(DIAGNOSTIC), SENS, "T", "le"),
+    # The before's prompts differ, so it can decide. In the after the leak's vector floors integrity: Loss of
+    # integrity is 1 on both sides and T rises with Go's column alone.
+    Check("3 Data sensitivity", "T not falling", BEFORE_ONLY, SENS, "T", "le"),
     # Loss of confidentiality's question does not show data sensitivity, so the contrast cannot move its answer.
     Check("3 Data sensitivity", "LC's extent answer the same", AFTER(DIAGNOSTIC), SENS, "answer LC", "eq"),
     Check("3 Data sensitivity", "LI not falling", AFTER(DIAGNOSTIC), SENS, "LI", "le"),
     Check("4 Business criticality", "B not falling", BOTH(CARRIED), CRIT, "B", "le"),
     Check("4 Business criticality", "FD not falling", AFTER(DIAGNOSTIC), CRIT, "FD", "le"),
     Check("4 Business criticality", "RD not falling", AFTER(DIAGNOSTIC), CRIT, "RD", "le"),
-    # The framework reaches Non-compliance alone, 2 without it: B's rise is Go's and FD, RD and PV cannot move.
-    Check("5 Compliance", "B not falling", BOTH(DIAGNOSTIC), COMP, "B", "le"),
+    # The before's prompts differ, so it can decide. In the after the framework reaches Non-compliance alone, 2
+    # without it: B's rise is Go's and FD, RD and PV cannot move.
+    Check("5 Compliance", "B not falling", BEFORE_ONLY, COMP, "B", "le"),
+    Check("5 Compliance", "NC's answer under GDPR, at least Go's 2 without", AFTER(DIAGNOSTIC), COMP, "NC", "le"),
     Check("5 Compliance", "FD not lower with the framework", AFTER(DIAGNOSTIC), COMP, "FD", "le"),
     Check("5 Compliance", "RD not lower with the framework", AFTER(DIAGNOSTIC), COMP, "RD", "le"),
     Check("5 Compliance", "PV not lower with the framework", AFTER(DIAGNOSTIC), COMP, "PV", "le"),
@@ -95,20 +105,42 @@ CHECKS = (
     Check("6 DoS discriminator", "T below the null model's", (("before", CARRIED), ("after", DIAGNOSTIC)),
           ("disc_dos",), "T", "below_null"),
     Check("6 DoS discriminator", "LAV's answer", AFTER(DIAGNOSTIC), ("disc_dos",), "LAV", "any"),
+    # Without a vector every impact question is asked: the model's reading of confidentiality and integrity.
+    Check("6 DoS discriminator", "without a vector: T below the null model's", BOTH(DIAGNOSTIC), DOS_COPIES, "T",
+          "below_null"),
+    Check("6 DoS discriminator", "without a vector: LC's extent answer", AFTER(DIAGNOSTIC), DOS_COPIES,
+          "answer LC", "any"),
+    Check("6 DoS discriminator", "without a vector: LI's answer", AFTER(DIAGNOSTIC), DOS_COPIES, "LI", "any"),
     # The old verdict on T is retired: its successor reads the answer under traceability per_individual.
     Check("7 Accountability discriminator", "T above the null model's", BOTH(DIAGNOSTIC), ("disc_audit",), "T",
           "above_null"),
     Check("7 Accountability discriminator", "LAC's answer defeats_attribution, traceability per_individual",
           AFTER(NEW), ACCOUNTABILITY, "answer LAC", "is", (("after", ("defeats_attribution",)),)),
+    Check("7 Accountability discriminator", "without a vector: T above the null model's", BOTH(DIAGNOSTIC),
+          AUDIT_COPIES, "T", "above_null"),
+    Check("7 Accountability discriminator", "without a vector: LC's extent answer", AFTER(DIAGNOSTIC), AUDIT_COPIES,
+          "answer LC", "any"),
+    Check("7 Accountability discriminator", "without a vector: LI's answer", AFTER(DIAGNOSTIC), AUDIT_COPIES, "LI",
+          "any"),
     Check("8 Relevant against irrelevant control", "VU, ctrl_on below ctrl_off", BOTH(DIAGNOSTIC), CTRL, "VU", "lt"),
     Check("8 Relevant against irrelevant control", "EE, ctrl_on below ctrl_off", AFTER(NEW), CTRL, "EE", "lt"),
     Check("8 Relevant against irrelevant control", "EE the same with and without the irrelevant WAF", AFTER(NEW),
           WAF[:1], "EE", "eq"),
     Check("9 DoS, telegraphed or not", "T's drift", BOTH(DIAGNOSTIC), DOS_TWINS, "T", "eq"),
     Check("9 DoS, telegraphed or not", "LAV's drift", AFTER(DIAGNOSTIC), DOS_TWINS, "LAV", "eq"),
+    Check("9 DoS, telegraphed or not", "without a vector: T's drift", BOTH(DIAGNOSTIC), DOS_COPY_TWINS, "T", "eq"),
+    Check("9 DoS, telegraphed or not", "without a vector: LC's extent answer's drift", AFTER(DIAGNOSTIC),
+          DOS_COPY_TWINS, "answer LC", "eq"),
+    Check("9 DoS, telegraphed or not", "without a vector: LI's drift", AFTER(DIAGNOSTIC), DOS_COPY_TWINS, "LI", "eq"),
     Check("10 Accountability, telegraphed or not", "T's drift", BOTH(DIAGNOSTIC), AUDIT_TWINS, "T", "eq"),
     Check("10 Accountability, telegraphed or not", "LAC's answer's drift", AFTER(DIAGNOSTIC), AUDIT_TWINS,
           "answer LAC", "eq"),
+    Check("10 Accountability, telegraphed or not", "without a vector: T's drift", BOTH(DIAGNOSTIC), AUDIT_COPY_TWINS,
+          "T", "eq"),
+    Check("10 Accountability, telegraphed or not", "without a vector: LC's extent answer's drift", AFTER(DIAGNOSTIC),
+          AUDIT_COPY_TWINS, "answer LC", "eq"),
+    Check("10 Accountability, telegraphed or not", "without a vector: LI's drift", AFTER(DIAGNOSTIC),
+          AUDIT_COPY_TWINS, "LI", "eq"),
     Check("11 Irrelevant WAF on the local bug", "VU not lower with the WAF", BOTH(DIAGNOSTIC), WAF, "VU", "le"),
     Check("11 Irrelevant WAF on the local bug", "EE not lower with the WAF", AFTER(NEW), WAF, "EE", "le"),
     # The after never publishes info: its likelihood is never below 4.25.
@@ -121,9 +153,22 @@ CHECKS = (
     Check("reachability", "O, unreachable at most reachable", AFTER(NEW), REACH, "O", "le"),
     Check("reachability", "EE, unreachable at most reachable", AFTER(NEW), REACH, "EE", "le"),
 )
-# The checks that read no contrast, diagnostics on every corpus: the score's spread over replicates and, for the
-# after, each question's answer agreement; the wrong YAML; the table against the null model under each arm's rule.
-OTHER_DIAGNOSTICS = ("consistency", "wrong YAML", "the table against the null model")
+
+
+@dataclass(frozen=True)
+class Named:
+    """A diagnostic that reads no contrast: printed with its scenarios' factors by the source of their level."""
+    name: str
+    reads: str
+    scenarios: tuple  # () for every scenario
+
+
+NAMED = (
+    Named("consistency", "the score's spread over replicates, both arms; for the after, each answer's agreement", ()),
+    Named("wrong YAML", "printed, both arms", ("wrong_yaml",)),
+    Named("the table against the null model", "each score against the null model's, each arm under its own rule, "
+          "and the after's fallback with every answer cannot_tell", ()),
+)
 
 # A test on a pair reads the difference b - a.
 PAIR_TESTS = {"le": lambda d: d >= 0, "lt": lambda d: d > 0, "eq": lambda d: d == 0,
@@ -440,6 +485,22 @@ def run_mock(binary, scenarios, ids, work, arm):
     return out
 
 
+FACTORS = ("SL", "M", "O", "S", "ED", "EE", "A", "ID", "LC", "LI", "LAV", "LAC", "FD", "RD", "NC", "PV")
+
+
+def _go_set(q, item, scen):
+    """The factors of a group or a factor quantity whose level Go sets in the item's scenarios, with the source."""
+    factors = contract.GROUPS.get(q, (q,) if q in FACTORS else ())
+    found = []
+    for sid in (item if isinstance(item, tuple) else (item,)):
+        sc = scen[sid]
+        for f in factors:
+            src = contract.source(f, sc["dep"], sc["floors"], described=sc["described"])
+            if src != "answer" and f"{f} ({src})" not in found:
+                found.append(f"{f} ({src})")
+    return f"; Go sets {', '.join(found)}" if found else ""
+
+
 def report(scen, reach, differs, checks=CHECKS):
     """The lines printed and the problems."""
     lines = ["the prompts each contrast differs in (batch 1, the mock):"]
@@ -448,9 +509,22 @@ def report(scen, reach, differs, checks=CHECKS):
                      f"{[q for q in contract.QUESTIONS if q in qs]}; before, its one call's prompt differs "
                      f"{differs[(a, b)]}")
     rows, problems = check(scen, reach, differs, checks)
-    lines.append("each check, its kind in each arm it reads, and what its scenarios can give:")
+    lines.append("each check, its kind in each arm it reads, what its scenarios can give, and in the after the "
+                 "levels of its quantity that Go sets:")
     for c, arm, kind, item, res in rows:
-        lines.append(f"  {c.family}: {c.label}, {arm}, {kind}: {_name(item)}: {WORDS[res]}")
+        word = ("asked" if res[0] else "set by Go") if c.test == "any" else WORDS[res]
+        lines.append(f"  {c.family}: {c.label}, {arm}, {kind}: {_name(item)}: {word}"
+                     + (_go_set(c.quantity, item, scen) if arm == "after" else ""))
+    lines.append("the diagnostics that read no contrast:")
+    for d in NAMED:
+        lines.append(f"  {d.name}: {d.reads}; {len(d.scenarios) or len(scen)} scenario(s), their levels' sources "
+                     f"below")
+    lines.append("each scenario's levels in the after by source:")
+    for sid, sc in scen.items():
+        by = {}
+        for f in FACTORS:
+            by.setdefault(contract.source(f, sc["dep"], sc["floors"], described=sc["described"]), []).append(f)
+        lines.append(f"  {sid}: " + "; ".join(f"{k} {' '.join(v)}" for k, v in sorted(by.items())))
     for unfloored in (False, True):
         changes = corpus_wide(scen, reach, checks, unfloored)
         lines.append(f"after, pair outcomes any of the 45 corpus-wide combinations of detection, traceability and "
