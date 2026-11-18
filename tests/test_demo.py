@@ -3,7 +3,7 @@ import math
 import unittest
 from fractions import Fraction
 
-from chain import cdx, demo
+from chain import cdx, demo, legal, report
 from chain import cells as cellmod
 from tests import records as r
 from tests import support as s
@@ -120,6 +120,12 @@ class TestTargets(unittest.TestCase):
         rec["incomplete"] = ["a complete attempt without a VEX"]
         per = next(iter(demo.targets(cellmod.group([rec]), lambda x: {"CVE-A", "CVE-B"}, lambda x: {}).values()))
         self.assertEqual(per, {1: {"cves": 2, "vex": False, "legal": 0, "recomputable": 0, "severity_ok": 0}})
+
+    def test_a_run_without_a_vex_is_named_in_its_row(self):
+        per = {1: {"cves": 2, "vex": True, "legal": 2, "recomputable": 2, "severity_ok": 2},
+               2: {"cves": 2, "vex": False, "legal": 0, "recomputable": 0, "severity_ok": 0}}
+        self.assertEqual(report._per_run(per, "recomputable"), "r1 2/2 (1.000); r2 0/2 (0.000); no VEX: r2")
+        self.assertIsNone(legal.vex_path(r.record("after", CTX, 1, None, usable=False)))
 
     def test_without_the_report_the_targets_are_unavailable(self):
         rec = r.record("before", CTX, 1, {"CVE-A": r.rating(r.group_vector(3, 4, 2, 3), "before")})
