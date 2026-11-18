@@ -2,10 +2,12 @@
 ends, vens's whole log, the debug folder and the VEX. The scenario runner's layout; the tests and the Java run use it
 on vens's mock.
 
-vens runs in a session of its own, so that no terminal signal reaches it and its whole group can be killed. Every
-group not yet seen to end is in a registry that kill_live() kills, which this module runs at exit and the runner on
-any stop. A SIGKILL of the runner runs nothing, and macOS has no parent-death signal: a watch process per vens,
-blocked on a pipe only this process can write to, sees the pipe close when this process dies and kills the group.
+vens is started by a guard (GUARD), a small process that leads a session of its own, so that no terminal signal
+reaches vens and the guard's whole group can be killed at once. The guard's stdin is a control pipe whose write end
+only this process holds, from the guard's start: its first line is vens's environment, and its end, whether this
+process closes it or dies, SIGKILL included, makes the guard kill its group, the PGID it saved, whatever of vens
+or what vens started is left. macOS has no parent-death signal: the pipe stands in for one. Every guard not yet
+reaped is in a registry that kill_live() kills, which this module runs at exit and the runner on any stop.
 """
 import atexit
 import base64
@@ -15,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -24,20 +27,29 @@ import time
 SERIAL = "urn:uuid:00000000-0000-0000-0000-000000000001"
 MARKER = "schema_version: 2\n"
 TIMEOUT, STOPPED = "timeout", "the runner was stopped"
+GUARD_LOST = "the guard ended before reporting vens's exit status"
 POLL = 0.2
-# seconds vens's stderr may stay open once vens has ended and its group was killed; then a second kill, and as long
+# seconds vens's stderr may stay open once its group is killed
 DRAIN = 5.0
-WATCH = """import os, signal, sys
-pid = int(sys.argv[1])
-os.read(0, 1)
+GUARD = """import json, os, signal, subprocess, sys, threading
+pgid, line = os.getpgid(0), b""
+while not line.endswith(b"\\n"):
+    chunk = os.read(0, 65536)
+    if not chunk:
+        os._exit(0)
+    line += chunk
 try:
-    if os.getpgid(pid) == pid:
-        os.killpg(pid, signal.SIGKILL)
-except OSError:
+    vens = subprocess.Popen(sys.argv[1:], env=json.loads(line), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+except OSError as e:
+    os.write(1, ("error %s\\n" % e).encode())
+else:
+    threading.Thread(target=lambda: os.write(1, b"exit %d\\n" % vens.wait()), daemon=True).start()
+while os.read(0, 65536):
     pass
+os.killpg(pgid, signal.SIGKILL)
 """
 
-_LIVE, _LOCK, _LIFELINE = set(), threading.Lock(), []
+_LIVE, _LOCK = set(), threading.Lock()
 
 
 def utc():
@@ -117,7 +129,7 @@ def _killpg(pgid):
 
 
 def kill_live():
-    """Kills every vens group this process started and has not seen end."""
+    """Kills the group of every guard this process started and has not reaped."""
     with _LOCK:
         groups = sorted(_LIVE)
     for pgid in groups:
@@ -127,15 +139,10 @@ def kill_live():
 atexit.register(kill_live)
 
 
-def _watch(pid):
-    """WATCH over vens's group, its stdin the read end of this process's lifeline, whose write end this process holds
-    until it dies."""
-    with _LOCK:
-        if not _LIFELINE:
-            _LIFELINE.extend(os.pipe())
-        lifeline = _LIFELINE[0]
-    return subprocess.Popen([sys.executable, "-S", "-c", WATCH, str(pid)], stdin=lifeline,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={}, start_new_session=True)
+def _guard(cmd, cwd, control):
+    """GUARD over cmd, its stdin the read end of the control pipe; its stderr is vens's."""
+    return subprocess.Popen([sys.executable, "-S", "-c", GUARD, *cmd], cwd=cwd, env={}, stdin=control,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
 
 
 def _copy(src, dst, pattern, done):
@@ -158,31 +165,29 @@ def _drain(src, dst, pattern, done):
     return copier
 
 
-def _end(proc, timeout, stop):
-    """(vens's exit status, None), or (None, why) when the runner killed its group: at the timeout, or once stop is
-    set. A killed vens has no exit status of its own."""
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            return proc.wait(timeout=max(0.0, min(POLL, deadline - time.monotonic()))), None
-        except subprocess.TimeoutExpired:
-            pass
-        why = TIMEOUT if time.monotonic() >= deadline else STOPPED if stop is not None and stop.is_set() else None
-        if why is not None:
-            _killpg(proc.pid)
-            proc.wait()
-            return None, why
+def _report(guard, deadline, stop):
+    """The guard's one line, b"exit N" or b"error ...", or (None, why): the deadline passed, stop was set, or the
+    guard ended without a line."""
+    out, fd = b"", guard.stdout.fileno()
+    while not out.endswith(b"\n"):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None, TIMEOUT
+        if stop is not None and stop.is_set():
+            return None, STOPPED
+        if select.select([fd], [], [], min(POLL, left))[0]:
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                return None, GUARD_LOST
+            out += chunk
+    return out.strip(), None
 
 
-def _drained(pgid, copier, done):
-    """Whether vens's stderr reached its log whole. What vens left in its group could hold the pipe open past its
-    end: the group is killed, the copier given DRAIN seconds, then killed again and given as long."""
-    for _ in range(2):
-        _killpg(pgid)
-        copier.join(DRAIN)
-        if not copier.is_alive():
-            return done == [True]
-    return False
+def _drained(copier, done):
+    """Whether vens's stderr reached its log whole, the copier given DRAIN seconds once the group is killed: a
+    process that left the group can hold the pipe open."""
+    copier.join(DRAIN)
+    return not copier.is_alive() and done == [True]
 
 
 def run(cmd, folder, rec, *, env, cwd=None, timeout=600, key=None, stop=None):
@@ -190,10 +195,10 @@ def run(cmd, folder, rec, *, env, cwd=None, timeout=600, key=None, stop=None):
 
     rec is written to folder/attempt.json before vens starts, then completed on the runner's clock: generate's
     start and end, its exit status, or, when the runner killed it, none and interrupted saying why (timed_out for the
-    timeout); log_complete, whether vens's stderr reached folder/vens.log whole. key, the API key vens gets, is cut out
-    of the log in each of its forms (secret_pattern). vens's stdout is dropped: it writes nothing there. A vens that
-    does not start leaves setup_error and no start, and the OSError is raised; any error once it has started kills
-    its group, is recorded and is raised."""
+    timeout); log_complete, whether vens's stderr reached folder/vens.log whole. env is vens's whole environment;
+    key, the API key in it, is cut out of the log in each of its forms (secret_pattern). vens's stdout is dropped: it
+    writes nothing there. A vens that does not start leaves setup_error and no start, and an OSError is raised; any
+    error once the guard has started kills its group, is recorded and is raised."""
     os.makedirs(folder)
     path = os.path.join(folder, "attempt.json")
     gen = {"started_at": None, "ended_at": None, "exit_status": None, "timed_out": False, "interrupted": None,
@@ -201,38 +206,52 @@ def run(cmd, folder, rec, *, env, cwd=None, timeout=600, key=None, stop=None):
     rec = {**rec, "generate": gen}
     write_json(path, rec)
     pattern = secret_pattern(key)
-    with open(os.path.join(folder, "vens.log"), "wb") as log:
-        started = utc()
-        write_json(path, {**rec, "generate": {**gen, "started_at": started}})
-        try:
-            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE, start_new_session=True)
-        except OSError as e:
-            write_json(path, {**rec, "setup_error": f"vens did not start: {e}"})
-            raise
-        with _LOCK:
-            _LIVE.add(proc.pid)
-        watch = None
-        try:
-            watch = _watch(proc.pid)
-            done = []
-            copier = _drain(proc.stderr, log, pattern, done)
-            status, why = _end(proc, timeout, stop)
-            ended = utc()
-            whole = _drained(proc.pid, copier, done)
-        except BaseException as e:
-            _killpg(proc.pid)
-            proc.wait()
-            with contextlib.suppress(Exception):
-                write_json(path, {**rec, "generate": {**gen, "started_at": started, "ended_at": utc(),
-                                                      "interrupted": f"the runner failed: {e!r}"}})
-            raise
-        finally:
+    control, control_w = os.pipe()
+    try:
+        with open(os.path.join(folder, "vens.log"), "wb") as log:
+            started = utc()
+            write_json(path, {**rec, "generate": {**gen, "started_at": started}})
+            try:
+                guard = _guard(cmd, cwd, control)
+            except OSError as e:
+                write_json(path, {**rec, "setup_error": f"the guard did not start: {e}"})
+                raise
+            os.close(control)
+            control = None
             with _LOCK:
-                _LIVE.discard(proc.pid)
-            if watch is not None:
-                watch.kill()
-                watch.wait()
+                _LIVE.add(guard.pid)
+            try:
+                os.write(control_w, json.dumps(env).encode() + b"\n")
+                done = []
+                copier = _drain(guard.stderr, log, pattern, done)
+                line, why = _report(guard, time.monotonic() + timeout, stop)
+                ended = utc()
+                os.close(control_w)
+                control_w = None
+                # the guard kills its group once its control pipe closes; this kill, before it is reaped, is the same
+                _killpg(guard.pid)
+                guard.wait()
+                whole = _drained(copier, done)
+            except BaseException as e:
+                _killpg(guard.pid)
+                guard.wait()
+                with contextlib.suppress(Exception):
+                    write_json(path, {**rec, "generate": {**gen, "started_at": started, "ended_at": utc(),
+                                                          "interrupted": f"the runner failed: {e!r}"}})
+                raise
+            finally:
+                with _LOCK:
+                    _LIVE.discard(guard.pid)
+                guard.stdout.close()
+    finally:
+        for fd in (control, control_w):
+            if fd is not None:
+                os.close(fd)
+    if line is not None and line.startswith(b"error "):
+        error = line[len(b"error "):].decode(errors="replace")
+        write_json(path, {**rec, "setup_error": f"vens did not start: {error}"})
+        raise OSError(f"vens did not start: {error}")
+    status = int(line.split()[1]) if line is not None else None
     rec = {**rec, "generate": {**gen, "started_at": started, "ended_at": ended, "exit_status": status,
                                "timed_out": why == TIMEOUT, "interrupted": why, "log_complete": whole}}
     write_json(path, rec)

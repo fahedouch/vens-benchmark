@@ -11,6 +11,8 @@ import os
 import re
 from dataclasses import dataclass
 
+from chain.errors import Refused
+
 PLANNED, ADJUSTMENT = "planned", "adjustment"
 AGAIN_OMISSION, AGAIN_UNREADABLE, HALF = "again_omission", "again_unreadable", "half"
 RECOVERY = (AGAIN_OMISSION, AGAIN_UNREADABLE, HALF)
@@ -43,11 +45,16 @@ def run_folders(calls_dir):
 
 
 def load(run_dir):
-    numbers = sorted(int(m.group(1)) for m in map(_NAME.fullmatch, os.listdir(run_dir)) if m)
-    out = []
-    for n in numbers:
-        base = os.path.join(run_dir, f"batch-{n:05d}")
-        out.append(Call(n, _read(base + ".system.prompt"), _read(base + ".human.prompt"), _read(base + ".response")))
+    """The run folder's calls in order; Refused when a file of it does not read (a folder in a file's place)."""
+    try:
+        numbers = sorted(int(m.group(1)) for m in map(_NAME.fullmatch, os.listdir(run_dir)) if m)
+        out = []
+        for n in numbers:
+            base = os.path.join(run_dir, f"batch-{n:05d}")
+            out.append(Call(n, _read(base + ".system.prompt"), _read(base + ".human.prompt"),
+                            _read(base + ".response")))
+    except OSError as e:
+        raise Refused(f"{run_dir}: a call that does not read: {e}") from e
     return out
 
 
