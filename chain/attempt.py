@@ -11,14 +11,17 @@ attempt.json, the attempt record, is written before `vens generate` runs and com
      "provider", "model", "llm_batch_size", "vens_ref", "vens_sha", "vens_binary_sha256",
      "run_id", "run_attempt", "job", "context", "replicate", "archived_scan", "config",      baseline.yml
      "scenario", "report", "config", "replicate", "attempt",                                  the scenario runner
-     "generate": {"started_at", "ended_at", "exit_status", "timed_out"},
+     "setup_error",                                                                          baseline.yml
+     "generate": {"started_at", "ended_at", "exit_status", "timed_out", "log_complete"},
      "enrich": {"started_at", "ended_at", "exit_status"},                                    baseline.yml
      "archive_check": "success" | "failure" | "skipped" | "cancelled",                       baseline.yml
      "provenance": true | false}                                                             baseline.yml
 
-A field not yet written is absent or null. Times are UTC, ISO 8601. The reader tells four outcomes apart: a scoring
-that did not complete; a scoring that completed and a later step that failed; a scoring interrupted, its start
-recorded and no exit status; a complete attempt. What a folder does not say stays an explicit unknown.
+A field not yet written is absent or null. Times are UTC, ISO 8601. setup_error says why baseline.yml's Score step
+stopped before `vens generate` started (a missing key, a bad batch size); log_complete, whether vens's log, the key
+cut out of it, was written whole, which baseline.yml's archive check requires. The reader tells four outcomes apart:
+a scoring that did not complete; a scoring that completed and a later step that failed; a scoring interrupted, its
+start recorded and no exit status; a complete attempt. What a folder does not say stays an explicit unknown.
 """
 import os
 import re
@@ -205,8 +208,9 @@ def _from_record(rj, provenance_present, job):
     problems = [f"attempt.json lacks {f}" for f in IDENTITY if baseline and rj.get(f) is None]
     if gen.get("exit_status") is None:
         if gen.get("started_at") is None:
-            return FAILED, _failure(None, None, None, None), steps, unknown + ["failure.kind"], problems + [
-                "attempt.json records neither the start nor the exit status of vens generate"]
+            cause = rj.get("setup_error")
+            return FAILED, _failure(None, None, cause, "attempt.json"), steps, unknown + ["failure.kind"], problems + (
+                [] if cause else ["attempt.json records neither the start nor the exit status of vens generate"])
         if gen.get("timed_out"):
             return FAILED, _failure(INTERRUPTED, "generate", "timeout", "attempt.json"), steps, unknown, problems
         cause, source, problem = _job_cause(job, "vens generate")

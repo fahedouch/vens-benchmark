@@ -61,6 +61,15 @@ class TestOutcomes(Base):
         self.assertIn("failure.kind", rec["unknown"])
         self.assertIn("attempt.json records neither the start nor the exit status of vens generate", rec["problems"])
 
+    def test_a_stop_before_vens_generate_with_its_cause(self):
+        cause = "secret OPENAI_API_KEY_AFTER is not set: each arm runs on its own key"
+        rec = attempt.read_attempt(self.folder({"setup_error": cause, "generate": {}}, log=None, calls=[],
+                                               vex_file=False, provenance=False, answers=False))
+        self.assertEqual((rec["outcome"], rec["failure"]), ("failed", {"kind": None, "step": None, "cause": cause,
+                                                                      "cause_source": "attempt.json"}))
+        self.assertNotIn("failure.cause", rec["unknown"])
+        self.assertEqual([p for p in rec["problems"] if "neither the start" in p], [])
+
     def test_a_job_that_succeeded_without_an_exit_status(self):
         job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
         rec = attempt.read_attempt(self.folder({"generate": {"started_at": "2026-11-20T10:00:00Z"}}, log=[]), job=job)
