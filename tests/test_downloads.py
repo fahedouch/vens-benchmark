@@ -55,8 +55,8 @@ class Base(unittest.TestCase):
 
     def run_json(self, run_id, attempts=1, commit=s.AFTER_SHA):
         s.write(os.path.join(self.root, str(run_id), "run.json"),
-                {"id": run_id, "run_attempt": attempts, "display_title":
-                    f"baseline · 2026-09-23 · openai/{s.MODEL} · batch 1 · x1 · vens {commit}"})
+                {"id": run_id, "run_attempt": attempts,
+                 "display_title": dispatch.title("2026-09-23", "openai", s.MODEL, 1, commit, f"d{run_id}")})
 
     def complete(self, run_id, attempt=1, record=s.COMPLETE_RECORD, **kw):
         log = [s.summary_line(rows=1, cves=1, llm_calls=2, asked_again=0, splits=0, calls__M=1, calls__O=1,
@@ -103,16 +103,19 @@ class TestTheDispatchLog(Base):
     def test_an_attempt_no_line_logs(self):
         self.failed(1005, attempt=1)
         self.complete(1005, attempt=2)
+        self.run_json(1005, attempts=2)
         with self.assertRaisesRegex(Refused, "attempt 2 is not in the dispatch log"):
             downloads.read_run(os.path.join(self.root, "1005"), lines=as_logged(log_line(1005, 1)))
 
     def test_a_record_with_another_commit(self):
         self.complete(1006, commit=s.BEFORE_SHA)
+        self.run_json(1006)
         with self.assertRaisesRegex(Refused, "gives vens"):
             downloads.read_run(os.path.join(self.root, "1006"), lines=as_logged(log_line(1006, 1)))
 
     def test_a_folder_of_another_model(self):
         self.complete(1007, model="claude-sonnet-4-6", provider="anthropic")
+        self.run_json(1007)
         with self.assertRaisesRegex(Refused, "gives model"):
             downloads.read_run(os.path.join(self.root, "1007"), lines=as_logged(log_line(1007, 1)))
 
@@ -123,8 +126,29 @@ class TestTheDispatchLog(Base):
         with self.assertRaisesRegex(Refused, "one folder holds one workflow run"):
             downloads.read_run(os.path.join(self.root, "1008"), lines=as_logged(log_line(1008, 1)))
 
+    def test_a_run_whose_title_does_not_carry_its_lines_dispatch_id(self):
+        lines = as_logged(log_line(1011, 1))
+        self.complete(1011)
+        run_dir = os.path.join(self.root, "1011")
+        with self.assertRaisesRegex(Refused, "no dispatch id in run 1011's title"):
+            downloads.read_run(run_dir, lines=lines)
+        titled = lambda did: s.write(os.path.join(run_dir, "run.json"), {"id": 1011, "display_title": dispatch.title(
+            "2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA, did)})
+        titled(None)
+        with self.assertRaisesRegex(Refused, "no dispatch id in run 1011's title"):
+            downloads.read_run(run_dir, lines=lines)
+        titled("d9999")
+        with self.assertRaisesRegex(Refused, "carries dispatch id d9999, the dispatch log d1011"):
+            downloads.read_run(run_dir, lines=lines)
+        with self.assertRaisesRegex(Refused, "carries dispatch id d9999"):
+            downloads.read_folder(self.complete(1011), lines=lines)
+        self.assertEqual(downloads.read_run(run_dir)[0]["outcome"], "complete")
+        titled("d1011")
+        self.assertEqual(downloads.read_run(run_dir, lines=lines)[0]["outcome"], "complete")
+
     def test_a1_whose_record_says_attempt_2(self):
         folder = self.complete(1009)
+        self.run_json(1009, attempts=2)
         s.write(os.path.join(folder, "attempt.json"),
                 {"record": 1, "runner": "baseline.yml", "arm": "after", "run_id": 1009, "run_attempt": 2,
                  **s.COMPLETE_RECORD})
@@ -218,6 +242,7 @@ class TestCommandLine(Base):
 
     def test_one_attempt_folder_checked_against_the_log(self):
         folder = self.complete(1004)
+        self.run_json(1004)
         log = self.log_file(log_line(1004, 7))
         code, recs, _ = self.main("--dispatch-log", log, folder)
         self.assertEqual((code, recs[0]["what"]["replicate"]), (0, 7))
