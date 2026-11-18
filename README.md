@@ -23,7 +23,7 @@ A constant "always 7.5" guess scores 1.57. A model above that isn't worth the ca
 
 **Short version:** sonnet if you sign or audit the output, gpt-5.4-mini for cheap-and-good, flash-lite for throwaway triage. Don't pay for gpt-5.5.
 
-Context sensitivity, the two showcases (Log4Shell 10.0 → LOW, an axios leak 5.3 → HIGH), and where models fail, as published, are in `report.html` at the [`paper-v1`](https://github.com/venslabs/vens-benchmark/tree/paper-v1) tag, with the paper's extra statistics (`stats_extra.py`).
+Context sensitivity, the two showcases (Log4Shell 10.0 → LOW, an axios leak 5.3 → HIGH), and where models fail, as published, are in `report.html` at the [`paper-v1`](https://github.com/venslabs/vens-benchmark/tree/paper-v1) tag, with the paper's extra statistics (`stats_extra.py`). That Half B ran on an unreleased `+dirty` vens build that no ref names, so its figures cannot be rebuilt from a named ref.
 
 ## Benchmark your own model
 
