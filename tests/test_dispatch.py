@@ -43,7 +43,12 @@ elif args[:1] == ["api"] and "/actions/runs/" in args[1]:
     run = state["runs"].get(args[1].rsplit("/", 1)[1])
     if run is None:
         sys.exit("HTTP 404")
-    print(json.dumps(run))
+    if run.get("bare_reads"):
+        # GitHub's title for a run whose run-name has not rendered yet: the workflow's name
+        run["bare_reads"] -= 1
+        save()
+        run = {{**run, "display_title": "baseline"}}
+    print(json.dumps({{k: v for k, v in run.items() if k != "bare_reads"}}))
 elif args[:2] == ["workflow", "run"]:
     if state.get("workflow_fails"):
         sys.exit("HTTP 502")
@@ -52,13 +57,15 @@ elif args[:2] == ["workflow", "run"]:
     title = (f"baseline · {{f['archived-run']}} · {{f['provider']}}/{{f['model']}} · batch {{f['batch-size']}} · "
              f"x{{f['replicates']}} · vens {{f['vens-ref']}}"
              + (f" · dispatch {{f['dispatch-id']}}" if f.get("dispatch-id") else ""))
+    if state.get("other_title"):
+        title = title.rsplit(" · dispatch ", 1)[0] + " · dispatch 000000000000"
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     first = state["next_id"]
     for _ in range(state.get("copies", 1)):
         rid = state["next_id"]
         state["next_id"] += 1
         state["runs"][str(rid)] = {{"id": rid, "display_title": title, "run_attempt": 1, "status": "queued",
-                                   "conclusion": None, "created_at": now}}
+                                   "conclusion": None, "created_at": now, "bare_reads": state.get("bare_reads", 0)}}
         if state.get("hide_new"):
             state["hidden"] = state.get("hidden", []) + [str(rid)]
     save()
@@ -151,6 +158,9 @@ class Base(unittest.TestCase):
     def actions(self):
         return [l["action"] for l in dispatch.load(self.log)]
 
+    def run_reads(self, run_id):
+        return [c for c in self.calls() if c[:1] == ["api"] and c[1].endswith(f"/actions/runs/{run_id}")]
+
 
 class TestDispatch(Base):
     def test_a_dispatch_logs_a_pending_line_then_its_run(self):
@@ -188,6 +198,26 @@ class TestDispatch(Base):
         self.assertEqual(self.go()["run_id"], 5001)
         listings = [c for c in self.calls() if c[:1] == ["api"] and "/actions/workflows/" in c[1]]
         self.assertEqual(len(listings), 2)
+
+    def test_the_title_is_read_again_until_github_renders_it(self):
+        # On 18/11 the run read back right after `gh workflow run` still had the bare workflow name for its title.
+        self.set(bare_reads=1)
+        slept = []
+        line = dispatch.dispatch(self.args(), self.gh, sleep=slept.append)
+        self.assertEqual((line["action"], line["run_id"], self.actions()), ("dispatch", 5001, ["pending", "dispatch"]))
+        self.assertEqual((len(self.run_reads(5001)), slept), (2, [dispatch.POLL_SECONDS]))
+
+    def test_a_title_that_never_renders_leaves_the_line_pending(self):
+        self.set(bare_reads=dispatch.POLLS + 1)
+        with self.assertRaisesRegex(dispatch.DispatchError, "'baseline' attempt 1, not the dispatch"):
+            self.go()
+        self.assertEqual((len(self.run_reads(5001)), self.actions()), (dispatch.POLLS, ["pending"]))
+
+    def test_another_rendered_title_is_refused_without_waiting(self):
+        self.set(other_title=True)
+        with self.assertRaisesRegex(dispatch.DispatchError, "dispatch 000000000000' attempt 1, not the dispatch"):
+            self.go()
+        self.assertEqual((len(self.run_reads(5001)), self.actions()), (1, ["pending"]))
 
     def test_a_replicate_dispatched_twice_is_refused(self):
         self.go()
