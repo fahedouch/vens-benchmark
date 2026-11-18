@@ -1,5 +1,9 @@
 """Part B analysis: showcases, directional families, repeat-consistency, and the
 LLM-vs-baseline comparison. Reads results/context.json + results/baseline.json.
+
+Legacy input: results/context.json is the published Half B's format, written by the old
+ctx_runner.py (at paper-v1). The scenario runner that replaced it writes campaign archives
+(chain/campaign.py), which this analysis does not read yet.
 """
 import json
 import os
