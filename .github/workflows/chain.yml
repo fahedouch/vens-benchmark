@@ -15,6 +15,8 @@ env:
   VENS_AFTER: fa7fc9aa38306944f01845fd97aa1fc990b597a4  # venslabs/vens 310-step3
   VENS_BEFORE: 43ab10bf980d42b77157e003a27921805a546770  # venslabs/vens main
   DEMO: 7ab1570f8068b16b965571f363726bc051d06d9f  # venslabs/vens-demo, its frozen scan runs/2026-09-23
+  # venslabs/vens-demo, its baseline.yml with the attempt record, which tests/test_baseline_yml.py runs
+  DEMO_BASELINE: c4524dc5383a3cdc6441847a9c536f285063591d
 
 jobs:
   test:
@@ -23,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Fetch vens at both commits and vens-demo's frozen scan
+      - name: Fetch vens at both commits, vens-demo's frozen scan and its baseline.yml
         run: |
           git clone --quiet --filter=blob:none https://github.com/venslabs/vens.git "$RUNNER_TEMP/vens"
           mkdir -p "$RUNNER_TEMP/src-after" "$RUNNER_TEMP/src-before"
@@ -31,6 +33,8 @@ jobs:
           git -C "$RUNNER_TEMP/vens" archive "$VENS_BEFORE" | tar -x -C "$RUNNER_TEMP/src-before"
           git clone --quiet --filter=blob:none https://github.com/venslabs/vens-demo.git "$RUNNER_TEMP/vens-demo"
           git -C "$RUNNER_TEMP/vens-demo" checkout --quiet --detach "$DEMO"
+          git -C "$RUNNER_TEMP/vens-demo" show "$DEMO_BASELINE:.github/workflows/baseline.yml" \
+            > "$RUNNER_TEMP/baseline.yml"
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
@@ -47,6 +51,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install PyYAML, which reads baseline.yml
+        run: python3 -m pip install PyYAML==6.0.3
+
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:
           distribution: temurin
@@ -62,4 +69,5 @@ jobs:
           VB_DEMO: ${{ runner.temp }}/vens-demo
           VB_QUICKSTART: ${{ runner.temp }}/src-after/examples/quickstart
           VB_JAR: ${{ runner.temp }}/jar/owasp-risk-rating-calculator-1.0.1.jar
+          VB_BASELINE: ${{ runner.temp }}/baseline.yml
         run: python3 -m unittest -v

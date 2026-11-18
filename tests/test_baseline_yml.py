@@ -1,8 +1,10 @@
-"""vens-demo's baseline.yml run step by step against a fake vens, as GitHub runs a job: the attempt record each
-attempt leaves, read back as the four outcomes; the run name the dispatch script finds its run by; the key each arm
-runs on. No test reaches GitHub or a model.
+"""vens-demo's baseline.yml run step by step as GitHub runs a job, against a fake vens and against vens's own mock:
+the attempt record each attempt leaves, read back as the four outcomes; the run name the dispatch script finds its
+run by; the key each arm runs on, kept out of the artefact. No test reaches GitHub or a paid model.
 
-    VB_BASELINE   a baseline.yml that writes the attempt record; PyYAML (requirements.txt) reads it
+    VB_BASELINE              a baseline.yml that writes the attempt record; PyYAML (requirements.txt) reads it.
+                             Required when CI=true.
+    VB_VENS_AFTER, VB_DEMO   the cases on vens's mock (see support.py)
 """
 import contextlib
 import hashlib
@@ -19,7 +21,7 @@ import time
 import unittest
 from types import SimpleNamespace
 
-from chain import attempt, dispatch, read
+from chain import attempt, dispatch, read, runvens, venslog
 from tests import support as s
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,10 +32,11 @@ SECRETS = {"OPENAI_API_KEY": "shared-openai", "ANTHROPIC_API_KEY": "shared-anthr
            "OPENAI_API_KEY_BEFORE": "openai-before", "OPENAI_API_KEY_AFTER": "openai-after",
            "ANTHROPIC_API_KEY_BEFORE": "anthropic-before", "ANTHROPIC_API_KEY_AFTER": "anthropic-after"}
 NO_AFTER_KEY = {k: v for k, v in SECRETS.items() if k != "OPENAI_API_KEY_AFTER"}
+KEY = SECRETS["OPENAI_API_KEY_AFTER"]
 # The schema chain/attempt.py documents for baseline.yml, in its order.
 RECORD_KEYS = ["record", "runner", "arm", "provider", "model", "llm_batch_size", "vens_ref", "vens_sha",
                "vens_binary_sha256", "run_id", "run_attempt", "job", "context", "replicate", "archived_scan", "config",
-               "generate", "enrich", "archive_check", "provenance"]
+               "setup_error", "generate", "enrich", "archive_check", "provenance"]
 UTC = r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$"
 
 FAKE_VENS = r'''#!{python}
@@ -50,6 +53,9 @@ out = os.path.abspath(args[-1])
 run_dir = os.path.abspath(os.path.join(args[args.index("--debug-dir") + 1], "run-1"))
 before = os.environ["ARM"] == "before"
 calls = s.before_calls({vid!r}) if before else s.after_calls({vid!r})
+if mode == "leak":
+    key = os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    print(s.line("WARN", "Retrying the call", authorization="Bearer " + key), file=sys.stderr, flush=True)
 if mode in ("hang", "generate-fails"):
     s.write_calls(run_dir, [(calls[0][0], calls[0][1], None)])
     print(s.line("INFO", "Scoring vulnerabilities", rows=1), file=sys.stderr, flush=True)
@@ -67,6 +73,15 @@ s.write(out, s.vex([({vid!r}, s.VECTOR, s.SEVERITY, s.SCORE)]))
 summary = dict(rows=2, cves=1, llm_calls=2) if before else dict(rows=1, cves=1, llm_calls=2, calls__M=1, calls__O=1)
 print(s.summary_line(**summary, asked_again=0, splits=0, failed=False), file=sys.stderr)
 '''
+
+# Keeps the first line only, then fails, as a tee whose disk filled up.
+FAILING_TEE = """#!/bin/sh
+IFS= read -r first
+printf '%s\\n' "$first" > "$1"
+printf '%s\\n' "$first"
+cat
+exit 1
+"""
 
 
 # GitHub's expressions, as far as baseline.yml uses them: && and || give one of their operands.
@@ -176,8 +191,8 @@ def load(path):
         return json.load(fh)
 
 
-def context(arm="after", provider="openai", commit=s.AFTER_SHA, run_id=2001, secrets=None):
-    a = SimpleNamespace(archived_run="2026-09-23", provider=provider, model=s.MODEL, batch_size=1, arm=arm)
+def context(arm="after", provider="openai", model=s.MODEL, commit=s.AFTER_SHA, run_id=2001, secrets=None, batch=1):
+    a = SimpleNamespace(archived_run="2026-09-23", provider=provider, model=model, batch_size=batch, arm=arm)
     return {"inputs": dispatch.inputs(a, commit, DISPATCH_ID),
             "matrix": {"replicate": "1", "context": {"file": "contexts/internal.yaml", "slug": "internal"}},
             "steps": {"build": {"outputs": {"sha": commit}}},
@@ -189,6 +204,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         path = s.env("VB_BASELINE")
         if path is None:
+            if os.environ.get("CI") == "true":
+                self.fail("CI=true and VB_BASELINE is not set: the baseline.yml tests would not run")
             self.skipTest("set VB_BASELINE to a vens-demo baseline.yml with the attempt record (see this file)")
         try:
             import yaml
@@ -210,15 +227,16 @@ class Base(unittest.TestCase):
 
     def env(self, st, ctx, ws, **extra):
         base = {"PATH": os.environ["PATH"], "HOME": self.dir, "GITHUB_RUN_ID": str(ctx["github"]["run_id"]),
-                "GITHUB_RUN_ATTEMPT": str(ctx["github"]["run_attempt"]),
+                "GITHUB_RUN_ATTEMPT": str(ctx["github"]["run_attempt"]), "GITHUB_SHA": ctx["github"]["sha"],
                 "GITHUB_OUTPUT": os.path.join(ws, ".output"), "GITHUB_STEP_SUMMARY": os.path.join(ws, ".summary")}
         wide = {k: render(str(v), ctx) for k, v in (self.wf.get("env") or {}).items()}
         mine = {k: render(str(v), ctx) for k, v in (st.get("env") or {}).items()}
         return {**base, **wide, **mine, **extra}
 
     def bash(self, st, ctx, ws, cancel=False, **extra):
-        """Runs a step as the runner does, `bash -e {0}`; with cancel, as the runner cancels it: SIGINT to the shell
-        alone once vens has started, SIGTERM after, then whatever the shell left running is killed."""
+        """Runs a step as the runner does, `bash -e {0}`, its output added to jobs.out; with cancel, as the runner
+        cancels it: SIGINT to the shell alone once vens has started, SIGTERM after, then whatever the shell left
+        running is killed."""
         script = s.write(os.path.join(self.dir, "step.sh"), render(st["run"], ctx))
         with open(os.path.join(self.dir, "step.out"), "w") as out:
             p = subprocess.Popen(["bash", "-e", script], cwd=ws, env=self.env(st, ctx, ws, **extra), stdout=out,
@@ -232,9 +250,11 @@ class Base(unittest.TestCase):
                 os.kill(p.pid, signal.SIGINT)
                 time.sleep(0.3)
                 os.kill(p.pid, signal.SIGTERM)
-            rc = p.wait(timeout=60)
+            rc = p.wait(timeout=120)
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(p.pid, signal.SIGKILL)
+        with open(os.path.join(self.dir, "jobs.out"), "a") as fh:
+            fh.write(self.output())
         return rc
 
     def output(self):
@@ -260,6 +280,12 @@ class TestRunName(Base):
         self.assertEqual({k for k, v in declared.items() if v.get("required")} - set(passed), set())
         self.assertEqual(declared["arm"]["options"], list(dispatch.ARMS))
 
+    def test_no_script_interpolates_an_expression(self):
+        # An input interpolated into a script runs as shell: they all go through env.
+        for name, job in self.wf["jobs"].items():
+            for st in job["steps"]:
+                self.assertNotIn("${{", st.get("run", ""), f"{name}: {st.get('name') or st.get('id')}")
+
 
 class TestKeys(Base):
     def keys(self, **kw):
@@ -271,6 +297,7 @@ class TestKeys(Base):
             for arm in dispatch.ARMS:
                 self.assertEqual(self.keys(provider=provider, arm=arm),
                                  {f"{provider.upper()}_API_KEY": f"{provider}-{arm}", f"{other}_API_KEY": ""})
+        self.assertEqual(self.keys(provider="mock"), {"OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": ""})
 
     def test_no_fallback_to_the_shared_key(self):
         self.assertEqual(self.keys(secrets=NO_AFTER_KEY)["OPENAI_API_KEY"], "")
@@ -290,25 +317,32 @@ class TestKeys(Base):
         ctx = context()
         ctx["inputs"]["dispatch-id"] = "a b"
         self.assertEqual(self.plan(ctx), 1)
+        self.assertEqual(self.plan(context(provider="mock", model="mock", secrets={})), 0)
 
-    def test_the_score_step_stops_before_vens_without_its_key(self):
-        ws = os.path.join(self.dir, "ws")
-        os.makedirs(ws)
-        rc = self.bash(self.step("score", "vens"), context(secrets=NO_AFTER_KEY), ws, VENS=self.fake, FAKE_VENS="ok")
-        self.assertEqual(rc, 1)
-        self.assertIn("::error::secret OPENAI_API_KEY_AFTER is not set", self.output())
-        self.assertEqual(os.listdir(ws), [])
+    def test_an_input_is_data_not_shell(self):
+        ctx = context()
+        ctx["inputs"]["replicates"] = "$(touch pwned)1"
+        self.assertEqual(self.plan(ctx), 1)
+        self.assertIn("::error::replicates must be a positive integer", self.output())
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "plan", "pwned")))
 
 
-class TestTheAttemptRecord(Base):
+class Download(Base):
     """Each case runs the score job from its Score step on, each step skipped after a failure unless if: always();
-    the downloads are then read with chain.read through a dispatch log, as a campaign's are."""
+    the downloads are then read with chain.read, through a dispatch log as a campaign's are."""
 
-    def job(self, root, mode, arm, run_id):
+    def job(self, root, run_id, mode="ok", arm="after", provider="openai", model=s.MODEL, batch=1, secrets=None,
+            vens=None, env=None):
         commit = s.BEFORE_SHA if arm == "before" else s.AFTER_SHA
-        ctx = context(arm=arm, commit=commit, run_id=run_id)
+        ctx = context(arm=arm, provider=provider, model=model, commit=commit, run_id=run_id, secrets=secrets,
+                      batch=batch)
         ws = os.path.join(self.dir, f"ws-{run_id}")
         os.makedirs(ws)
+        if vens is not None:
+            demo = s.env("VB_DEMO")
+            shutil.copy(os.path.join(demo, "runs", "2026-09-23", "scan", "scan.json"), os.path.join(ws, "scan.json"))
+            runvens.add_marker(os.path.join(demo, "contexts", "internal.yaml"),
+                               os.path.join(ws, "contexts", "internal.yaml"))
         steps = self.wf["jobs"]["score"]["steps"]
         conclusion = "success"
         for st in steps[steps.index(self.step("score", "vens")):]:
@@ -319,7 +353,7 @@ class TestTheAttemptRecord(Base):
                 outcome = "success"
             else:
                 cancel = mode == "hang" and st.get("id") == "vens"
-                rc = self.bash(st, ctx, ws, cancel=cancel, VENS=self.fake, FAKE_VENS=mode)
+                rc = self.bash(st, ctx, ws, cancel=cancel, VENS=vens or self.fake, FAKE_VENS=mode, **(env or {}))
                 outcome = "cancelled" if cancel else "success" if rc == 0 else "failure"
                 conclusion = outcome if conclusion == "success" else conclusion
             if st.get("id"):
@@ -332,7 +366,7 @@ class TestTheAttemptRecord(Base):
         s.write(os.path.join(root, str(run_id), "run.json"),
                 {"id": run_id, "run_attempt": 1, "display_title": render(self.wf["run-name"], ctx)})
         line = {"campaign": "c1", "arm": arm, "repo": "venslabs/vens-demo", "vens_ref": commit, "vens_commit": commit,
-                "provider": "openai", "model": s.MODEL, "batch_size": 1, "archived_run": "2026-09-23",
+                "provider": provider, "model": model, "batch_size": batch, "archived_run": "2026-09-23",
                 "dispatch_id": DISPATCH_ID, "replicate": run_id - 2000, "run_id": run_id, "run_attempt": 1,
                 "time": "2026-11-20T10:00:00Z", "replaces": None}
         return [{**line, "run_id": None, "run_attempt": None, "action": "pending"}, {**line, "action": "dispatch"}]
@@ -347,24 +381,36 @@ class TestTheAttemptRecord(Base):
                 os.makedirs(folder, exist_ok=True)
                 shutil.copy(src, os.path.join(folder, rel))
 
-    def read(self, cases):
-        """The records python3 -m chain.read prints for one run per (mode, arm), in the cases' order."""
+    def read(self, cases, logged=True):
+        """The records python3 -m chain.read prints for one run per case, {job argument: value}, in their order."""
         root = os.path.join(self.dir, "downloads")
-        lines = [l for n, (mode, arm) in enumerate(cases, 1) for l in self.job(root, mode, arm, 2000 + n)]
-        log = s.write(os.path.join(self.dir, "dispatch-log.jsonl"),
-                      "".join(json.dumps({f: l[f] for f in dispatch.FIELDS}) + "\n" for l in lines))
+        first = 2001 + len(os.listdir(root)) if os.path.isdir(root) else 2001
+        runs = range(first, first + len(cases))
+        lines = [l for n, case in zip(runs, cases) for l in self.job(root, n, **case)]
+        args = ["--commit", f"after={s.AFTER_SHA}", "--commit", f"before={s.BEFORE_SHA}"]
+        if logged:
+            log = s.write(os.path.join(self.dir, f"dispatch-log-{first}.jsonl"),
+                          "".join(json.dumps({f: l[f] for f in dispatch.FIELDS}) + "\n" for l in lines))
+            args += ["--dispatch-log", log]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = read.main(["--dispatch-log", log, "--commit", f"after={s.AFTER_SHA}", "--commit",
-                              f"before={s.BEFORE_SHA}", root])
+            code = read.main(args + [os.path.join(root, str(n)) for n in runs])
         self.assertEqual(code, 0, err.getvalue())
         recs = {r["what"]["run_id"]: r for r in map(json.loads, out.getvalue().splitlines())}
-        return [recs[2000 + n] for n in range(1, len(cases) + 1)]
+        return [recs[n] for n in runs]
+
+
+class TestTheAttemptRecord(Download):
+    def setUp(self):
+        super().setUp()
+        shim = s.write(os.path.join(self.dir, "shim", "tee"), FAILING_TEE)
+        os.chmod(shim, 0o755)
+        self.failing_tee = {"PATH": os.path.dirname(shim) + os.pathsep + os.environ["PATH"]}
 
     def test_the_four_outcomes(self):
-        ok, before, gen, enrich, check, hang = self.read(
-            [("ok", "after"), ("ok", "before"), ("generate-fails", "after"), ("enrich-fails", "after"),
-             ("archive-fails", "after"), ("hang", "after")])
+        ok, before, gen, enrich, check, hang, tee = self.read(
+            [{}, {"arm": "before"}, {"mode": "generate-fails"}, {"mode": "enrich-fails"}, {"mode": "archive-fails"},
+             {"mode": "hang"}, {"env": self.failing_tee}])
 
         # A complete attempt, every step passed.
         for rec, arm in ((ok, "after"), (before, "before")):
@@ -375,12 +421,13 @@ class TestTheAttemptRecord(Base):
         self.assertEqual((gen["outcome"], gen["failure"]), ("failed", {
             "kind": "scoring", "step": "generate", "cause": CAUSE, "cause_source": "vens log"}))
         self.assertTrue(gen["summary"]["failed"])
-        # A scoring that completed and a later step that failed.
+        # A scoring that completed and a later step that failed; a log not captured whole fails the archive check.
         self.assertEqual((enrich["outcome"], enrich["failure"]), ("failed", {
             "kind": "later_step", "step": "enrich", "cause": "vens enrich exited 1", "cause_source": "attempt.json"}))
-        self.assertEqual((check["outcome"], check["failure"]), ("failed", {
-            "kind": "later_step", "step": "archive_check", "cause": "archive check failure",
-            "cause_source": "attempt.json"}))
+        for rec in (check, tee):
+            self.assertEqual((rec["outcome"], rec["failure"]), ("failed", {
+                "kind": "later_step", "step": "archive_check", "cause": "archive check failure",
+                "cause_source": "attempt.json"}))
         for rec in (enrich, check):
             self.assertEqual((rec["summary"]["failed"], rec["calls"]["archived"]), (False, 2))
         # A scoring interrupted: its start and no exit status, the job's conclusion its cause.
@@ -390,13 +437,14 @@ class TestTheAttemptRecord(Base):
         self.assertEqual(hang["calls"]["archived"], 1)
 
     def test_what_each_record_holds(self):
-        recs = self.read([("ok", "after"), ("generate-fails", "after"), ("enrich-fails", "after"),
-                          ("archive-fails", "after"), ("hang", "after")])
-        ok, gen, enrich, check, hang = [load(os.path.join(r["folder"], "attempt.json")) for r in recs]
+        recs = self.read([{}, {"mode": "generate-fails"}, {"mode": "enrich-fails"}, {"mode": "archive-fails"},
+                          {"mode": "hang"}, {"env": self.failing_tee}])
+        ok, gen, enrich, check, hang, tee = [load(os.path.join(r["folder"], "attempt.json")) for r in recs]
         for rec in recs:
             self.assertIn("vens-internal.log", os.listdir(rec["folder"]))
-        for rj in (ok, gen, enrich, check, hang):
+        for rj in (ok, gen, enrich, check, hang, tee):
             self.assertEqual(list(rj), RECORD_KEYS)
+            self.assertEqual(rj["setup_error"], None)
             self.assertRegex(rj["generate"]["started_at"], UTC)
         with open(self.fake, "rb") as fh:
             binary = hashlib.sha256(fh.read()).hexdigest()
@@ -408,13 +456,58 @@ class TestTheAttemptRecord(Base):
                           "config": "contexts/internal.yaml"})
         for t in (ok["generate"]["ended_at"], ok["enrich"]["started_at"], ok["enrich"]["ended_at"]):
             self.assertRegex(t, UTC)
-        steps = lambda rj: (rj["generate"]["exit_status"], (rj["enrich"] or {}).get("exit_status"),
-                            rj["archive_check"], rj["provenance"])
-        self.assertEqual(steps(ok), (0, 0, "success", True))
-        self.assertEqual((steps(gen), gen["enrich"]), ((1, None, "skipped", False), None))
-        self.assertEqual(steps(enrich), (0, 1, "skipped", False))
-        self.assertEqual(steps(check), (0, 0, "failure", False))
-        self.assertEqual((steps(hang), hang["generate"]["ended_at"]), ((None, None, "skipped", False), None))
+        steps = lambda rj: (rj["generate"]["exit_status"], rj["generate"]["log_complete"],
+                            (rj["enrich"] or {}).get("exit_status"), rj["archive_check"], rj["provenance"])
+        self.assertEqual(steps(ok), (0, True, 0, "success", True))
+        self.assertEqual((steps(gen), gen["enrich"]), ((1, True, None, "skipped", False), None))
+        self.assertEqual(steps(enrich), (0, True, 1, "skipped", False))
+        self.assertEqual(steps(check), (0, True, 0, "failure", False))
+        self.assertEqual((steps(hang), hang["generate"]["ended_at"]), ((None, None, None, "skipped", False), None))
+        self.assertEqual(steps(tee), (0, False, 0, "failure", False))
+        with open(os.path.join(recs[5]["folder"], "vens-internal.log")) as fh:
+            self.assertEqual(len(fh.read().splitlines()), 1)
+
+    def test_a_stop_before_vens_keeps_its_cause(self):
+        (no_key,) = self.read([{"secrets": NO_AFTER_KEY}])
+        (bad_batch,) = self.read([{"batch": "ten"}], logged=False)
+        for rec, cause in ((no_key, "secret OPENAI_API_KEY_AFTER is not set: each arm runs on its own key"),
+                           (bad_batch, "batch-size must be a positive integer")):
+            self.assertEqual((rec["outcome"], rec["failure"]), ("failed", {
+                "kind": None, "step": None, "cause": cause, "cause_source": "attempt.json"}))
+            self.assertEqual(os.listdir(rec["folder"]), ["attempt.json"])
+            rj = load(os.path.join(rec["folder"], "attempt.json"))
+            self.assertEqual((rj["generate"]["started_at"], rj["setup_error"]), (None, cause))
+        self.assertEqual(load(os.path.join(bad_batch["folder"], "attempt.json"))["llm_batch_size"], "ten")
+
+    def test_the_key_never_reaches_the_artefact(self):
+        (rec,) = self.read([{"mode": "leak"}])
+        self.assertEqual(rec["outcome"], "complete")
+        with open(os.path.join(rec["folder"], "vens-internal.log")) as fh:
+            self.assertIn('authorization="Bearer ***"', fh.read())
+        for top in (os.path.join(self.dir, "downloads"), os.path.join(self.dir, "ws-2001")):
+            for folder, _, names in os.walk(top):
+                for name in names:
+                    with open(os.path.join(folder, name), "rb") as fh:
+                        self.assertNotIn(KEY.encode(), fh.read(), os.path.join(folder, name))
+        with open(os.path.join(self.dir, "jobs.out")) as fh:
+            self.assertNotIn(KEY, fh.read())
+
+
+class TestOnVensMock(Download):
+    """The Score step on vens's own mock, the free smoke path: a real vens log, not the fake's lines."""
+
+    def test_a_failed_scoring_takes_its_cause_from_the_last_error_line(self):
+        (vens,) = s.need(self, "VB_VENS_AFTER")
+        s.need(self, "VB_DEMO")
+        mock = {"provider": "mock", "model": "mock", "secrets": {}, "vens": vens}
+        ok, failed = self.read([mock, {**mock, "env": {"VENS_MOCK_LLM_FAIL": "1"}}])
+        self.assertEqual(ok["outcome"], "complete")
+        self.assertTrue(ok["scores_usable"], ok["problems"] + ok["incomplete"])
+        with open(os.path.join(failed["folder"], "vens-internal.log")) as fh:
+            last = [line for line in fh.read().splitlines() if " level=ERROR " in line][-1]
+        self.assertEqual(failed["failure"], {"kind": "scoring", "step": "generate",
+                                             "cause": venslog.fields(last)["error"], "cause_source": "vens log"})
+        self.assertIn("mockllm: forced failure", failed["failure"]["cause"])
 
 
 if __name__ == "__main__":
