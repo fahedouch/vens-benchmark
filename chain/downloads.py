@@ -86,6 +86,20 @@ def _run(run_dir, folders):
     return run_id, {**meta, "run_id": run_id}
 
 
+def check_dispatch_id(where, run_id, meta, idx):
+    """Refused when the dispatch log names the run and the run's title, in its run.json, carries no dispatch id or
+    another than the log's: the run is then not the one the log's line dispatched."""
+    lines = idx.get(run_id)
+    if not lines:
+        return
+    want, got = next(iter(lines.values()))["dispatch_id"], meta.get("dispatch_id")
+    if got is None:
+        raise Refused(f"{where}: no dispatch id in run {run_id}'s title, from its run.json; the dispatch log gives "
+                      f"{want}")
+    if got != want:
+        raise Refused(f"{where}: run {run_id}'s title carries dispatch id {got}, the dispatch log {want}")
+
+
 def _sources(folder, name):
     out = {"name": {"model": name["model"]}}
     for source in ("attempt.json", "provenance.json"):
@@ -127,6 +141,8 @@ def read_folder(folder, *, lines=None, arm=None, failures=(), commits=None):
     run_id, meta = _run(parent, [folder]) if is_run_dir(parent) else _run(folder, [folder])
     jobs = load_jobs(os.path.join(parent, "jobs.json"))
     idx = dispatch.index(lines) if lines is not None else None
+    if idx is not None:
+        check_dispatch_id(folder, run_id, meta, idx)
     rec, _ = _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits)
     return rec
 
@@ -167,7 +183,8 @@ def _pending_rerun(line, arm=None):
 def read_run(run_dir, *, lines=None, arm=None, failures=(), commits=None):
     """Every attempt of one workflow run. lines: the dispatch log, when the campaign has one: each folder is then
     mapped through it, and refused when no line names its run or attempt, or when its record gives another commit
-    or model. Without a log, the folders with provenance.json must agree on what was dispatched (0B's rule). A job
+    or model, or when the run's title does not carry its line's dispatch id. Without a log, the folders with
+    provenance.json must agree on what was dispatched (0B's rule). A job
     with no artefact folder is a failed attempt unless it succeeded, which a truncated download is refused for; an
     attempt logged or listed with neither folder nor a job scoring a context is flagged, and so is a rerun the log
     asked for and never resolved; a run that yields no attempt is refused."""
@@ -175,6 +192,8 @@ def read_run(run_dir, *, lines=None, arm=None, failures=(), commits=None):
     run_id, meta = _run(run_dir, folders)
     jobs = load_jobs(os.path.join(run_dir, "jobs.json"))
     idx = dispatch.index(lines) if lines is not None else None
+    if idx is not None:
+        check_dispatch_id(run_dir, run_id, meta, idx)
     records, seen = [], set()
     for folder in folders:
         rec, where = _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits)
