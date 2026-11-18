@@ -1,6 +1,8 @@
 """Which verdicts the scenarios can decide (chain.verdicts), and the corpus on vens's mock at both commits: every
-config loads, a strict run passes or stops where it must, and the after's rules as chain.contract encodes them are the
-levels vens wrote. No model is called and vens gets no API key."""
+config loads, a strict run passes or stops where it must, and the after's rules as chain.contract encodes them give
+the levels and sources vens wrote, on every scenario under its declared values and on six scenarios under four other
+assignments of G2 to G4. The 45 combinations the corpus-wide check enumerates are not run through Go. No model is
+called and vens gets no API key."""
 import contextlib
 import glob
 import io
@@ -159,6 +161,10 @@ class TestTheLabels(unittest.TestCase):
         for (family, label), arms in DECIDED.items():
             c = find(family, label)
             self.assertEqual([c.kind(arm) for arm in arms], [DIAGNOSTIC] * len(arms), (family, label))
+        # And the other way: no diagnostic in the checks that was not decided.
+        present = {(c.family, c.label): tuple(arm for arm, kind in c.kinds if kind == DIAGNOSTIC)
+                   for c in verdicts.CHECKS if DIAGNOSTIC in dict(c.kinds).values()}
+        self.assertEqual(present, DECIDED)
         self.assertEqual(tuple(d.name for d in verdicts.NAMED), NAMED)
 
     def test_every_copy_is_read_by_diagnostics_alone(self):
@@ -369,9 +375,6 @@ class TestTheVerdicts(MockCorpus):
         self.assertIn("problems: 0", out.getvalue())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # Values of G2 to G4 the corpus does not declare: three inside the 45 combinations the corpus-wide check reads
 # (detection at one level or undeclared, data_subjects above the floor's band) and one outside it (detection levels
@@ -456,3 +459,7 @@ class TestTheRulesUnderOtherValues(unittest.TestCase):
             declared = verdicts.after_prompts(self.runs[(sid, 0, "as")][0])
             for n in range(1, INSIDE + 1):
                 self.assertEqual(verdicts.after_prompts(self.runs[(sid, n, "as")][0]), declared, (sid, n))
+
+
+if __name__ == "__main__":
+    unittest.main()

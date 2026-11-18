@@ -85,7 +85,7 @@ class TestFreeze(unittest.TestCase):
 
     def test_every_scenario_file_has_its_sha256(self):
         files = {p: sha256(b) for p, b in tree(ROOT).items() if p != "freeze-scenarios.json"}
-        self.assertEqual(self.freeze["files"], files)
+        self.assertEqual(self.freeze["files"], files, REFREEZE)
 
     def test_the_generators_source_digest(self):
         self.assertEqual(self.freeze["generator"],
@@ -99,8 +99,21 @@ class TestFreeze(unittest.TestCase):
         counts = {"configs": len(IDS), "with_vector": len(with_vector), "without_vector": len(IDS) - len(with_vector),
                   "setting_ids": ids}
         self.assertEqual(counts, {"configs": 46, "with_vector": 36, "without_vector": 10,
-                                  "setting_ids": ["ctrl_on", "showcase_high_to_low"]})
-        self.assertEqual(self.freeze["counts"], counts)
+                                  "setting_ids": ["ctrl_on", "showcase_high_to_low"]}, REFREEZE)
+        self.assertEqual(self.freeze["counts"], counts, REFREEZE)
+
+    def test_the_pins_agree(self):
+        # requirements.txt, whose digest the freeze holds, is where the versions live: CI installs from it.
+        pins = read(os.path.join(ROOT, "requirements.txt")).splitlines()
+        self.assertEqual(pins[0], f"# Python {self.freeze['python']}")
+        self.assertIn(f"PyYAML=={self.freeze['pyyaml']}", pins)
+        self.assertTrue([p for p in pins if p.startswith("cvss==")])
+        workflow = read(os.path.join(ROOT, ".github", "workflows", "chain.yml"))
+        self.assertIn(f'python-version: "{self.freeze["python"]}"', workflow)
+        install = [line for line in workflow.splitlines() if "pip install" in line]
+        self.assertEqual(len(install), 1, install)
+        self.assertIn("-c requirements.txt", install[0])
+        self.assertNotIn("==", install[0])
 
     def test_the_declared_values_are_the_configs(self):
         declared = self.freeze["declared"]

@@ -375,7 +375,8 @@ def _values(scen, det, trace, subj):
 
 def corpus_wide(scen, reach, checks=CHECKS, unfloored=False):
     """The after's pair outcomes that any of the 45 corpus-wide combinations changes; with unfloored, every vector
-    read as flooring nothing."""
+    read as flooring nothing. The enumeration runs on chain.contract's Python rules: Go's levels are checked on four
+    of these assignments, on six scenarios, in tests/test_verdicts.py."""
     if unfloored:
         scen = {k: dict(s, floors=frozenset()) for k, s in scen.items()}
     changes = []
@@ -528,8 +529,8 @@ def report(scen, reach, differs, checks=CHECKS):
     for unfloored in (False, True):
         changes = corpus_wide(scen, reach, checks, unfloored)
         lines.append(f"after, pair outcomes any of the 45 corpus-wide combinations of detection, traceability and "
-                     f"data_subjects changes, {'every axis unfloored' if unfloored else 'the vectors as written'}: "
-                     f"{len(changes)}" + (f" {changes[:5]}" if changes else ""))
+                     f"data_subjects changes, {'every axis unfloored' if unfloored else 'the vectors as written'}, "
+                     f"on the Python rules: {len(changes)}" + (f" {changes[:5]}" if changes else ""))
     for sid, by in showcase_by_detection(scen).items():
         lines.append(f"after, {sid}'s attainable severities by detection: {by}")
     lines.append(f"problems: {len(problems)}")

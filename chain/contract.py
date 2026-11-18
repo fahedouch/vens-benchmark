@@ -1,7 +1,9 @@
 """The after's rules for one CVE, as vens states them at 310-step3 fa7fc9a: the level each answer gives, the levels Go
 sets itself, which questions a CVE is asked and the axes its CVSS vectors floor (pkg/contract/rules.go and table.go,
 pkg/owasp/levels.go, pkg/cvss/applicability.go and pkg/riskconfig/fields.go there). chain/verdicts.py reads the
-scenarios through them; tests/test_verdicts.py checks them against the answers and levels the after's mock writes.
+scenarios through them. tests/test_verdicts.py checks them against the levels and sources the after's mock writes:
+every scenario under its declared values, and six scenarios under four other assignments of G2 to G4. The 45
+combinations chain/verdicts.py enumerates run on these Python rules alone.
 """
 import json
 
