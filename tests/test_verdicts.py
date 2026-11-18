@@ -103,6 +103,82 @@ class TestTheCheck(unittest.TestCase):
         self.assertIsNone(contract.question_of("FLAGGED VULNERABILITY\n{}"))
 
 
+def find(family, label):
+    found = [c for c in verdicts.CHECKS if (c.family, c.label) == (family, label)]
+    if len(found) != 1:
+        raise AssertionError(f"{family}, {label}: {len(found)} checks")
+    return found[0]
+
+
+# The diagnostics decided for each family, with the arms each reads, and those that read no contrast.
+DECIDED = {
+    ("1 Exposure", "L not falling"): ("before", "after"),
+    ("1 Exposure", "TA not falling"): ("before", "after"),
+    ("3 Data sensitivity", "T not falling"): ("after",),
+    ("3 Data sensitivity", "LC's extent answer the same"): ("after",),
+    ("3 Data sensitivity", "LI not falling"): ("after",),
+    ("4 Business criticality", "FD not falling"): ("after",),
+    ("4 Business criticality", "RD not falling"): ("after",),
+    ("5 Compliance", "B not falling"): ("after",),
+    ("5 Compliance", "NC's answer under GDPR, at least Go's 2 without"): ("after",),
+    ("5 Compliance", "FD not lower with the framework"): ("after",),
+    ("5 Compliance", "RD not lower with the framework"): ("after",),
+    ("5 Compliance", "PV not lower with the framework"): ("after",),
+    ("6 DoS discriminator", "T below the null model's"): ("after",),
+    ("6 DoS discriminator", "LAV's answer"): ("after",),
+    ("6 DoS discriminator", "without a vector: T below the null model's"): ("before", "after"),
+    ("6 DoS discriminator", "without a vector: LC's extent answer"): ("after",),
+    ("6 DoS discriminator", "without a vector: LI's answer"): ("after",),
+    ("7 Accountability discriminator", "T above the null model's"): ("before", "after"),
+    ("7 Accountability discriminator", "without a vector: T above the null model's"): ("before", "after"),
+    ("7 Accountability discriminator", "without a vector: LC's extent answer"): ("after",),
+    ("7 Accountability discriminator", "without a vector: LI's answer"): ("after",),
+    ("8 Relevant against irrelevant control", "VU, ctrl_on below ctrl_off"): ("before", "after"),
+    ("9 DoS, telegraphed or not", "T's drift"): ("before", "after"),
+    ("9 DoS, telegraphed or not", "LAV's drift"): ("after",),
+    ("9 DoS, telegraphed or not", "without a vector: T's drift"): ("before", "after"),
+    ("9 DoS, telegraphed or not", "without a vector: LC's extent answer's drift"): ("after",),
+    ("9 DoS, telegraphed or not", "without a vector: LI's drift"): ("after",),
+    ("10 Accountability, telegraphed or not", "T's drift"): ("before", "after"),
+    ("10 Accountability, telegraphed or not", "LAC's answer's drift"): ("after",),
+    ("10 Accountability, telegraphed or not", "without a vector: T's drift"): ("before", "after"),
+    ("10 Accountability, telegraphed or not", "without a vector: LC's extent answer's drift"): ("after",),
+    ("10 Accountability, telegraphed or not", "without a vector: LI's drift"): ("after",),
+    ("11 Irrelevant WAF on the local bug", "VU not lower with the WAF"): ("before", "after"),
+}
+NAMED = ("consistency", "wrong YAML", "the table against the null model")
+
+
+class TestTheLabels(unittest.TestCase):
+    def test_data_sensitivity_and_compliance_decide_in_the_before_only(self):
+        for family, label in (("3 Data sensitivity", "T not falling"), ("5 Compliance", "B not falling")):
+            c = find(family, label)
+            self.assertEqual((c.kind("before"), c.kind("after")), (CARRIED, DIAGNOSTIC), family)
+
+    def test_every_decided_diagnostic_is_present(self):
+        for (family, label), arms in DECIDED.items():
+            c = find(family, label)
+            self.assertEqual([c.kind(arm) for arm in arms], [DIAGNOSTIC] * len(arms), (family, label))
+        self.assertEqual(tuple(d.name for d in verdicts.NAMED), NAMED)
+
+    def test_every_copy_is_read_by_diagnostics_alone(self):
+        for copy in sorted(COPIES):
+            reading = [c for c in verdicts.CHECKS if any(copy in (i if isinstance(i, tuple) else (i,))
+                                                         for i in c.scenarios)]
+            self.assertTrue(reading, copy)
+            self.assertEqual({k for c in reading for _, k in c.kinds}, {DIAGNOSTIC}, copy)
+            self.assertTrue({"answer LC", "LI"} <= {c.quantity for c in reading}, copy)
+
+    def test_the_named_diagnostics_list_each_scenarios_levels_by_source(self):
+        lines, _ = verdicts.report(verdicts.load(SCENARIOS), {}, {}, checks=())
+        for name in NAMED:
+            self.assertTrue(any(line.startswith(f"  {name}: ") for line in lines), name)
+        start = lines.index("each scenario's levels in the after by source:")
+        self.assertEqual([line.split(":")[0].strip() for line in lines[start + 1:start + 1 + len(IDS)]], IDS)
+        self.assertIn("  disc_dos: answer M O EE LAV LAC FD RD; config S ID NC; constant SL ED A; floor LC LI PV",
+                      lines[start + 1:])
+
+
 class TestTheShowcaseCorner(unittest.TestCase):
     """showcase_high_to_low's `low` needs T below 3, B below 3 and L below 6, likelihood never below 4.25."""
 
@@ -227,6 +303,8 @@ class TestTheRules(MockCorpus):
                     self.assertEqual(e["answer"], contract.CANNOT_TELL, (sid, e))
                 want = opts.get(e["answer"]) if "answer" in e else opts.get(None)
                 self.assertEqual(e["level"], want, (tag, sid, e))
+                self.assertEqual(e["source"], contract.source(e["factor"], sc["dep"], sc["floors"], e.get("answer"),
+                                                              sc["described"]), (tag, sid, e))
 
     def test_each_call_asks_the_questions_the_rules_give(self):
         scen = verdicts.load(SCENARIOS)
@@ -255,13 +333,15 @@ class TestTheVerdicts(MockCorpus):
         self.assertEqual(problems, [], "\n".join(lines))
         rows, _ = verdicts.check(self.scen, self.reach, self.differs)
         decided = [r for r in rows if r[2] in (CARRIED, NEW)]
-        self.assertEqual(len(decided), 39)
+        self.assertEqual(len(decided), 42)
         self.assertTrue(all(r[4] == (True, True) for r in decided))
 
     def test_the_diagnostics_the_contrasts_cannot_decide(self):
         for family, label in (("3 Data sensitivity", "T not falling"), ("5 Compliance", "B not falling"),
                               ("6 DoS discriminator", "T below the null model's")):
             self.assertEqual(set(self.outcomes(family, label, "after").values()), {(True, False)}, family)
+            # The before's prompts differ in these contrasts: there the check is carried, both outcomes open.
+            self.assertEqual(set(self.outcomes(family, label, "before").values()), {(True, True)}, family)
         self.assertEqual(self.reach[("sens_low", "sens_high")], (frozenset({"M", "PV"}), False))
         self.assertEqual(self.reach[("comp_none", "comp_gdpr")], (frozenset({"NC"}), False))
         for pair in verdicts.WAF:
@@ -291,3 +371,88 @@ class TestTheVerdicts(MockCorpus):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Values of G2 to G4 the corpus does not declare: three inside the 45 combinations the corpus-wide check reads
+# (detection at one level or undeclared, data_subjects above the floor's band) and one outside it (detection levels
+# that differ, so Intrusion detection is asked; data_subjects at the floor's band; traceability undeclared).
+ALTERNATES = (
+    {"detection": "logged_and_reviewed", "traceability": "per_request", "data_subjects": "hundreds"},
+    {"detection": "logged", "traceability": "per_individual", "data_subjects": "thousands"},
+    {"detection": None, "traceability": "none", "data_subjects": "millions"},
+    {"detection": {"network": "logged", "host": "not_logged", "application": "active_in_application"},
+     "traceability": None, "data_subjects": "one_individual"},
+)
+INSIDE = 3
+SAMPLE = ("expo_internet", "sens_low", "comp_gdpr", "disc_audit", "showcase_high_to_low", "disc_dos_novec")
+
+
+def alternate(sid, values):
+    with open(os.path.join(SCENARIOS, sid, "config.yaml"), encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    for key, value in values.items():
+        if value is None:
+            cfg["context"].pop(key, None)
+        else:
+            cfg["context"][key] = {c: value for c in contract.CHANNELS} if key == "detection" and isinstance(
+                value, str) else value
+    return cfg
+
+
+def expected_level(e, opts):
+    if "answer" not in e:
+        return opts[None]
+    if e["factor"] == "ID":
+        chosen = e["answer"]
+        return opts[contract.CANNOT_TELL] if contract.CANNOT_TELL in chosen else min(opts[c] for c in chosen)
+    return opts[e["answer"]]
+
+
+class TestTheRulesUnderOtherValues(unittest.TestCase):
+    """chain.contract against the after's mock on values the corpus does not declare: the levels and sources Go
+    writes, and, inside the 45 combinations, the same prompts as under the declared values."""
+
+    @classmethod
+    def setUpClass(cls):
+        after = s.env("VB_VENS_AFTER")
+        if after is None:
+            raise unittest.SkipTest("set VB_VENS_AFTER to a vens binary built from fa7fc9a")
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.runs = {}
+        for sid, (n, values) in itertools.product(SAMPLE, enumerate((None,) + ALTERNATES)):
+            d = os.path.join(SCENARIOS, sid)
+            cfg = alternate(sid, values or {})
+            path = os.path.join(cls.tmp.name, "configs", f"{sid}-{n}.yaml")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(yaml.safe_dump(cfg, sort_keys=False))
+            for tag, extra in (("as", None), ("cannot_tell", {"VENS_MOCK_LLM_CANNOT_TELL": "cannot_tell"})):
+                folder = os.path.join(cls.tmp.name, sid, f"{n}-{tag}")
+                rec = runvens.generate(after, path, os.path.join(d, "report.json"), folder, record={"arm": "after"},
+                                       env_extra=extra)
+                cls.runs[(sid, n, tag)] = (folder, rec["generate"]["exit_status"], cfg)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_levels_and_sources_go_writes(self):
+        scen = verdicts.load(SCENARIOS)
+        for (sid, n, tag), (folder, code, cfg) in self.runs.items():
+            self.assertEqual(code, 0, (sid, n, tag))
+            dep, floors = contract.deployment(cfg), scen[sid]["floors"]
+            with open(os.path.join(verdicts.run_dir(folder), "answers.json"), encoding="utf-8") as fh:
+                factors = json.load(fh)["vulnerabilities"][0]["factors"]
+            self.assertEqual([e["factor"] for e in factors if "answer" in e],
+                             [q for q in contract.QUESTIONS if contract.asked(q, dep, floors)], (sid, n))
+            for e in factors:
+                opts = contract.options(e["factor"], dep, floors)
+                self.assertEqual(e["level"], expected_level(e, opts), (sid, n, tag, e))
+                self.assertEqual(e["source"], contract.source(e["factor"], dep, floors, e.get("answer")),
+                                 (sid, n, tag, e))
+
+    def test_inside_the_45_combinations_no_prompt_changes(self):
+        for sid in SAMPLE:
+            declared = verdicts.after_prompts(self.runs[(sid, 0, "as")][0])
+            for n in range(1, INSIDE + 1):
+                self.assertEqual(verdicts.after_prompts(self.runs[(sid, n, "as")][0]), declared, (sid, n))

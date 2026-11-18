@@ -12,7 +12,7 @@ import unittest
 import yaml
 
 import make_scenarios as ms
-from chain import verdicts
+from chain import contract, verdicts
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCENARIOS = os.path.join(ROOT, "scenarios")
@@ -57,6 +57,12 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+# The corpus is frozen before step 5's runs: a mismatch is a change to the frozen corpus, never a test to update.
+REFREEZE = ("freeze-scenarios.json no longer matches the generator or its output: if the change is meant, re-freeze "
+            "deliberately, running python3 make_scenarios.py under the recorded Python and PyYAML and committing the "
+            "corpus with it")
+
+
 class TestRegeneration(unittest.TestCase):
     def test_the_generator_rewrites_the_committed_files_byte_for_byte(self):
         freeze = json.loads(read(FREEZE))
@@ -68,9 +74,9 @@ class TestRegeneration(unittest.TestCase):
                 ms.main(["--root", tmp])
             generated = tree(tmp)
         committed = tree(ROOT)
-        self.assertEqual(sorted(generated), sorted(committed))
+        self.assertEqual(sorted(generated), sorted(committed), REFREEZE)
         for path, data in generated.items():
-            self.assertEqual(data, committed[path], path)
+            self.assertEqual(data, committed[path], f"{path}: {REFREEZE}")
 
 
 class TestFreeze(unittest.TestCase):
@@ -83,7 +89,8 @@ class TestFreeze(unittest.TestCase):
 
     def test_the_generators_source_digest(self):
         self.assertEqual(self.freeze["generator"],
-                         {n: sha256(read(os.path.join(ROOT, n), "rb")) for n in ("make_scenarios.py", "requirements.txt")})
+                         {n: sha256(read(os.path.join(ROOT, n), "rb")) for n in ("make_scenarios.py", "requirements.txt")},
+                         REFREEZE)
         self.assertNotIn("commit", json.dumps(self.freeze))
 
     def test_the_counts(self):
@@ -148,6 +155,71 @@ class TestVectors(unittest.TestCase):
             self.assertEqual(finding(a)["CVSS"], finding(b)["CVSS"], (a, b))
             self.assertNotEqual(finding(a)["Description"], finding(b)["Description"], (a, b))
             self.assertEqual(config(a), config(b), (a, b))
+
+
+# The axes each CVE's text rules out, which its vector must give N: a DoS discloses and alters nothing, an
+# accountability flaw neither discloses nor interrupts, a leak neither alters nor interrupts, a code execution
+# rules nothing out. The others follow from their texts the same way.
+FLOORED = {"dos": "CI", "dos2": "CI", "dos3": "CI", "dos_nt": "CI", "dos_nt2": "CI",
+           "audit": "CA", "audit2": "CA", "audit3": "CA", "audit_nt": "CA", "audit_nt2": "CA",
+           "infoleak": "IA", "axios": "IA", "rce": "", "rce2": "", "rce3": "", "locallib": "", "locallib_nt": "",
+           "low": "CA", "payment": "A", "log4shell": ""}
+
+
+def floor_mismatches(cves):
+    """Each CVE whose vector floors other axes than its text rules out."""
+    return [f"{key}: floors {sorted(contract.floors([c['vector']]))}, its text {sorted(FLOORED[key])}"
+            for key, c in sorted(cves.items()) if contract.floors([c["vector"]]) != frozenset(FLOORED[key])]
+
+
+class TestFloors(unittest.TestCase):
+    def test_each_vector_floors_the_axes_its_text_rules_out(self):
+        cves = {**ms.CVES, **ms.REAL}
+        self.assertEqual(sorted(cves), sorted(FLOORED))
+        self.assertEqual(floor_mismatches(cves), [])
+        by_id = {c["id"]: key for key, c in cves.items()}
+        for s in IDS:
+            f = finding(s)
+            if s not in COPIES:
+                self.assertEqual(contract.floors(contract.vectors(f)), frozenset(FLOORED[by_id[f["VulnerabilityID"]]]),
+                                 s)
+
+    def test_a_vector_against_its_text_fails(self):
+        mutated = {**ms.CVES, "dos": {**ms.CVES["dos"], "vector": ms.CVES["dos"]["vector"].replace("C:N", "C:L")}}
+        self.assertEqual(floor_mismatches(mutated), ["dos: floors ['I'], its text ['C', 'I']"])
+
+
+def flat(doc, prefix=""):
+    out = {}
+    for k, v in doc.items():
+        if isinstance(v, dict):
+            out.update(flat(v, f"{prefix}{k}."))
+        else:
+            out[prefix + k] = v
+    return out
+
+
+# The one key each pair a check compares differs in; the twins share their config and differ in the CVE.
+AXIS = {**{p: "context.exposure" for p in verdicts.EXPO}, **{p: "context.data_sensitivity" for p in verdicts.SENS},
+        **{p: "context.business_criticality" for p in verdicts.CRIT},
+        **{p: "context.compliance_requirements" for p in verdicts.COMP},
+        **{p: "context.controls.waf" for p in verdicts.WAF}, **{p: "context.notes" for p in verdicts.REACH},
+        **{p: None for p in verdicts.DOS_TWINS + verdicts.AUDIT_TWINS + verdicts.DOS_COPY_TWINS
+           + verdicts.AUDIT_COPY_TWINS}}
+
+
+class TestOneAxis(unittest.TestCase):
+    def test_every_pair_but_ctrl_differs_in_one_key(self):
+        pairs = {item for c in verdicts.CHECKS if c.pairs() for item in c.scenarios} - set(verdicts.CTRL)
+        self.assertEqual(sorted(pairs), sorted(AXIS))
+        for (a, b), key in AXIS.items():
+            fa, fb = flat(config(a)), flat(config(b))
+            diff = {k for k in set(fa) | set(fb) if fa.get(k) != fb.get(k)}
+            self.assertEqual(diff, set() if key is None else {key}, (a, b))
+            if key is None:
+                self.assertNotEqual(report(a), report(b), (a, b))
+            else:
+                self.assertEqual(report(a), report(b), (a, b))
 
 
 class TestPairs(unittest.TestCase):
