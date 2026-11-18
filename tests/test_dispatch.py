@@ -50,7 +50,8 @@ elif args[:2] == ["workflow", "run"]:
     time.sleep(state.get("delay", 0))
     f = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-f")
     title = (f"baseline · {{f['archived-run']}} · {{f['provider']}}/{{f['model']}} · batch {{f['batch-size']}} · "
-             f"x{{f['replicates']}} · vens {{f['vens-ref']}}")
+             f"x{{f['replicates']}} · vens {{f['vens-ref']}}"
+             + (f" · dispatch {{f['dispatch-id']}}" if f.get("dispatch-id") else ""))
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     first = state["next_id"]
     for _ in range(state.get("copies", 1)):
@@ -112,7 +113,8 @@ class Base(unittest.TestCase):
     def args(self, **kw):
         base = dict(log=self.log, campaign="c1", arm="after", vens_ref="fa7fc9a", provider="openai",
                     model=s.MODEL, replicate=1, batch_size=1, archived_run="2026-09-23", repo="venslabs/vens-demo",
-                    workflow_ref="main", max_side_by_side=2, run_id=None, retry_cap=4, no_run=False, no_rerun=False)
+                    workflow_ref="main", max_side_by_side=2, run_id=None, retry_cap=4, no_run=False, no_rerun=False,
+                    stray=False)
         return SimpleNamespace(**{**base, **kw})
 
     def go(self, **kw):
@@ -128,6 +130,17 @@ class Base(unittest.TestCase):
         state["runs"][str(run_id)] = {"id": run_id, "display_title": title, "run_attempt": 1, "status": "queued",
                                       "conclusion": None, "created_at": created_at}
         self.save(state)
+
+    def failed_dispatch(self):
+        self.set(workflow_fails=True)
+        with self.assertRaises(dispatch.DispatchError):
+            self.go()
+        self.set(workflow_fails=False)
+        (pending,) = dispatch.open_pending(dispatch.load(self.log))
+        return pending
+
+    def title(self, line):
+        return dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA, line["dispatch_id"])
 
     def workflow_runs(self):
         return [c for c in self.calls() if c[:2] == ["workflow", "run"]]
@@ -154,6 +167,21 @@ class TestDispatch(Base):
         (run,) = self.workflow_runs()
         self.assertIn(f"vens-ref={s.AFTER_SHA}", run)
         self.assertIn("replicates=1", run)
+
+    def test_the_run_is_named_with_the_arm_and_dispatch_id_passed(self):
+        line = self.go()
+        self.assertRegex(line["dispatch_id"], r"^[0-9a-f]{12}$")
+        (run,) = self.workflow_runs()
+        self.assertIn("arm=after", run)
+        self.assertIn(f"dispatch-id={line['dispatch_id']}", run)
+        self.assertEqual(self.load()["runs"]["5001"]["display_title"], self.title(line))
+        self.assertEqual(line["dispatch_id"], dispatch.load(self.log)[0]["dispatch_id"])
+
+    def test_a_run_of_the_same_inputs_and_another_dispatch_id_is_not_taken(self):
+        # a late run of an abandoned dispatch, or another campaign's: same inputs, same title but for the id
+        self.set(print_url=False)
+        self.add_run(4000, self.title({"dispatch_id": "0123456789ab"}), dispatch._stamp(dispatch.utc_now()))
+        self.assertEqual(self.go()["run_id"], 5001)
 
     def test_the_run_read_back_from_the_run_list_once_it_appears(self):
         self.set(print_url=False, hide_new=True)
@@ -195,14 +223,6 @@ class TestConcurrentCommands(Base):
 
 
 class TestPending(Base):
-    def failed_dispatch(self):
-        self.set(workflow_fails=True)
-        with self.assertRaises(dispatch.DispatchError):
-            self.go()
-        self.set(workflow_fails=False)
-        (pending,) = dispatch.open_pending(dispatch.load(self.log))
-        return pending
-
     def test_a_failure_after_the_dispatch_keeps_its_pending_line(self):
         self.set(print_url=False, copies=2)
         with self.assertRaises(dispatch.DispatchError):
@@ -220,11 +240,14 @@ class TestPending(Base):
 
     def test_resolve_checks_the_run(self):
         pending = self.failed_dispatch()
-        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        want = self.title(pending)
         self.add_run(7, "baseline · other", pending["time"])
         self.add_run(8, want, "2026-01-01T00:00:00Z")
         with self.assertRaisesRegex(Refused, "not the pending dispatch"):
             dispatch.resolve(self.args(run_id=7), self.gh)
+        self.add_run(9, self.title({"dispatch_id": "0123456789ab"}), pending["time"])
+        with self.assertRaisesRegex(Refused, "not the pending dispatch"):
+            dispatch.resolve(self.args(run_id=9), self.gh)
         with self.assertRaisesRegex(Refused, "before the pending dispatch"):
             dispatch.resolve(self.args(run_id=8), self.gh)
         with self.assertRaisesRegex(Refused, "no pending dispatch"):
@@ -238,10 +261,12 @@ class TestPending(Base):
         self.assertEqual(line["action"], "abandoned")
         self.assertEqual(self.go()["run_id"], 5001)
         self.assertEqual(self.actions(), ["pending", "abandoned", "pending", "dispatch"])
+        ids = [l["dispatch_id"] for l in dispatch.load(self.log)]
+        self.assertTrue(ids[0] == ids[1] != ids[2] == ids[3], ids)
 
     def test_no_run_finds_a_run_past_the_first_page(self):
         pending = self.failed_dispatch()
-        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        want = self.title(pending)
         self.add_run(10, want, pending["time"])
         for n in range(11, 14):
             self.add_run(n, "baseline · other", pending["time"].replace("Z", "") + "Z")
@@ -262,7 +287,7 @@ class TestPending(Base):
         # 1,000 newer runs fill GitHub's cap: the run the pending dispatch started is listed on no page, and the
         # empty page after the cap is no end of the list.
         pending = self.failed_dispatch()
-        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        want = self.title(pending)
         start = dispatch._parse(pending["time"]) + datetime.timedelta(minutes=10)
         state = self.load()
         state["runs"] = {str(n): {"id": n, "display_title": "baseline · other", "run_attempt": 1, "status": "queued",
@@ -291,6 +316,122 @@ class TestPending(Base):
         del state["runs"]["13"]
         self.save(state)
         self.assertEqual(dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)["action"], "abandoned")
+
+
+class TestLateRuns(Base):
+    def abandoned(self):
+        pending = self.failed_dispatch()
+        dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
+        return pending
+
+    def late(self, pending, run_id=4000):
+        # GitHub starts the abandoned dispatch's run after all
+        self.add_run(run_id, self.title(pending), dispatch._stamp(dispatch.utc_now()))
+
+    def test_a_late_run_blocks_any_new_dispatch_and_rerun_whatever_its_end(self):
+        self.go(arm="before", vens_ref="43ab10b")
+        self.late(self.abandoned())
+        self.finish(5001, "failure")
+        logged = self.actions()
+        for conclusion in (None, "cancelled"):
+            if conclusion:
+                self.finish(4000, conclusion)
+            for kw in ({}, {"campaign": "c2"}):
+                with self.assertRaisesRegex(Refused, r"runs \[4000\] carry the dispatch id of an abandoned dispatch"):
+                    self.go(**kw)
+            with self.assertRaisesRegex(Refused, r"runs \[4000\] carry the dispatch id"):
+                dispatch.rerun(self.args(run_id=5001), self.gh, **NO_SLEEP)
+        self.assertEqual((len(self.workflow_runs()), self.reruns(), self.actions()), (2, [], logged))
+
+    def test_a_late_run_attached_to_its_abandoned_dispatch(self):
+        pending = self.abandoned()
+        self.late(pending)
+        self.add_run(4001, self.title({"dispatch_id": "0123456789ab"}), dispatch._stamp(dispatch.utc_now()))
+        with self.assertRaisesRegex(Refused, "not the pending dispatch"):
+            dispatch.resolve(self.args(run_id=4001), self.gh)
+        self.finish(4000, "success")
+        with self.assertRaisesRegex(Refused, "was not dispatched again: attach run 4000 with resolve --run-id"):
+            dispatch.resolve(self.args(run_id=4000, stray=True), self.gh)
+        line = dispatch.resolve(self.args(run_id=4000), self.gh)
+        self.assertEqual((line["action"], line["run_id"], line["dispatch_id"], line["time"]),
+                         ("resolved", 4000, pending["dispatch_id"], pending["time"]))
+        self.assertEqual(self.actions(), ["pending", "abandoned", "resolved"])
+        with self.assertRaisesRegex(Refused, "already run 4000"):
+            self.go()
+        self.assertEqual(self.go(arm="before", vens_ref="43ab10b")["action"], "dispatch")
+
+    def stray(self, conclusion):
+        """A late run after its replicate was dispatched again, recorded a stray once ended."""
+        pending = self.abandoned()
+        self.assertEqual(self.go()["run_id"], 5001)
+        self.late(pending)
+        with self.assertRaisesRegex(Refused, "carry the dispatch id"):
+            self.go(arm="before", vens_ref="43ab10b")
+        with self.assertRaisesRegex(Refused, "run 4000 is queued: a stray run is recorded once it has ended"):
+            dispatch.resolve(self.args(run_id=4000, stray=True), self.gh)
+        with self.assertRaisesRegex(Refused, "no pending dispatch"):
+            dispatch.resolve(self.args(run_id=4000), self.gh)
+        self.add_run(4001, self.title({"dispatch_id": "0123456789ab"}), dispatch._stamp(dispatch.utc_now()))
+        self.finish(4001, conclusion)
+        with self.assertRaisesRegex(Refused, "of no abandoned dispatch"):
+            dispatch.resolve(self.args(run_id=4001, stray=True), self.gh)
+        self.finish(4000, conclusion)
+        line = dispatch.resolve(self.args(run_id=4000, stray=True), self.gh)
+        self.assertEqual({k: line[k] for k in ("action", "run_id", "run_attempt", "conclusion", "dispatch_id",
+                                                "replicate", "arm")},
+                         {"action": "stray", "run_id": 4000, "run_attempt": 1, "conclusion": conclusion,
+                          "dispatch_id": pending["dispatch_id"], "replicate": 1, "arm": "after"})
+        self.assertEqual(self.actions(), ["pending", "abandoned", "pending", "dispatch", "stray"])
+        self.assertEqual(dispatch.index(dispatch.load(self.log))[4000], {1: line})
+        self.assertEqual(self.go(arm="before", vens_ref="43ab10b")["run_id"], 5002)
+        with self.assertRaisesRegex(Refused, "run 4000 is a stray run: never rerun"):
+            dispatch.rerun(self.args(run_id=4000), self.gh, **NO_SLEEP)
+        with self.assertRaisesRegex(Refused, "already in the log"):
+            dispatch.resolve(self.args(run_id=4000, stray=True), self.gh)
+
+    def test_a_completed_late_run_recorded_as_a_stray(self):
+        self.stray("success")
+
+    def test_a_cancelled_late_run_recorded_as_a_stray(self):
+        self.stray("cancelled")
+
+    def test_a_newer_late_run_attached_after_an_older_one_recorded_stray(self):
+        older = self.abandoned()
+        newer = self.abandoned()
+        self.late(older)
+        self.finish(4000, "success")
+        self.assertEqual(dispatch.resolve(self.args(run_id=4000, stray=True), self.gh)["action"], "stray")
+        self.late(newer, run_id=4001)
+        with self.assertRaisesRegex(Refused, r"runs \[4001\] carry the dispatch id"):
+            self.go(arm="before", vens_ref="43ab10b")
+        line = dispatch.resolve(self.args(run_id=4001), self.gh)
+        self.assertEqual((line["action"], line["dispatch_id"]), ("resolved", newer["dispatch_id"]))
+        self.assertEqual(self.actions(), ["pending", "abandoned", "pending", "abandoned", "stray", "resolved"])
+        with self.assertRaisesRegex(Refused, "already run 4001"):
+            self.go()
+        self.assertEqual(self.go(arm="before", vens_ref="43ab10b")["action"], "dispatch")
+
+    def test_check_late(self):
+        pending = self.abandoned()
+        self.go()
+        self.late(pending)
+        self.finish(4000, "success")
+        check = lambda: dispatch.main(["--gh", self.gh, "check-late", "--log", self.log])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(check(), 2)
+        self.assertIn("runs [4000] carry the dispatch id of an abandoned dispatch", err.getvalue())
+        dispatch.resolve(self.args(run_id=4000, stray=True), self.gh)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(check(), 0)
+        self.assertEqual(json.loads(out.getvalue())["abandoned"], [pending["dispatch_id"]])
+
+    def test_no_dispatch_while_the_run_list_does_not_reach_the_abandoned_dispatch(self):
+        pending = self.abandoned()
+        for n in range(11, 15):
+            self.add_run(n, "baseline · other", dispatch._stamp(dispatch.utc_now()))
+        with mock.patch.object(dispatch, "PER_PAGE", 2), mock.patch.object(dispatch, "MAX_PAGES", 1):
+            with self.assertRaisesRegex(Refused, f"did not reach {pending['time']}, the oldest abandoned dispatch"):
+                self.go(arm="before", vens_ref="43ab10b")
 
 
 class TestPairingAndCap(Base):
@@ -403,7 +544,7 @@ class TestTheLog(Base):
     def line(self, **kw):
         base = {f: None for f in dispatch.FIELDS}
         base.update(campaign="c1", arm="after", repo="r", vens_ref="x", vens_commit="x", provider="openai",
-                    model=s.MODEL, batch_size=1, archived_run="2026-09-23", replicate=1, time="t")
+                    model=s.MODEL, batch_size=1, archived_run="2026-09-23", dispatch_id="d1", replicate=1, time="t")
         return {**base, **kw}
 
     def write(self, *lines):
@@ -445,6 +586,47 @@ class TestTheLog(Base):
             self.write(*self.started(), self.line(action="rerun-pending", run_id=1, run_attempt=2, replaces=1,
                                                   **change))
             with self.assertRaisesRegex(dispatch.DispatchError, "a rerun changes"):
+                dispatch.load(self.log)
+
+    def test_a_line_that_changes_its_dispatch_id(self):
+        self.write(self.line(action="pending"), self.line(action="dispatch", run_id=1, run_attempt=1, dispatch_id="d2"))
+        with self.assertRaisesRegex(dispatch.DispatchError, r"a dispatch line changes \['dispatch_id'\]"):
+            dispatch.load(self.log)
+        self.write(*self.started(), self.line(action="rerun-pending", run_id=1, run_attempt=2, replaces=1,
+                                              dispatch_id="d2"))
+        with self.assertRaisesRegex(dispatch.DispatchError, "a rerun changes"):
+            dispatch.load(self.log)
+
+    def test_a_late_run_resolved_after_its_abandoned_dispatch(self):
+        late = self.line(action="resolved", run_id=1, run_attempt=1)
+        self.write(self.line(action="pending"), self.line(action="abandoned"), late)
+        self.assertEqual([l["action"] for l in dispatch.load(self.log)], ["pending", "abandoned", "resolved"])
+        self.write(self.line(action="pending"), self.line(action="abandoned"), self.line(action="pending",
+                                                                                         dispatch_id="d2"), late)
+        with self.assertRaisesRegex(dispatch.DispatchError, r"changes \['dispatch_id'\]"):
+            dispatch.load(self.log)
+        self.write(self.line(action="pending"), self.line(action="abandoned"), self.line(action="dispatch", run_id=1,
+                                                                                         run_attempt=1))
+        with self.assertRaisesRegex(dispatch.DispatchError, "a dispatch line with no pending dispatch"):
+            dispatch.load(self.log)
+
+    def test_a_stray_line(self):
+        abandoned = [self.line(action="pending"), self.line(action="abandoned")]
+        again = [self.line(action="pending", dispatch_id="d2"),
+                 self.line(action="dispatch", dispatch_id="d2", run_id=1, run_attempt=1)]
+        stray = self.line(action="stray", run_id=2, run_attempt=2, conclusion="success")
+        self.write(*abandoned, *again, stray)
+        lines = dispatch.load(self.log)
+        self.assertEqual(dispatch.index(lines)[2], {1: stray, 2: stray})
+        for bad, why in (([*abandoned, stray], "no abandoned dispatch dispatched again"),
+                         ([*abandoned, *again, {**stray, "model": "m"}], "a stray line changes"),
+                         ([*abandoned, *again, {**stray, "conclusion": None}], "how it ended"),
+                         ([*abandoned, *again, {**stray, "run_id": 1}], "already another line's"),
+                         ([*abandoned, *again, stray, stray], "no abandoned dispatch dispatched again"),
+                         ([*abandoned, *again, stray, self.line(action="rerun-pending", run_id=2, run_attempt=3,
+                                                                 replaces=2)], "a stray run")):
+            self.write(*bad)
+            with self.assertRaisesRegex(dispatch.DispatchError, why):
                 dispatch.load(self.log)
 
     def test_a_run_of_two_replicates(self):

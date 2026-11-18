@@ -20,8 +20,10 @@ COMMITS = {"before": s.BEFORE_SHA, "after": s.AFTER_SHA}
 def log_line(run_id, replicate, attempt=1, arm="after", model=s.MODEL, commit=s.AFTER_SHA):
     return {"campaign": "c1", "arm": arm, "repo": "venslabs/vens-demo", "vens_ref": commit, "vens_commit": commit,
             "provider": "openai", "model": model, "batch_size": 1, "archived_run": "2026-09-23",
-            "replicate": replicate, "run_id": run_id, "run_attempt": attempt, "time": "2026-11-20T10:00:00Z",
-            "action": "dispatch" if attempt == 1 else "rerun-failed", "replaces": None if attempt == 1 else attempt - 1}
+            "dispatch_id": f"d{run_id}", "replicate": replicate, "run_id": run_id, "run_attempt": attempt,
+            "time": "2026-11-20T10:00:00Z",
+            "action": "dispatch" if attempt == 1 else "rerun-failed", "replaces": None if attempt == 1 else attempt - 1,
+            "conclusion": None}
 
 
 def as_logged(*lines):
@@ -54,8 +56,8 @@ class Base(unittest.TestCase):
 
     def run_json(self, run_id, attempts=1, commit=s.AFTER_SHA):
         s.write(os.path.join(self.root, str(run_id), "run.json"),
-                {"id": run_id, "run_attempt": attempts, "display_title":
-                    f"baseline · 2026-09-23 · openai/{s.MODEL} · batch 1 · x1 · vens {commit}"})
+                {"id": run_id, "run_attempt": attempts,
+                 "display_title": dispatch.title("2026-09-23", "openai", s.MODEL, 1, commit, f"d{run_id}")})
 
     def complete(self, run_id, attempt=1, record=s.COMPLETE_RECORD, **kw):
         log = [s.summary_line(rows=1, cves=1, llm_calls=2, asked_again=0, splits=0, calls__M=1, calls__O=1,
@@ -71,6 +73,38 @@ class Base(unittest.TestCase):
 
     def log_file(self, *lines):
         return s.write(os.path.join(self.root, "log.jsonl"), "".join(json.dumps(l) + "\n" for l in as_logged(*lines)))
+
+
+class TestStrayRuns(Base):
+    def test_a_completed_and_a_cancelled_stray_run_count_their_calls_not_their_scores(self):
+        lines = []
+        for replicate, (redone, stray, conclusion) in enumerate(((1001, 1002, "success"), (1003, 1004, "cancelled")),
+                                                                 1):
+            gone = log_line(stray, replicate)
+            lines += [{**gone, "run_id": None, "run_attempt": None, "action": "pending"},
+                      {**gone, "run_id": None, "run_attempt": None, "action": "abandoned"},
+                      *as_logged(log_line(redone, replicate)), {**gone, "action": "stray", "conclusion": conclusion}]
+            self.complete(redone)
+            for run_id in (redone, stray):
+                self.run_json(run_id)
+        self.complete(1002)
+        s.baseline_folder(self.root, 1004, "internal", 1, 1, log=[], vex_file=False, provenance=False, answers=False,
+                          record={"generate": {"started_at": "2026-11-20T10:00:00Z"}})
+        s.write(os.path.join(self.root, "1004", "jobs.json"), {"jobs": [
+            {"id": 9, "name": "internal · run 1", "run_attempt": 1, "status": "completed", "conclusion": "cancelled",
+             "started_at": "2026-11-20T10:00:00Z", "completed_at": "2026-11-20T10:02:00Z"}]})
+        log = s.write(os.path.join(self.root, "log.jsonl"), "".join(json.dumps(l) + "\n" for l in lines))
+        recs = {r["what"]["run_id"]: r for r in downloads.read_downloads(self.root, lines=dispatch.load(log),
+                                                                          commits=COMMITS)}
+        for run_id in (1001, 1003):
+            self.assertEqual((recs[run_id]["scores_usable"], recs[run_id]["excluded"]), (True, None))
+        done, cancelled = recs[1002], recs[1004]
+        self.assertEqual((done["outcome"], done["scores_usable"], done["excluded"], done["what"]["replicate"]),
+                         ("complete", False, attempt.STRAY, 1))
+        self.assertEqual((done["calls"]["archived"], done["cost_estimate"]), (2, recs[1001]["cost_estimate"]))
+        self.assertEqual((cancelled["outcome"], cancelled["failure"]["cause"], cancelled["excluded"],
+                          cancelled["what"]["replicate"], cancelled["calls"]["archived"]),
+                         ("failed", "job cancelled", attempt.STRAY, 2, 2))
 
 
 class TestTheDispatchLog(Base):
@@ -102,16 +136,19 @@ class TestTheDispatchLog(Base):
     def test_an_attempt_no_line_logs(self):
         self.failed(1005, attempt=1)
         self.complete(1005, attempt=2)
+        self.run_json(1005, attempts=2)
         with self.assertRaisesRegex(Refused, "attempt 2 is not in the dispatch log"):
             downloads.read_run(os.path.join(self.root, "1005"), lines=as_logged(log_line(1005, 1)))
 
     def test_a_record_with_another_commit(self):
         self.complete(1006, commit=s.BEFORE_SHA)
+        self.run_json(1006)
         with self.assertRaisesRegex(Refused, "gives vens"):
             downloads.read_run(os.path.join(self.root, "1006"), lines=as_logged(log_line(1006, 1)))
 
     def test_a_folder_of_another_model(self):
         self.complete(1007, model="claude-sonnet-4-6", provider="anthropic")
+        self.run_json(1007)
         with self.assertRaisesRegex(Refused, "gives model"):
             downloads.read_run(os.path.join(self.root, "1007"), lines=as_logged(log_line(1007, 1)))
 
@@ -122,8 +159,29 @@ class TestTheDispatchLog(Base):
         with self.assertRaisesRegex(Refused, "one folder holds one workflow run"):
             downloads.read_run(os.path.join(self.root, "1008"), lines=as_logged(log_line(1008, 1)))
 
+    def test_a_run_whose_title_does_not_carry_its_lines_dispatch_id(self):
+        lines = as_logged(log_line(1011, 1))
+        self.complete(1011)
+        run_dir = os.path.join(self.root, "1011")
+        with self.assertRaisesRegex(Refused, "no dispatch id in run 1011's title"):
+            downloads.read_run(run_dir, lines=lines)
+        titled = lambda did: s.write(os.path.join(run_dir, "run.json"), {"id": 1011, "display_title": dispatch.title(
+            "2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA, did)})
+        titled(None)
+        with self.assertRaisesRegex(Refused, "no dispatch id in run 1011's title"):
+            downloads.read_run(run_dir, lines=lines)
+        titled("d9999")
+        with self.assertRaisesRegex(Refused, "carries dispatch id d9999, the dispatch log d1011"):
+            downloads.read_run(run_dir, lines=lines)
+        with self.assertRaisesRegex(Refused, "carries dispatch id d9999"):
+            downloads.read_folder(self.complete(1011), lines=lines)
+        self.assertEqual(downloads.read_run(run_dir)[0]["outcome"], "complete")
+        titled("d1011")
+        self.assertEqual(downloads.read_run(run_dir, lines=lines)[0]["outcome"], "complete")
+
     def test_a1_whose_record_says_attempt_2(self):
         folder = self.complete(1009)
+        self.run_json(1009, attempts=2)
         s.write(os.path.join(folder, "attempt.json"),
                 {"record": 1, "runner": "baseline.yml", "arm": "after", "run_id": 1009, "run_attempt": 2,
                  **s.COMPLETE_RECORD})
@@ -217,6 +275,7 @@ class TestCommandLine(Base):
 
     def test_one_attempt_folder_checked_against_the_log(self):
         folder = self.complete(1004)
+        self.run_json(1004)
         log = self.log_file(log_line(1004, 7))
         code, recs, _ = self.main("--dispatch-log", log, folder)
         self.assertEqual((code, recs[0]["what"]["replicate"]), (0, 7))
