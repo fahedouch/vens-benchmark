@@ -376,7 +376,7 @@ def _values(scen, det, trace, subj):
 def corpus_wide(scen, reach, checks=CHECKS, unfloored=False):
     """The after's pair outcomes that any of the 45 corpus-wide combinations changes; with unfloored, every vector
     read as flooring nothing. The enumeration runs on chain.contract's Python rules: Go's levels are checked on four
-    of these assignments, on six scenarios, in tests/test_verdicts.py."""
+    alternative assignments (three within the 45 and one outside), on six scenarios, in tests/test_verdicts.py."""
     if unfloored:
         scen = {k: dict(s, floors=frozenset()) for k, s in scen.items()}
     changes = []
