@@ -219,20 +219,30 @@ def _from_record(rj, provenance_present, job):
     return COMPLETE, None, steps, unknown, problems
 
 
-def _without_record(files, failure_line):
-    """(outcome, failure, steps, implied, unknown) for a download made before the record: provenance.json, written
-    last, means every step passed (baseline.yml's order under set -euo pipefail); without it the attempt failed at a
-    step the download does not name, its VEX, if one is there, outside the scores."""
+def _without_record(folder, files, failure_line, job):
+    """(outcome, failure, steps, implied, unknown, problems) for a download made before the record: provenance.json,
+    written last, means every step passed (baseline.yml's order under set -euo pipefail); without it the attempt failed
+    at a step the download does not name. The artefact is uploaded whatever the job's end, the VEX in it, so a VEX
+    without provenance.json is a job that failed after scoring wrote it, or a truncated download of one that passed:
+    its job's conclusion tells them apart, and a job that succeeded or is not listed is refused."""
     if files["provenance"] is not None:
         steps = {"generate": {"exit_status": 0}, "enrich": {"exit_status": 0}, "archive_check": "success",
                  "provenance": True}
         implied = ["generate.exit_status", "enrich.exit_status", "archive_check"]
-        return COMPLETE, None, steps, implied, [f for f in RECORD if f not in implied]
+        return COMPLETE, None, steps, implied, [f for f in RECORD if f not in implied], []
+    problems = []
+    if files["vex"] is not None:
+        conclusion = (job or {}).get("conclusion")
+        if conclusion in (None, "success"):
+            raise Refused(f"{folder}: a VEX but no provenance.json and no attempt.json, its job "
+                          f"{conclusion or 'not listed'}; a truncated download is not a failed job")
+        problems = [f"a VEX but no provenance.json, its job {conclusion}: the job failed after the scoring wrote the "
+                    f"VEX, at a step the download does not name"]
     error = (failure_line or {}).get("error")
     failure = {**_failure(None, None, error, "failures.txt"), "reason": NO_PROVENANCE}
     steps = {"generate": None, "enrich": None, "archive_check": None, "provenance": False}
     unknown = list(RECORD) + ["failure.kind", "failure.step"] + ([] if error else ["failure.cause"])
-    return FAILED, failure, steps, [], unknown
+    return FAILED, failure, steps, [], unknown, problems
 
 
 def _cross_check(outcome, failure, summary, gen_exit):
@@ -283,7 +293,8 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
         implied = []
         problems += found
     else:
-        outcome, failure, steps, implied, unknown = _without_record(files, failure_line)
+        outcome, failure, steps, implied, unknown, found = _without_record(folder, files, failure_line, job)
+        problems += found
     if what["vens_commit"] is None:
         unknown.append("vens_commit")
 

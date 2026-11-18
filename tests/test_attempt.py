@@ -213,7 +213,7 @@ class TestBeforeTheRecord(Base):
         self.assertEqual(rec["recovery"]["archived_calls"], 2)
         self.assertTrue(rec["scores_usable"])
 
-    def test_a_failed_download_read_as_0b_read_it(self):
+    def test_a_failed_download_without_a_vex_read_as_0b_read_it(self):
         folder = self.folder(None, log=None, provenance=False, vex_file=False, answers=False)
         os.remove(os.path.join(folder, "vex-internal.attestation.cdx.json"))
         failure = {"attempt": 1, "job": "internal · run 1", "error": CAUSE}
@@ -222,19 +222,30 @@ class TestBeforeTheRecord(Base):
                                           "reason": attempt.NO_PROVENANCE})
         for field in ("failure.kind", "failure.step", "generate.exit_status"):
             self.assertIn(field, rec["unknown"])
-        self.assertEqual(rec["implied"], [])
+        self.assertEqual((rec["implied"], rec["problems"]), ([], []))
 
-    def test_a_vex_without_provenance_or_record_is_a_failed_attempt(self):
+    def test_a_vex_without_provenance_its_job_failed(self):
         folder = self.folder(None, log=None, provenance=False, answers=False)
+        job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "failure"}
         failure = {"attempt": 1, "job": "internal · run 1", "error": "vens enrich: exit 1"}
-        rec = attempt.read_attempt(folder, arm="before", failure_line=failure)
+        rec = attempt.read_attempt(folder, arm="before", job=job, failure_line=failure)
         self.assertEqual(rec["outcome"], "failed")
         self.assertEqual(rec["failure"], {"kind": None, "step": None, "cause": "vens enrich: exit 1",
                                           "cause_source": "failures.txt", "reason": attempt.NO_PROVENANCE})
         for field in ("failure.kind", "failure.step", "generate.exit_status", "enrich.exit_status", "archive_check"):
             self.assertIn(field, rec["unknown"])
+        self.assertIn("a VEX but no provenance.json, its job failure: the job failed after the scoring wrote the VEX, "
+                      "at a step the download does not name", rec["problems"])
         self.assertIsNotNone(rec["ratings"])
         self.assertFalse(rec["scores_usable"])
+
+    def test_a_vex_without_provenance_its_job_succeeded_or_not_listed(self):
+        folder = self.folder(None, log=None, provenance=False, answers=False)
+        job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
+        with self.assertRaisesRegex(attempt.Refused, "its job success; a truncated download is not a failed job"):
+            attempt.read_attempt(folder, arm="before", job=job)
+        with self.assertRaisesRegex(attempt.Refused, "its job not listed; a truncated download is not a failed job"):
+            attempt.read_attempt(folder, arm="before")
 
 
 class TestNames(unittest.TestCase):
