@@ -1,5 +1,6 @@
 """The dispatch script against a fake gh: no test reaches GitHub, and none can start a workflow run."""
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -9,13 +10,14 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from chain import dispatch
 from chain.attempt import Refused
 from tests import support as s
 
 FAKE_GH = r'''#!{python}
-import datetime, json, os, sys
+import datetime, json, os, sys, time, urllib.parse
 path = os.environ["FAKE_GH_STATE"]
 with open(path) as fh:
     state = json.load(fh)
@@ -27,6 +29,16 @@ def save():
         json.dump(state, fh)
 if args[:1] == ["api"] and args[1].startswith("repos/venslabs/vens/commits/"):
     print(json.dumps({{"sha": state["commits"][args[1].rsplit("/", 1)[1]]}}))
+elif args[:1] == ["api"] and "/actions/workflows/" in args[1]:
+    query = dict(urllib.parse.parse_qsl(args[1].split("?", 1)[1]))
+    hidden = set(state.get("hidden", []))
+    if hidden:
+        state["hidden"] = []
+        save()
+    runs = sorted((r for r in state["runs"].values() if str(r["id"]) not in hidden),
+                  key=lambda r: (r["created_at"], r["id"]), reverse=True)
+    size, page = int(query["per_page"]), int(query["page"])
+    print(json.dumps({{"workflow_runs": runs[(page - 1) * size:page * size]}}))
 elif args[:1] == ["api"] and "/actions/runs/" in args[1]:
     run = state["runs"].get(args[1].rsplit("/", 1)[1])
     if run is None:
@@ -35,6 +47,7 @@ elif args[:1] == ["api"] and "/actions/runs/" in args[1]:
 elif args[:2] == ["workflow", "run"]:
     if state.get("workflow_fails"):
         sys.exit("HTTP 502")
+    time.sleep(state.get("delay", 0))
     f = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-f")
     title = (f"baseline · {{f['archived-run']}} · {{f['provider']}}/{{f['model']}} · batch {{f['batch-size']}} · "
              f"x{{f['replicates']}} · vens {{f['vens-ref']}}")
@@ -45,22 +58,23 @@ elif args[:2] == ["workflow", "run"]:
         state["next_id"] += 1
         state["runs"][str(rid)] = {{"id": rid, "display_title": title, "run_attempt": 1, "status": "queued",
                                    "conclusion": None, "created_at": now}}
+        if state.get("hide_new"):
+            state["hidden"] = state.get("hidden", []) + [str(rid)]
     save()
     print("Created workflow_dispatch event for baseline.yml at main")
     if state.get("print_url"):
         print(f"https://github.com/venslabs/vens-demo/actions/runs/{{first}}")
-elif args[:2] == ["run", "list"]:
-    print(json.dumps([{{"databaseId": r["id"], "createdAt": r["created_at"], "displayTitle": r["display_title"]}}
-                      for r in state["runs"].values()]))
 elif args[:2] == ["run", "rerun"]:
     run = state["runs"][args[2]]
-    run.update(run_attempt=run["run_attempt"] + 1, status="queued", conclusion=None)
+    if not state.get("rerun_lags"):
+        run.update(run_attempt=run["run_attempt"] + 1, status="queued", conclusion=None)
     save()
 else:
     sys.exit("unexpected gh call: " + " ".join(args))
 '''
 
 NO_SLEEP = {"sleep": lambda _: None}
+LATER = lambda: dispatch.utc_now() + datetime.timedelta(minutes=16)
 
 
 class Base(unittest.TestCase):
@@ -85,6 +99,9 @@ class Base(unittest.TestCase):
         with open(self.state) as fh:
             return json.load(fh)
 
+    def set(self, **kw):
+        self.save({**self.load(), **kw})
+
     def calls(self):
         if not os.path.exists(self.state + ".calls"):
             return []
@@ -94,7 +111,7 @@ class Base(unittest.TestCase):
     def args(self, **kw):
         base = dict(log=self.log, campaign="c1", arm="after", vens_ref="fa7fc9a", provider="openai",
                     model=s.MODEL, replicate=1, batch_size=1, archived_run="2026-09-23", repo="venslabs/vens-demo",
-                    workflow_ref="main", max_side_by_side=2, run_id=None, retry_cap=4, no_run=False)
+                    workflow_ref="main", max_side_by_side=2, run_id=None, retry_cap=4, no_run=False, no_rerun=False)
         return SimpleNamespace(**{**base, **kw})
 
     def go(self, **kw):
@@ -105,8 +122,20 @@ class Base(unittest.TestCase):
         state["runs"][str(run_id)].update(status="completed", conclusion=conclusion)
         self.save(state)
 
+    def add_run(self, run_id, title, created_at):
+        state = self.load()
+        state["runs"][str(run_id)] = {"id": run_id, "display_title": title, "run_attempt": 1, "status": "queued",
+                                      "conclusion": None, "created_at": created_at}
+        self.save(state)
+
     def workflow_runs(self):
         return [c for c in self.calls() if c[:2] == ["workflow", "run"]]
+
+    def reruns(self):
+        return [c for c in self.calls() if c[:2] == ["run", "rerun"]]
+
+    def actions(self):
+        return [l["action"] for l in dispatch.load(self.log)]
 
 
 class TestDispatch(Base):
@@ -121,15 +150,15 @@ class TestDispatch(Base):
         self.assertRegex(line["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         pending, logged = dispatch.load(self.log)
         self.assertEqual((pending["action"], pending["run_id"], logged), ("pending", None, line))
-        self.assertEqual(dispatch.open_pending(dispatch.load(self.log)), [])
         (run,) = self.workflow_runs()
         self.assertIn(f"vens-ref={s.AFTER_SHA}", run)
         self.assertIn("replicates=1", run)
 
-    def test_the_run_id_read_back_from_the_run_list(self):
-        self.save({**self.load(), "print_url": False})
+    def test_the_run_read_back_from_the_run_list_once_it_appears(self):
+        self.set(print_url=False, hide_new=True)
         self.assertEqual(self.go()["run_id"], 5001)
-        self.assertTrue(any(c[:2] == ["run", "list"] for c in self.calls()))
+        listings = [c for c in self.calls() if c[:1] == ["api"] and "/actions/workflows/" in c[1]]
+        self.assertEqual(len(listings), 2)
 
     def test_a_replicate_dispatched_twice_is_refused(self):
         self.go()
@@ -138,48 +167,95 @@ class TestDispatch(Base):
         self.assertEqual(len(self.workflow_runs()), 1)
 
 
+class TestConcurrentCommands(Base):
+    def launch(self, *args):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = {"PATH": os.path.dirname(self.gh), "HOME": self.dir, "GH": self.gh, "FAKE_GH_STATE": self.state}
+        base = ["dispatch", "--log", self.log, "--campaign", "c1", "--provider", "openai", "--model", s.MODEL]
+        return subprocess.Popen([sys.executable, "-m", "chain.dispatch", *base, *args], cwd=root, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def race(self, *commands):
+        self.set(delay=1)
+        procs = [self.launch(*c) for c in commands]
+        return sorted(p.wait() for p in procs)
+
+    def test_one_replicate_is_not_dispatched_twice(self):
+        cmd = ["--arm", "after", "--vens-ref", "fa7fc9a", "--replicate", "1", "--max-side-by-side", "4"]
+        self.assertEqual(self.race(cmd, cmd), [0, 2])
+        self.assertEqual(len(self.workflow_runs()), 1)
+        self.assertEqual(self.actions(), ["pending", "dispatch"])
+
+    def test_the_cap_holds(self):
+        self.assertEqual(self.race(
+            ["--arm", "after", "--vens-ref", "fa7fc9a", "--replicate", "1", "--max-side-by-side", "1"],
+            ["--arm", "before", "--vens-ref", "43ab10b", "--replicate", "1", "--max-side-by-side", "1"]), [0, 2])
+        self.assertEqual(len(self.workflow_runs()), 1)
+
+
 class TestPending(Base):
-    def test_a_failure_after_the_dispatch_keeps_its_pending_line(self):
-        self.save({**self.load(), "print_url": False, "copies": 2})
+    def failed_dispatch(self):
+        self.set(workflow_fails=True)
         with self.assertRaises(dispatch.DispatchError):
             self.go()
-        lines = dispatch.load(self.log)
-        self.assertEqual([l["action"] for l in lines], ["pending"])
+        self.set(workflow_fails=False)
+        (pending,) = dispatch.open_pending(dispatch.load(self.log))
+        return pending
+
+    def test_a_failure_after_the_dispatch_keeps_its_pending_line(self):
+        self.set(print_url=False, copies=2)
+        with self.assertRaises(dispatch.DispatchError):
+            self.go()
+        self.assertEqual(self.actions(), ["pending"])
         with self.assertRaisesRegex(Refused, "pending dispatch"):
             self.go()
         self.assertEqual(len(self.workflow_runs()), 1)
         with self.assertRaisesRegex(Refused, "carry the pending dispatch's title"):
-            dispatch.resolve(self.args(no_run=True), self.gh)
+            dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
         line = dispatch.resolve(self.args(run_id=5001), self.gh)
-        self.assertEqual((line["action"], line["run_id"], line["run_attempt"], line["time"]),
-                         ("resolved", 5001, 1, lines[0]["time"]))
-        self.assertEqual(dispatch.open_pending(dispatch.load(self.log)), [])
+        self.assertEqual((line["action"], line["run_id"], line["run_attempt"]), ("resolved", 5001, 1))
         with self.assertRaisesRegex(Refused, "already run 5001"):
             self.go()
 
     def test_resolve_checks_the_run(self):
-        self.save({**self.load(), "workflow_fails": True})
-        with self.assertRaises(dispatch.DispatchError):
-            self.go()
-        state = self.load()
-        state["runs"]["7"] = {"id": 7, "display_title": "baseline · other", "run_attempt": 1, "status": "queued",
-                              "conclusion": None, "created_at": "2026-11-20T10:00:00Z"}
-        self.save(state)
+        pending = self.failed_dispatch()
+        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        self.add_run(7, "baseline · other", pending["time"])
+        self.add_run(8, want, "2026-01-01T00:00:00Z")
         with self.assertRaisesRegex(Refused, "not the pending dispatch"):
             dispatch.resolve(self.args(run_id=7), self.gh)
+        with self.assertRaisesRegex(Refused, "before the pending dispatch"):
+            dispatch.resolve(self.args(run_id=8), self.gh)
         with self.assertRaisesRegex(Refused, "no pending dispatch"):
             dispatch.resolve(self.args(arm="before", run_id=7), self.gh)
 
-    def test_a_dispatch_that_started_no_run_is_abandoned_then_dispatched_again(self):
-        self.save({**self.load(), "workflow_fails": True})
-        with self.assertRaises(dispatch.DispatchError):
-            self.go()
-        line = dispatch.resolve(self.args(no_run=True), self.gh)
+    def test_no_run_waits_15_minutes(self):
+        self.failed_dispatch()
+        with self.assertRaisesRegex(Refused, "no sooner than 0:15:00"):
+            dispatch.resolve(self.args(no_run=True), self.gh)
+        line = dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
         self.assertEqual(line["action"], "abandoned")
-        self.save({**self.load(), "workflow_fails": False})
         self.assertEqual(self.go()["run_id"], 5001)
-        self.assertEqual([l["action"] for l in dispatch.load(self.log)], ["pending", "abandoned", "pending",
-                                                                          "dispatch"])
+        self.assertEqual(self.actions(), ["pending", "abandoned", "pending", "dispatch"])
+
+    def test_no_run_finds_a_run_past_the_first_page(self):
+        pending = self.failed_dispatch()
+        want = dispatch.title("2026-09-23", "openai", s.MODEL, 1, s.AFTER_SHA)
+        self.add_run(10, want, pending["time"])
+        for n in range(11, 14):
+            self.add_run(n, "baseline · other", pending["time"].replace("Z", "") + "Z")
+        with mock.patch.object(dispatch, "PER_PAGE", 2):
+            with self.assertRaisesRegex(Refused, r"runs \[10\] carry"):
+                dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
+
+    def test_no_run_refused_when_the_search_is_cut_short(self):
+        pending = self.failed_dispatch()
+        for n in range(11, 15):
+            self.add_run(n, "baseline · other", pending["time"])
+        with mock.patch.object(dispatch, "PER_PAGE", 2), mock.patch.object(dispatch, "MAX_PAGES", 1):
+            with self.assertRaisesRegex(Refused, "did not reach"):
+                dispatch.resolve(self.args(no_run=True), self.gh, now=LATER)
+        self.assertEqual(self.actions(), ["pending"])
 
 
 class TestPairingAndCap(Base):
@@ -199,23 +275,6 @@ class TestPairingAndCap(Base):
     def test_no_replicate_before_its_turn(self):
         with self.assertRaisesRegex(Refused, "replicate 1 of the before is not dispatched"):
             self.go(replicate=2)
-
-    def test_no_replicate_after_a_later_one(self):
-        rows = []
-        for arm, rep, run_id in (("before", 1, 11), ("before", 2, 12), ("after", 2, 22)):
-            line = {f: None for f in dispatch.FIELDS}
-            line.update(campaign="c1", arm=arm, repo="venslabs/vens-demo", vens_ref="x", vens_commit="x",
-                        provider="openai", model=s.MODEL, batch_size=1, archived_run="2026-09-23", replicate=rep,
-                        time="2026-11-20T10:00:00Z")
-            rows += [{**line, "action": "pending"}, {**line, "action": "dispatch", "run_id": run_id, "run_attempt": 1}]
-        s.write(self.log, "".join(json.dumps(r) + "\n" for r in rows))
-        state = self.load()
-        for run_id in (11, 12, 22):
-            state["runs"][str(run_id)] = {"id": run_id, "display_title": "t", "run_attempt": 1, "status": "completed",
-                                          "conclusion": "success", "created_at": "2026-11-20T10:00:00Z"}
-        self.save(state)
-        with self.assertRaisesRegex(Refused, "replicate 2 of c1 is already dispatched"):
-            self.go(max_side_by_side=9)
 
     def test_the_cap_counts_runs_not_ended_and_pending_dispatches(self):
         self.go(arm="before", vens_ref="43ab10b", max_side_by_side=1)
@@ -237,13 +296,45 @@ class TestPairingAndCap(Base):
 
 
 class TestRerun(Base):
-    def test_a_rerun_replaces_the_attempt_before(self):
+    def test_a_rerun_logs_a_pending_line_then_its_attempt(self):
         first = self.go()
         self.finish(first["run_id"], "failure")
         line = dispatch.rerun(self.args(run_id=first["run_id"]), self.gh, **NO_SLEEP)
         self.assertEqual((line["run_id"], line["run_attempt"], line["replaces"], line["action"], line["replicate"]),
                          (first["run_id"], 2, 1, "rerun-failed", 1))
+        self.assertEqual(self.actions(), ["pending", "dispatch", "rerun-pending", "rerun-failed"])
         self.assertIn(["run", "rerun", str(first["run_id"]), "--failed", "-R", "venslabs/vens-demo"], self.calls())
+
+    def test_a_rerun_the_api_does_not_show_stays_pending(self):
+        first = self.go()
+        self.finish(first["run_id"], "failure")
+        self.set(rerun_lags=True)
+        with self.assertRaisesRegex(dispatch.DispatchError, "pending rerun stays"):
+            dispatch.rerun(self.args(run_id=first["run_id"]), self.gh, **NO_SLEEP)
+        self.assertEqual(self.actions()[-1], "rerun-pending")
+        with self.assertRaisesRegex(Refused, "has a pending rerun"):
+            dispatch.rerun(self.args(run_id=first["run_id"]), self.gh, **NO_SLEEP)
+        with self.assertRaisesRegex(Refused, "is at attempt 1, not the 2"):
+            dispatch.resolve_rerun(self.args(run_id=first["run_id"]), self.gh)
+        state = self.load()
+        state["runs"][str(first["run_id"])]["run_attempt"] = 2
+        self.save(state)
+        line = dispatch.resolve_rerun(self.args(run_id=first["run_id"]), self.gh)
+        self.assertEqual((line["action"], line["run_attempt"], line["replaces"]), ("rerun-failed", 2, 1))
+        self.assertEqual(len(self.reruns()), 1)
+
+    def test_a_rerun_that_started_no_attempt_is_abandoned(self):
+        first = self.go()
+        self.finish(first["run_id"], "failure")
+        self.set(rerun_lags=True)
+        with self.assertRaises(dispatch.DispatchError):
+            dispatch.rerun(self.args(run_id=first["run_id"]), self.gh, **NO_SLEEP)
+        with self.assertRaisesRegex(Refused, "no sooner than 0:15:00"):
+            dispatch.resolve_rerun(self.args(run_id=first["run_id"], no_rerun=True), self.gh)
+        line = dispatch.resolve_rerun(self.args(run_id=first["run_id"], no_rerun=True), self.gh, now=LATER)
+        self.assertEqual(line["action"], "rerun-abandoned")
+        self.set(rerun_lags=False)
+        self.assertEqual(dispatch.rerun(self.args(run_id=first["run_id"]), self.gh, **NO_SLEEP)["run_attempt"], 2)
 
     def test_the_retry_cap(self):
         first = self.go()
@@ -283,6 +374,9 @@ class TestTheLog(Base):
     def write(self, *lines):
         s.write(self.log, "".join(json.dumps(line) + "\n" for line in lines))
 
+    def started(self):
+        return [self.line(action="pending"), self.line(action="dispatch", run_id=1, run_attempt=1)]
+
     def test_a_line_without_a_field(self):
         self.write({"campaign": "c1"})
         with self.assertRaises(dispatch.DispatchError):
@@ -293,23 +387,26 @@ class TestTheLog(Base):
         with self.assertRaisesRegex(dispatch.DispatchError, "no pending dispatch"):
             dispatch.load(self.log)
 
-    def test_a_rerun_without_its_attempt_before(self):
-        self.write(self.line(action="pending"), self.line(action="dispatch", run_id=1, run_attempt=1),
-                   self.line(action="rerun-failed", run_id=1, run_attempt=3, replaces=2))
+    def test_a_rerun_without_its_pending_rerun(self):
+        self.write(*self.started(), self.line(action="rerun-failed", run_id=1, run_attempt=2, replaces=1))
+        with self.assertRaisesRegex(dispatch.DispatchError, "no pending rerun"):
+            dispatch.load(self.log)
+
+    def test_a_rerun_that_skips_an_attempt(self):
+        self.write(*self.started(), self.line(action="rerun-pending", run_id=1, run_attempt=3, replaces=2))
         with self.assertRaisesRegex(dispatch.DispatchError, "without its attempt before"):
             dispatch.load(self.log)
 
     def test_a_rerun_that_changes_its_run(self):
         for change in ({"arm": "before"}, {"model": "claude-sonnet-4-6"}, {"replicate": 2}):
-            self.write(self.line(action="pending"), self.line(action="dispatch", run_id=1, run_attempt=1),
-                       self.line(action="rerun-failed", run_id=1, run_attempt=2, replaces=1, **change))
+            self.write(*self.started(), self.line(action="rerun-pending", run_id=1, run_attempt=2, replaces=1,
+                                                  **change))
             with self.assertRaisesRegex(dispatch.DispatchError, "a rerun changes"):
                 dispatch.load(self.log)
 
     def test_a_run_of_two_replicates(self):
-        self.write(self.line(action="pending"), self.line(action="dispatch", run_id=1, run_attempt=1),
-                   self.line(action="pending", replicate=2), self.line(action="dispatch", run_id=1, run_attempt=1,
-                                                                       replicate=2))
+        self.write(*self.started(), self.line(action="pending", replicate=2),
+                   self.line(action="dispatch", run_id=1, run_attempt=1, replicate=2))
         with self.assertRaisesRegex(dispatch.DispatchError, "already another replicate's"):
             dispatch.load(self.log)
 
