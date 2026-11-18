@@ -1,0 +1,65 @@
+# The measuring chain's tests: vens built at the two commits step 5 compares, run on vens's own mock LLM, no
+# model and no API key; the reference calculator's JAR fetched from Maven Central and checked against its sha256.
+name: chain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VENS_AFTER: fa7fc9aa38306944f01845fd97aa1fc990b597a4  # venslabs/vens 310-step3
+  VENS_BEFORE: 43ab10bf980d42b77157e003a27921805a546770  # venslabs/vens main
+  DEMO: 7ab1570f8068b16b965571f363726bc051d06d9f  # venslabs/vens-demo, its frozen scan runs/2026-09-23
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Fetch vens at both commits and vens-demo's frozen scan
+        run: |
+          git clone --quiet --filter=blob:none https://github.com/venslabs/vens.git "$RUNNER_TEMP/vens"
+          mkdir -p "$RUNNER_TEMP/src-after" "$RUNNER_TEMP/src-before"
+          git -C "$RUNNER_TEMP/vens" archive "$VENS_AFTER" | tar -x -C "$RUNNER_TEMP/src-after"
+          git -C "$RUNNER_TEMP/vens" archive "$VENS_BEFORE" | tar -x -C "$RUNNER_TEMP/src-before"
+          git clone --quiet --filter=blob:none https://github.com/venslabs/vens-demo.git "$RUNNER_TEMP/vens-demo"
+          git -C "$RUNNER_TEMP/vens-demo" checkout --quiet --detach "$DEMO"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: ${{ runner.temp }}/src-after/go.mod
+          cache: false
+
+      - name: Build vens at both commits
+        run: |
+          for arm in after before; do
+            (cd "$RUNNER_TEMP/src-$arm" && go build -o "$RUNNER_TEMP/bin/vens-$arm" ./cmd/vens)
+          done
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Fetch the calculator's JAR and check its sha256
+        run: python3 -m chain.javacheck fetch-jar "$RUNNER_TEMP/jar"
+
+      - name: Test on vens's mock
+        env:
+          VB_VENS_AFTER: ${{ runner.temp }}/bin/vens-after
+          VB_VENS_BEFORE: ${{ runner.temp }}/bin/vens-before
+          VB_DEMO: ${{ runner.temp }}/vens-demo
+          VB_QUICKSTART: ${{ runner.temp }}/src-after/examples/quickstart
+          VB_JAR: ${{ runner.temp }}/jar/owasp-risk-rating-calculator-1.0.1.jar
+        run: python3 -m unittest -v
