@@ -1,7 +1,7 @@
 """The scenario runner (ctx_runner.py) and the reading of its campaigns. Its order, parallelism, retries, record
-check, timeout, signals, keys, model ids, input snapshot and freeze on a fake vens that calls nothing; on vens's own
-mock at both commits, a failed attempt then a complete one, the omission stop up to the retry cap, and a timeout, read
-back by the reader. No model is called and no real key is used."""
+check, timeout, guard, signals, sealing, keys, model ids, input snapshot and freeze on a fake vens that calls nothing;
+on vens's own mock at both commits, a failed attempt then a complete one, the omission stop up to the retry cap, and
+a timeout, read back by the reader. No model is called and no real key is used."""
 import base64
 import concurrent.futures
 import contextlib
@@ -33,10 +33,11 @@ OPENAI = ("openai", "gpt-5.4-mini-2026-03-17")
 PYTHON_ADDS = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
 
 # The fake vens: ROOT, ARM and STATE are set above this body. On success it leaves a complete record, built with
-# tests/support.py. Each call takes the next mode of its arm's list in STATE/plan.json, else its default: ok; fail;
-# sleep (killed at the timeout); echo, the key's forms (plan.json's forms) in its log; leak, in a debug file too;
-# no_answers, no_attestation; straggler, a child that keeps its stderr; escape, the same child in a session of its
-# own; tamper, its config changed; barrier, waiting until plan.json's width calls run at once.
+# tests/support.py. Each call takes the next mode of plan.json's list for "<arm>/<scenario>", else for its arm, else
+# the default: ok; fail; sleep (killed at the timeout); echo, its arm's key's forms (plan.json's forms) in its log;
+# leak, in a debug file too; no_answers, no_attestation; bad_calls, a folder where a call's file should be;
+# straggler, a child that keeps its stderr; escape, the same child in a session of its own; tamper, its config
+# changed; barrier, waiting until plan.json's width calls run at once.
 FAKE_VENS = r'''
 import fcntl, json, os, subprocess, sys, time
 sys.path.insert(0, ROOT)
@@ -69,21 +70,20 @@ def log(level, msg, **kw):
     sys.stderr.write(f"time=2026-11-20T10:00:00.000Z level={level} msg={json.dumps(msg)}{fields}\n")
     sys.stderr.flush()
 
-n = locked(lambda: bump("count-" + ARM, 1) - 1)
 plan = json.load(open(os.path.join(STATE, "plan.json")))
-modes = plan.get(ARM, [])
+own = ARM + "/" + scenario if ARM + "/" + scenario in plan else ARM
+n = locked(lambda: bump("count-" + own.replace("/", "-"), 1) - 1)
+modes = plan.get(own, [])
 mode = modes[n] if n < len(modes) else plan.get("default", "ok")
 event("start", mode=mode, env=sorted(os.environ), model=os.environ.get("OPENAI_MODEL"), key=key, cwd=os.getcwd(),
       config_mode=oct(os.stat(config).st_mode & 0o777))
 if mode == "barrier":
-    # tickets in arrival order: a wave of width calls is released once its last ticket is taken, all of the wave
-    # then running at once; alive counts the calls running when this one arrived
-    ticket, alive = locked(lambda: (bump("tickets", 1) - 1, bump("alive", 1)))
+    # tickets in arrival order: a wave of width calls is released once its last ticket is taken
+    ticket = locked(lambda: bump("tickets", 1) - 1)
     wave_end, end = (ticket // plan["width"] + 1) * plan["width"], time.time() + 5
     while locked(lambda: bump("tickets", 0)) < wave_end and time.time() < end:
         time.sleep(0.02)
-    event("barrier", seen=alive, released=locked(lambda: bump("tickets", 0)) >= wave_end)
-    locked(lambda: bump("alive", -1))
+    event("barrier", released=locked(lambda: bump("tickets", 0)) >= wave_end)
 if mode == "sleep":
     time.sleep(60)
 if mode == "fail":
@@ -101,17 +101,19 @@ with open(report) as fh:
     cve = json.load(fh)["Results"][0]["Vulnerabilities"][0]["VulnerabilityID"]
 made = s.after_calls(cve) if ARM == "after" else s.before_calls(cve)
 s.write_calls(os.path.join(calls, "run-1"), made)
+if mode == "bad_calls":
+    os.makedirs(os.path.join(calls, "run-1", "batch-00009.system.prompt"))
 if mode != "no_attestation":
     s.write(out[:-len(".cdx.json")] + ".attestation.cdx.json", s.attestation(made, provider, model))
 s.write(out, s.vex([(cve, s.VECTOR, s.SEVERITY, s.SCORE)]))
 if ARM == "after" and mode != "no_answers":
     s.write(os.path.join(calls, "run-1", "answers.json"), s.answers_doc([(cve, s.VECTOR)]))
 if mode in ("echo", "leak"):
-    for form in plan["forms"]:
+    for form in plan["forms"][ARM]:
         log("WARN", "a key in the log", key=form)
 if mode == "leak":
     with open(os.path.join(calls, "run-1", "batch-00001.response"), "w") as fh:
-        fh.write(" ".join(plan["forms"]))
+        fh.write(" ".join(plan["forms"][ARM]))
 log("INFO", "Scoring run finished", rows=1, cves=1, llm_calls=len(made), asked_again=0, splits=0, failed=False)
 event("end")
 '''
@@ -132,6 +134,39 @@ if mode == "sleep":
 os.execve(BINARY, [BINARY] + sys.argv[1:], env)
 '''
 
+# A runner that runs one vens through chain.runvens and is SIGKILLed once HOOK, one of runvens's steps, has returned
+# and the pid file WAIT, if any, is there. ROOT, HOOK, WAIT, PIDS, CMD and FOLDER are set above this body.
+PARENT = r'''
+import os, signal, sys, time
+sys.path.insert(0, ROOT)
+from chain import runvens
+real = getattr(runvens, HOOK)
+
+def hooked(*args, **kw):
+    out = real(*args, **kw)
+    if HOOK == "_guard":
+        open(os.path.join(PIDS, "guard"), "w").write(str(out.pid))
+    end = time.time() + 5
+    while WAIT and not os.path.exists(os.path.join(PIDS, WAIT)) and time.time() < end:
+        time.sleep(0.02)
+    os.kill(os.getpid(), signal.SIGKILL)
+
+setattr(runvens, HOOK, hooked)
+runvens.run(CMD, FOLDER, {}, env={"PATH": os.environ.get("PATH", "")}, timeout=60)
+'''
+
+# The vens that PARENT runs: it writes its pid, then sleeps, or leaves a child of its group running and exits 0.
+SLEEPER = r'''
+import os, subprocess, sys, time
+mode, pids = sys.argv[1], sys.argv[2]
+open(os.path.join(pids, "vens"), "w").write(str(os.getpid()))
+if mode == "straggler":
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    open(os.path.join(pids, "straggler"), "w").write(str(child.pid))
+    sys.exit(0)
+time.sleep(60)
+'''
+
 
 def forms(key):
     """The key as a log or a file could hold it: itself, its base64 alone, inside a longer encoded text at another
@@ -149,6 +184,16 @@ def gone(pid, wait=5.0):
             return True
         time.sleep(0.05)
     return False
+
+
+def overlap(starts, ends):
+    """The most intervals open at once, an end counted before a start at the same time."""
+    marks = sorted([(t, 1) for t in starts] + [(t, -1) for t in ends], key=lambda m: (m[0], m[1]))
+    most = now = 0
+    for _, step in marks:
+        now += step
+        most = max(most, now)
+    return most
 
 
 class Base(unittest.TestCase):
@@ -234,6 +279,15 @@ class Base(unittest.TestCase):
     def files(self):
         return [os.path.join(d, n) for d, _, names in os.walk(self.out) for n in names]
 
+    def key_forms_held(self):
+        held = []
+        for path in self.files():
+            with open(path, "rb") as fh:
+                data = fh.read()
+            held += [(os.path.relpath(path, self.out), f) for k in KEYS.values() for f in forms(k)
+                     if f.encode() in data]
+        return held
+
 
 def at(arm, k, scenario="comp_gdpr", replicate=1, model=("mock", "mock")):
     return campaign.folder(replicate, *model, scenario, arm, k)
@@ -256,10 +310,10 @@ class TestTheOrder(Base):
         self.plan(default="barrier", width=3)
         scenarios = ("comp_gdpr", "comp_none", "crit_low")
         self.assertEqual(self.main(scenarios=scenarios, replicates=2, parallel=3), 0)
-        # three workers, two units each: four waves of three calls, each released with all three running
-        barriers = self.events("barrier")
-        self.assertEqual((len(barriers), {e["released"] for e in barriers}), (12, {True}))
-        self.assertEqual((max(e["seen"] for e in barriers), sorted(e["seen"] for e in barriers)[-4:]), (3, [3] * 4))
+        # three workers, two units each: four waves of three calls, each released once its three have started
+        self.assertEqual([e["released"] for e in self.events("barrier")], [True] * 12)
+        starts, ends = [e["t"] for e in self.events()], [e["t"] for e in self.events("end")]
+        self.assertEqual((len(starts), len(ends), overlap(starts, ends)), (12, 12, 3))
         for r in (1, 2):
             for sc in scenarios:
                 before, after = (self.record(at(arm, 1, sc, r))["generate"] for arm in ARMS)
@@ -293,6 +347,15 @@ class TestAttempts(Base):
         last = recs[(1, "comp_gdpr", "before", 2)]
         self.assertEqual((last["failure"]["cause"].split(";")[0], last["retry_cap_reached"]), ("no attestation", True))
         self.assertIn(f"{at('after', 1)}: failed, the record check: no answers.json", self.stdout)
+
+    def test_calls_that_do_not_read_are_a_gap_not_a_stop(self):
+        self.plan(before=["bad_calls", "ok"])
+        self.assertEqual(self.main(), 0)
+        recs = self.read()
+        bad = recs[(1, "comp_gdpr", "before", 1)]
+        self.assertEqual((bad["failure"]["step"], bad["steps"]["generate"]["exit_status"]), ("record_check", 0))
+        self.assertIn("a call that does not read", bad["failure"]["cause"])
+        self.assertEqual(recs[(1, "comp_gdpr", "before", 2)]["outcome"], "complete")
 
     def test_the_retry_cap_reached_is_recorded_as_such(self):
         self.plan(before=["fail"] * 3)
@@ -339,8 +402,15 @@ class TestAttempts(Base):
         os.kill(child["child"], signal.SIGKILL)
         self.assertEqual(code, 1)
         self.assertLess(time.time() - began, 10)
-        self.assertIn("vens's log was not written whole", self.stderr)
-        self.assertEqual(self.record(at("before", 1))["generate"]["log_complete"], False)
+        cause = ("vens's log was not written whole: a write failed, or a process out of vens's group kept its stderr "
+                 "open")
+        self.assertIn(cause, self.stderr)
+        rec = self.record(at("before", 1))
+        self.assertEqual((rec["generate"]["log_complete"], rec["record_check"]), (False, {"passed": False,
+                                                                                        "cause": cause}))
+        got = self.read()[(1, "comp_gdpr", "before", 1)]
+        self.assertEqual((got["failure"]["step"], got["failure"]["cause"], got["steps"]["generate"]["exit_status"]),
+                         ("record_check", cause, 0))
 
     def test_the_failures_index(self):
         self.plan(before=["fail", "ok"])
@@ -354,6 +424,9 @@ class TestAttempts(Base):
         campaign.write_sums(self.out)
         with self.assertRaisesRegex(Refused, "failures.jsonl lists 0 failed attempts, the attempt records give 1"):
             campaign.read_campaign(self.out)
+        s.write(os.path.join(self.out, at("before", 1), "attempt.json"), "{cut")
+        (entry,) = campaign.failures(self.out)
+        self.assertTrue(entry["cause"].startswith("the reader could not read it: "), entry)
 
 
 class TestRunvens(Base):
@@ -380,7 +453,7 @@ class TestRunvens(Base):
 
     def test_a_launch_that_fails_is_read_as_such(self):
         folder = os.path.join(self.dir, "a")
-        with self.assertRaises(OSError):
+        with self.assertRaisesRegex(OSError, "vens did not start: "):
             runvens.run([os.path.join(self.dir, "no-vens")], folder, {"runner": "scenarios", "arm": "after"}, env={})
         rec = self.record(folder)
         self.assertEqual(rec["generate"]["started_at"], None)
@@ -390,6 +463,41 @@ class TestRunvens(Base):
             got = attempt.read_attempt(folder)
             self.assertEqual((got["outcome"], got["failure"]["cause"], got["failure"]["cause_source"]),
                              ("failed", rec["setup_error"], "attempt.json"), started)
+
+    def test_vens_gets_exactly_its_environment(self):
+        folder, out = os.path.join(self.dir, "a"), os.path.join(self.dir, "env.json")
+        cmd = [sys.executable, "-S", "-c", f"import json, os; json.dump(dict(os.environ), open({out!r}, 'w'))"]
+        rec = runvens.run(cmd, folder, {}, env={"PATH": "/usr/bin", "A_KEY": "sk-x"})
+        self.assertEqual(rec["generate"]["exit_status"], 0)
+        with open(out) as fh:
+            self.assertEqual(set(json.load(fh)) - PYTHON_ADDS, {"PATH", "A_KEY"})
+
+    def kill_the_runner_at(self, hook, mode, wait=None):
+        """PARENT run on SLEEPER, SIGKILLed after hook: the pid files it leaves."""
+        pids = os.path.join(self.dir, "pids")
+        os.makedirs(pids)
+        sleeper = s.write(os.path.join(self.dir, "sleeper.py"), SLEEPER)
+        header = (f"ROOT, HOOK, WAIT, PIDS = {ROOT!r}, {hook!r}, {wait!r}, {pids!r}\n"
+                  f"CMD, FOLDER = {[sys.executable, sleeper, mode, pids]!r}, {os.path.join(self.dir, 'a')!r}\n")
+        parent = s.write(os.path.join(self.dir, "parent.py"), header + PARENT)
+        done = subprocess.run([sys.executable, parent], timeout=60)
+        self.assertEqual(done.returncode, -signal.SIGKILL)
+        return {n: int(open(os.path.join(pids, n)).read()) for n in os.listdir(pids)}
+
+    def test_a_runner_killed_once_the_guard_runs_leaves_nothing(self):
+        pids = self.kill_the_runner_at("_guard", "sleep")
+        self.assertTrue(gone(pids["guard"]))
+        if "vens" in pids:
+            self.assertTrue(gone(pids["vens"]))
+
+    def test_a_runner_killed_while_vens_runs_leaves_nothing(self):
+        pids = self.kill_the_runner_at("_drain", "sleep", wait="vens")
+        self.assertTrue(gone(pids["vens"]))
+
+    def test_a_runner_killed_after_vens_ended_leaves_no_child_of_it(self):
+        pids = self.kill_the_runner_at("_report", "straggler")
+        self.assertTrue(gone(pids["straggler"]))
+        self.assertTrue(gone(pids["vens"]))
 
 
 class TestSignals(Base):
@@ -419,6 +527,28 @@ class TestSignals(Base):
 
     def test_a_second_signal_while_stopping_changes_nothing(self):
         self.stopped(signal.SIGINT, 130, signal.SIGINT, signal.SIGTERM)
+
+    def test_a_signal_while_stopping_after_a_worker_error(self):
+        self.plan(**{"before/comp_gdpr": ["tamper"], "before/comp_none": ["sleep"]})
+        report = runvens._report
+
+        def signalled_report(guard, deadline, stop):
+            line, why = report(guard, deadline, stop)
+            if why == runvens.STOPPED:
+                # the main thread now waits for this worker in the pool's shutdown
+                time.sleep(0.5)
+                os.kill(os.getpid(), signal.SIGINT)
+                time.sleep(0.3)
+            return line, why
+
+        with mock.patch.object(runvens, "_report", signalled_report):
+            code = self.main(scenarios=("comp_gdpr", "comp_none"), parallel=2, timeout=60)
+        self.assertEqual(code, 1)
+        self.assertTrue(self.doc()["stopped"].startswith("runner error: "))
+        self.assertTrue(os.path.exists(os.path.join(self.out, campaign.FAILURES)))
+        campaign.check_sums(self.out)
+        (slept,) = [e for e in self.events() if e["mode"] == "sleep"]
+        self.assertTrue(gone(slept["pid"]))
 
     def test_sigterm_while_the_units_are_submitted(self):
         self.plan(default="sleep")
@@ -453,9 +583,26 @@ class TestSignals(Base):
         self.assertIsNone(self.doc()["ended_at"])
 
 
+class TestSealing(Base):
+    def test_an_error_while_finishing_still_leaves_sums(self):
+        with mock.patch.object(campaign, "write_failures", side_effect=RuntimeError("disk full")):
+            with self.assertRaisesRegex(RuntimeError, "disk full"):
+                self.main()
+        campaign.check_sums(self.out)
+
+    def test_an_error_in_the_runner_names_its_cause(self):
+        def failing_drain(*args):
+            raise OSError("disk full")
+
+        with mock.patch.object(runvens, "_drain", failing_drain):
+            self.assertEqual(self.main(), 1)
+        self.assertIn(f"stopped: {at('before', 1)}: the runner failed: OSError('disk full')", self.stderr)
+        self.assertNotIn("did not start", self.stderr)
+
+
 class TestKeys(Base):
     def test_each_arm_gets_its_own_key_and_the_model_and_nothing_else(self):
-        self.plan(default="echo", forms=forms(KEYS["OPENAI_API_KEY_BEFORE"]) + forms(KEYS["OPENAI_API_KEY_AFTER"]))
+        self.plan(default="echo", forms={arm: forms(KEYS[f"OPENAI_API_KEY_{arm.upper()}"]) for arm in ARMS})
         self.assertEqual(self.main(models=(DATED,), environ=self.env(OPENAI_API_KEY="sk-shared", **KEYS)), 0)
         got = {e["arm"]: e for e in self.events()}
         for arm in ARMS:
@@ -472,28 +619,37 @@ class TestKeys(Base):
         self.assertNotIn("sk-fake", log)
         self.assertEqual(self.key_forms_held(), [])
 
-    def key_forms_held(self):
-        held = []
-        for path in self.files():
-            with open(path, "rb") as fh:
-                data = fh.read()
-            held += [(os.path.relpath(path, self.out), f) for k in KEYS.values() for f in forms(k)
-                     if f.encode() in data]
-        return held
-
     def test_a_key_in_an_attempts_files_is_cut_out_and_stops_the_campaign(self):
-        self.plan(before=["leak"], forms=forms(KEYS["OPENAI_API_KEY_BEFORE"]))
+        self.plan(before=["leak"], forms={"before": forms(KEYS["OPENAI_API_KEY_BEFORE"])})
         self.assertEqual(self.main(models=(DATED,), scenarios=("comp_gdpr", "comp_none"),
                                    environ=self.env(**KEYS)), 1)
         response = os.path.join("calls", "run-1", "batch-00001.response")
-        self.assertIn(f"OPENAI_API_KEY_BEFORE's key was in {response}, now cut out of them", self.stderr)
+        cause = f"a form of OPENAI_API_KEY_BEFORE's key was in {response}, now cut out"
+        self.assertIn(cause, self.stderr)
         doc = self.doc()
         self.assertTrue(doc["stopped"].startswith("runner error: "))
         self.assertEqual(doc["redacted"], [os.path.join(at("before", 1, model=OPENAI), response)])
-        self.assertEqual(self.record(at("before", 1, model=OPENAI))["redacted"], [response])
+        rec = self.record(at("before", 1, model=OPENAI))
+        self.assertEqual((rec["redacted"], rec["record_check"]), ([response], {"passed": False, "cause": cause}))
+        got = self.read()[(1, "comp_gdpr", "before", 1)]
+        self.assertEqual((got["failure"]["step"], got["failure"]["cause"], got["steps"]["generate"]["exit_status"]),
+                         ("record_check", cause, 0))
         self.assertEqual(len(self.events()), 1)
         self.assertEqual(self.key_forms_held(), [])
         campaign.check_sums(self.out)
+
+    def test_the_whole_archive_is_swept(self):
+        # a key in a mock variable reaches campaign.json and the mock's records, which no attempt's own sweep reads
+        environ = self.env(VENS_MOCK_LLM_SKIP=KEYS["OPENAI_API_KEY_BEFORE"], **KEYS)
+        self.assertEqual(self.main(models=("mock/mock", DATED), environ=environ), 1)
+        doc = self.doc()
+        self.assertTrue(doc["stopped"].startswith("runner error: a form of a key was in "), doc["stopped"])
+        self.assertIn(campaign.CAMPAIGN, doc["redacted"])
+        self.assertIn(os.path.join(at("before", 1), "attempt.json"), doc["redacted"])
+        self.assertEqual(doc["mock_env"], {"VENS_MOCK_LLM_SKIP": "***"})
+        self.assertEqual(self.key_forms_held(), [])
+        campaign.check_sums(self.out)
+        self.assertEqual(len(campaign.read_campaign(self.out)), 4)
 
     def test_a_key_suffix(self):
         environ = self.env(**{f"{k}_SCENARIOS": v for k, v in KEYS.items()})
@@ -581,9 +737,9 @@ class TestInputs(Base):
         self.assertEqual(self.main(scenarios=("comp_gdpr", "comp_none")), 1)
         self.assertEqual({e["config_mode"] for e in self.events()}, {"0o444"})
         config = os.path.join("scenarios", "comp_none", "config.yaml")
-        self.assertIn(f"{config} changed during the attempt", self.stderr)
-        self.assertEqual(self.record(at("before", 1, "comp_none"))["record_check"],
-                         {"passed": False, "cause": f"{config} changed during the attempt"})
+        cause = f"{config} changed during the attempt, no longer the frozen corpus's"
+        self.assertIn(cause, self.stderr)
+        self.assertEqual(self.record(at("before", 1, "comp_none"))["record_check"], {"passed": False, "cause": cause})
         self.assertTrue(self.doc()["stopped"].startswith("runner error: "))
         with self.assertRaisesRegex(Refused, f"{config} changed"):
             campaign.read_campaign(self.out)
@@ -663,6 +819,24 @@ class TestTheReader(Base):
         os.remove(os.path.join(self.out, campaign.SUMS))
         with self.assertRaisesRegex(Refused, "without its SHA256SUMS"):
             campaign.read_campaign(self.out)
+
+    def test_a_malformed_campaign_or_failures_index_is_refused(self):
+        self.assertEqual(self.main(), 0)
+        doc = self.doc()
+        failures = os.path.join(self.out, campaign.FAILURES)
+        s.write(failures, "{cut\n")
+        campaign.write_sums(self.out)
+        with self.assertRaisesRegex(Refused, "line 1 does not read"):
+            campaign.read_campaign(self.out)
+        os.remove(failures)
+        campaign.write_sums(self.out)
+        with self.assertRaisesRegex(Refused, "without its failures.jsonl"):
+            campaign.read_campaign(self.out)
+        for missing in ("corpus", "arms"):
+            runvens.write_json(os.path.join(self.out, campaign.CAMPAIGN),
+                               {k: v for k, v in doc.items() if k != missing})
+            with self.assertRaisesRegex(Refused, f"campaign.json lacks {missing}"):
+                campaign.read_campaign(self.out)
 
     def test_another_freeze_is_refused_unless_named(self):
         self.assertEqual(self.main(), 0)

@@ -306,7 +306,10 @@ def record_gaps(folder, arm, provider, model):
     if len(run_dirs) != 1:
         gaps.append(f"{len(run_dirs)} run folders under calls/")
     elif evidence is not None:
-        passed, reason = callmod.archive_check(run_dirs, callmod.load(run_dirs[0]), evidence, provider, model)
+        try:
+            passed, reason = callmod.archive_check(run_dirs, callmod.load(run_dirs[0]), evidence, provider, model)
+        except Refused as e:
+            passed, reason = False, str(e)
         if not passed:
             gaps.append(f"the archive check: {reason}")
     return gaps
@@ -464,7 +467,7 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
         unknown.append("failure.cause")
 
     run_dirs = files["run_dirs"]
-    archived = callmod.load(run_dirs[0]) if run_dirs and len(run_dirs) == 1 else None
+    archived = _part(callmod.load, run_dirs[0], problems) if run_dirs and len(run_dirs) == 1 else None
     if archived is None:
         unknown.append("calls")
     kinds, why = callmod.classify(archived, what["arm"]) if archived is not None else (None, None)

@@ -37,8 +37,10 @@ reach it from the runner's environment and are recorded.
 DIR must not exist; it becomes the campaign's archive (chain/campaign.py), which `python3 -m chain.read DIR` reads;
 commit it with the campaign's measurements. Exit 0 when every run has a complete attempt, 3 when some reached the
 retry cap without one, 1 when the runner refused or stopped on an error, 128 + the signal's number when SIGINT, SIGTERM
-or SIGHUP stopped it. A stop kills every vens running, records each attempt interrupted, and finishes the archive; a
-second signal changes nothing. A SIGKILL of the runner cannot run any of that: each vens's watch kills it then
+or SIGHUP stopped it. A stop, a signal or an error, kills every vens running, records each attempt interrupted, and
+seals the archive: campaign.json says why, failures.jsonl lists each failed attempt with its cause, every key's forms
+are swept out of every file (one found then stops the campaign too) and SHA256SUMS is written last; a signal during
+the stop changes nothing. A SIGKILL of the runner cannot run any of that: each vens's guard kills its group then
 (chain/runvens.py), and the archive is left without its end, its failures.jsonl and its SHA256SUMS.
 """
 import argparse
@@ -54,7 +56,7 @@ from dataclasses import dataclass, field
 
 from chain import attempt as attemptmod
 from chain import campaign, runvens, venslog
-from chain.errors import Refused
+from chain.errors import Refused, load_object
 from chain.javarun import own_commit
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -281,22 +283,27 @@ def attempt(ctx, unit, arm, k):
         rec = runvens.run([info["binary"], *args], folder, rec, env=env, cwd=ctx.out,
                           timeout=doc["timeout_seconds"], key=key, stop=ctx.stop)
     except OSError as e:
-        raise RunnerError(f"{rel}: vens did not start: {e}") from e
+        written = load_object(path)
+        why = written.get("setup_error") or (written.get("generate") or {}).get("interrupted") or str(e)
+        raise RunnerError(f"{rel}: {why}") from e
+
+    def stop_on(cause, **fields):
+        """The attempt failed by cause, kept in its record before the campaign stops on it."""
+        runvens.write_json(path, {**rec, **fields, "record_check": {"passed": False, "cause": cause}})
+        raise RunnerError(f"{rel}: {cause}")
+
     found = runvens.scrub(folder, ctx.patterns[(provider, arm)]) if key else []
     if found:
-        rec = {**rec, "redacted": found}
-        runvens.write_json(path, rec)
         with ctx.lock:
             ctx.redacted.extend(os.path.join(rel, f) for f in found)
-        raise RunnerError(f"{rel}: {variable}'s key was in {', '.join(found)}, now cut out of them")
+        stop_on(f"a form of {variable}'s key was in {', '.join(found)}, now cut out", redacted=found)
     gen = rec["generate"]
     if not gen["log_complete"]:
-        raise RunnerError(f"{rel}: vens's log was not written whole")
+        stop_on("vens's log was not written whole: a write failed, or a process out of vens's group kept its "
+                "stderr open")
     changed = _changed_inputs(ctx, scenario)
     if changed:
-        rec = {**rec, "record_check": {"passed": False, "cause": f"{', '.join(changed)} changed during the attempt"}}
-        runvens.write_json(path, rec)
-        raise RunnerError(f"{rel}: {', '.join(changed)} changed during the attempt, no longer the frozen corpus's")
+        stop_on(f"{', '.join(changed)} changed during the attempt, no longer the frozen corpus's")
     if gen["exit_status"] == 0:
         gaps = attemptmod.record_gaps(folder, arm, provider, model)
         rec = {**rec, "record_check": {"passed": not gaps, "cause": "; ".join(gaps) or None}}
@@ -329,13 +336,15 @@ def run_unit(ctx, unit):
     return out
 
 
-def _results(futures):
-    """Each unit's result as it ends, a unit's error raised at once; it waits a second at a time, so that a signal
-    reaches the main thread."""
+def _results(futures, hush):
+    """Each unit's result as it ends; a unit's error is raised at once, after hush, so that no signal cuts the stop
+    it starts. It waits a second at a time, so that a signal reaches the main thread."""
     pending = set(futures)
     while pending:
         done, pending = cf.wait(pending, timeout=1.0, return_when=cf.FIRST_EXCEPTION)
         for f in done:
+            if f.exception() is not None:
+                hush()
             yield f.result()
 
 
@@ -358,44 +367,65 @@ def _snapshot(ctx):
 
 
 def _sweep(ctx):
-    """Every key's forms cut out of every attempt's files: the files each was in."""
-    found = []
-    for path in campaign.attempt_folders(ctx.out):
-        for pattern in ctx.patterns.values():
-            found += [os.path.join(os.path.relpath(path, ctx.out), f) for f in runvens.scrub(path, pattern)]
-    return found
+    """Every key's forms cut out of every file of the archive: the files each was in."""
+    found = set()
+    for pattern in ctx.patterns.values():
+        found.update(runvens.scrub(ctx.out, pattern))
+    return sorted(found)
+
+
+def _seal(ctx, doc, error):
+    """The archive finished, whatever stopped the campaign: campaign.json with its end, why it stopped and the files
+    a key was cut out of; failures.jsonl; every key's forms swept out of every file, campaign.json included, a form
+    found then stopping the campaign; SHA256SUMS last, written even when finishing fails. Returns the error the
+    campaign ends on."""
+    path = os.path.join(ctx.out, campaign.CAMPAIGN)
+    try:
+        runvens.write_json(path, {**doc, "ended_at": runvens.utc(), "redacted": sorted(set(ctx.redacted)),
+                                  "stopped": None if error is None else _why(error)})
+        campaign.write_failures(ctx.out)
+        # the second sweep reads what the first one's marks rewrote; the marks never hold a key, only paths
+        for _ in range(2):
+            found = _sweep(ctx)
+            if not found:
+                break
+            error = error or RunnerError(f"a form of a key was in {', '.join(found)}, now cut out")
+            sealed = load_object(path)
+            runvens.write_json(path, {**sealed, "redacted": sorted(set(sealed.get("redacted") or []) | set(found)),
+                                      "stopped": sealed.get("stopped") or _why(error)})
+    finally:
+        campaign.write_sums(ctx.out)
+    return error
 
 
 def run_campaign(ctx, hush=lambda: None):
     """The campaign, its folder laid out and every unit run; returns the results of the units it ran. An error or
-    a signal stops it: the stop is set, the units not started are dropped, every vens still running is killed and
-    its attempt recorded interrupted; campaign.json then says why, and the error is raised again once the archive
-    has its failures.jsonl and its SHA256SUMS. hush is called once no unit runs, before the archive is finished."""
+    a signal stops it: hush is called so that no signal cuts the stop, the units not started are dropped, every vens
+    still running is killed and its attempt recorded interrupted, and the archive is sealed (_seal) before the error
+    is raised again."""
     os.makedirs(ctx.out)
     _snapshot(ctx)
     doc = {**ctx.doc, "started_at": runvens.utc()}
-    path = os.path.join(ctx.out, campaign.CAMPAIGN)
-    runvens.write_json(path, doc)
+    runvens.write_json(os.path.join(ctx.out, campaign.CAMPAIGN), doc)
     results, error = [], None
     ex = cf.ThreadPoolExecutor(max_workers=doc["parallelism"])
     try:
         futures = [ex.submit(run_unit, ctx, unit) for unit in campaign.plan(doc)]
-        for done in _results(futures):
+        for done in _results(futures, hush):
             results += done
     except BaseException as e:
         error = e
     finally:
+        hush()
         ctx.stop.set()
         try:
             ex.shutdown(wait=True, cancel_futures=True)
-        finally:
-            runvens.kill_live()
-            hush()
-    redacted = sorted(set(ctx.redacted) | set(_sweep(ctx)))
-    runvens.write_json(path, {**doc, "ended_at": runvens.utc(), "redacted": redacted,
-                              "stopped": None if error is None else _why(error)})
-    campaign.write_failures(ctx.out)
-    campaign.write_sums(ctx.out)
+        except BaseException as e:
+            # a signal that landed before the hush: kept, and the workers still joined
+            error = error or e
+            ex.shutdown(wait=True, cancel_futures=True)
+        runvens.kill_live()
+    error = _seal(ctx, doc, error)
     if error is not None:
         raise error
     return results

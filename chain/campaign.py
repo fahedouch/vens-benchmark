@@ -132,19 +132,32 @@ def attempt_folders(root):
     return sorted(out)
 
 
+def _failure_entry(root, path):
+    """One failed attempt as the reader gives it, or, when the reader cannot read it, its read error as its cause:
+    the index is written while the archive is sealed, which no folder may stop."""
+    entry = {"folder": os.path.relpath(path, root)}
+    try:
+        rec = attemptmod.read_attempt(path)
+    except Exception as e:
+        return {**entry, "kind": None, "step": None, "cause": f"the reader could not read it: {e}"}
+    what, failure = rec["what"], rec["failure"] or {}
+    return {**entry, "arm": what["arm"], "provider": what["provider"], "model": what["model"],
+            "replicate": what["replicate"], "scenario": what["scenario"], "attempt": what["run_attempt"],
+            "kind": failure.get("kind"), "step": failure.get("step"), "cause": failure.get("cause"),
+            "retry_cap_reached": rec["retry_cap_reached"]}
+
+
 def failures(root):
-    """Each failed attempt under root as the reader gives it, in folder order: its folder, what it ran, its
-    failure's kind, step and cause, and whether it reached the retry cap."""
+    """Each failed attempt under root, in folder order: its folder, what it ran, its failure's kind, step and
+    cause, and whether it reached the retry cap."""
     out = []
     for path in attempt_folders(root):
-        if done(load_object(os.path.join(path, "attempt.json"))):
-            continue
-        rec = attemptmod.read_attempt(path)
-        what, failure = rec["what"], rec["failure"] or {}
-        out.append({"folder": os.path.relpath(path, root), "arm": what["arm"], "provider": what["provider"],
-                    "model": what["model"], "replicate": what["replicate"], "scenario": what["scenario"],
-                    "attempt": what["run_attempt"], "kind": failure.get("kind"), "step": failure.get("step"),
-                    "cause": failure.get("cause"), "retry_cap_reached": rec["retry_cap_reached"]})
+        try:
+            complete = done(load_object(os.path.join(path, "attempt.json")))
+        except Refused:
+            complete = False
+        if not complete:
+            out.append(_failure_entry(root, path))
     return out
 
 
@@ -155,6 +168,43 @@ def write_failures(root):
 
 def _cell(rj):
     return rj.get("replicate"), rj.get("provider"), rj.get("model"), rj.get("scenario"), rj.get("arm")
+
+
+def _campaign(root):
+    """campaign.json, Refused unless it is a scenario runner's with every field the reading needs."""
+    doc = load_object(os.path.join(root, CAMPAIGN))
+    if doc.get("runner") != "scenarios":
+        raise Refused(f"{root}: {CAMPAIGN} is not a scenario runner's")
+    corpus, arms, models = doc.get("corpus"), doc.get("arms"), doc.get("models")
+    wrong = [] if isinstance(corpus, dict) and isinstance(corpus.get("freeze_sha256"), str) and \
+        isinstance(corpus.get("scenarios"), list) else ["corpus"]
+    wrong += [] if isinstance(arms, dict) and all(isinstance(arms.get(a), dict) and arms[a].get("vens_sha")
+                                                  and arms[a].get("binary_sha256") for a in ARMS) else ["arms"]
+    wrong += [] if isinstance(models, list) and all(isinstance(m, dict) and m.get("provider") and m.get("model")
+                                                    for m in models) else ["models"]
+    wrong += [f for f in ("replicates", *SAME) if not isinstance(doc.get(f), int) or isinstance(doc.get(f), bool)]
+    wrong += [] if isinstance(doc.get("campaign"), str) else ["campaign"]
+    if wrong:
+        raise Refused(f"{root}: {CAMPAIGN} lacks {', '.join(wrong)}, or holds them in another shape")
+    return doc
+
+
+def _listed_failures(root):
+    """The folders failures.jsonl lists; Refused when it is missing or a line does not read."""
+    path = os.path.join(root, FAILURES)
+    if not os.path.isfile(path):
+        raise Refused(f"{root}: a campaign the runner finished, without its {FAILURES}")
+    folders = []
+    with open(path, encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            try:
+                entry = json.loads(line)
+            except ValueError as e:
+                raise Refused(f"{path}: line {n} does not read: {e}") from e
+            if not isinstance(entry, dict) or not isinstance(entry.get("folder"), str):
+                raise Refused(f"{path}: line {n} names no folder")
+            folders.append(entry["folder"])
+    return sorted(folders)
 
 
 def _check(root, path, rj, doc, units):
@@ -225,9 +275,7 @@ def read_campaign(root, commits=None, freeze=FROZEN):
     not freeze's (the frozen corpus unless the caller names another), SHA256SUMS does not match a campaign the
     runner finished, a record contradicts campaign.json, failures.jsonl does not list the failed attempts, or an
     attempt the runner made is missing."""
-    doc = load_object(os.path.join(root, CAMPAIGN))
-    if doc.get("runner") != "scenarios":
-        raise Refused(f"{root}: {CAMPAIGN} is not a scenario runner's")
+    doc = _campaign(root)
     got = doc["corpus"]["freeze_sha256"]
     if got != freeze:
         raise Refused(f"{root}: its corpus's freeze is {got}, not {freeze}; name it to read the archive anyway")
@@ -244,8 +292,7 @@ def read_campaign(root, commits=None, freeze=FROZEN):
         _check(root, path, rj, doc, unit_set)
         cells.setdefault(_cell(rj), {})[rj["attempt"]] = (path, rj)
     if finished:
-        with open(os.path.join(root, FAILURES), encoding="utf-8") as fh:
-            listed = sorted(json.loads(line)["folder"] for line in fh)
+        listed = _listed_failures(root)
         failed = sorted(os.path.relpath(p, root) for c in cells.values() for p, rj in c.values() if not done(rj))
         if listed != failed:
             raise Refused(f"{root}: {FAILURES} lists {len(listed)} failed attempts, the attempt records give "
