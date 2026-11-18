@@ -43,9 +43,14 @@ jobs:
             (cd "$RUNNER_TEMP/src-$arm" && go build -o "$RUNNER_TEMP/bin/vens-$arm" ./cmd/vens)
           done
 
+      # The scenarios are PyYAML's output: the generator's test rewrites them byte for byte under the Python and
+      # PyYAML freeze-scenarios.json records. cvss checks the generator's CVSS formula on every base vector.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.12.12"
+
+      - name: Install the corpus's packages
+        run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.3 cvss==3.6
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:

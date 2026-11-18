@@ -1,5 +1,5 @@
 """The Java run over the after's own VEX, on vens's mock, made at the after's commit before that commit is measured:
-the scenarios (the schema-2 marker added in a scratch copy until the corpus is regenerated), the demo scan's three
+the scenarios (schema 2 as committed; a config without the marker gets it in a scratch copy), the demo scan's three
 contexts and the two quickstart reports. The reference calculator runs over every vector, its failure paths on
 their own inputs, and answers.json's levels are checked against each vector; with --before, the before's VEX too,
 each refused vector's other checks not applicable and its score and severity recomputed under main's own rule. Every

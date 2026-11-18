@@ -10,12 +10,13 @@ import shutil
 import tempfile
 import unittest
 
-from chain import attempt, javarun, runvens
+from chain import attempt, contract, javarun, runvens, verdicts
 from tests import support as s
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCENARIOS = os.path.join(ROOT, "scenarios")
-FIRST = sorted(d for d in os.listdir(SCENARIOS) if os.path.isdir(os.path.join(SCENARIOS, d)))[0]
+IDS = sorted(d for d in os.listdir(SCENARIOS) if os.path.isdir(os.path.join(SCENARIOS, d)))
+FIRST = IDS[0]
 SKIPPED = "model returned no answer to Motive (M) for {cve} after asking again; stopping the run"
 SKIPPED_BEFORE = "model returned no score for {cve} after asking again; stopping the run"
 FORCED = "LLM evaluation failed: mockllm: forced failure (VENS_MOCK_LLM_FAIL is set)"
@@ -53,9 +54,15 @@ class MockRuns(unittest.TestCase):
         return folder
 
 
+def planned(sid):
+    """The after's calls on a scenario at batch 1: one per question its CVE is asked."""
+    sc = verdicts.load(SCENARIOS)[sid]
+    return sum(contract.asked(q, sc["dep"], sc["floors"], sc["described"]) for q in contract.QUESTIONS)
+
+
 class TestMockAttempts(MockRuns):
     def test_complete_attempts(self):
-        for arm, calls in (("after", 11), ("before", 1)):
+        for arm, calls in (("after", planned(FIRST)), ("before", 1)):
             rec = attempt.read_attempt(self.runs[(arm, "complete")])
             self.assertEqual((rec["outcome"], rec["scores_usable"], rec["problems"]), ("complete", True, []), arm)
             self.assertEqual(rec["models_attested"], [["mock", "mock"]] * calls)
@@ -127,7 +134,7 @@ class TestTheRecordFromMockRuns(MockRuns):
         record = {"enrich": {"exit_status": 1}, "archive_check": "skipped", "provenance": False}
         rec = attempt.read_attempt(self.artefact(self.runs[("after", "complete")], "2", record, provenance=False))
         self.assertEqual((rec["failure"]["kind"], rec["failure"]["step"]), ("later_step", "enrich"))
-        self.assertEqual((rec["calls"]["archived"], rec["scores_usable"]), (11, False))
+        self.assertEqual((rec["calls"]["archived"], rec["scores_usable"]), (planned(FIRST), False))
 
     def test_an_archive_check_that_fails(self):
         record = {"enrich": {"exit_status": 0}, "archive_check": "failure", "provenance": False}
@@ -215,8 +222,8 @@ class TestTheJavaRun(MockRuns):
         files = sorted(os.path.relpath(os.path.join(d, f), archive) for d, _, names in os.walk(archive) for f in names)
         self.assertEqual({os.path.basename(f) for f in files},
                          {"vex.cdx.json", "answers.json", "java-check.txt", "manifest.json", "SHA256SUMS"})
-        self.assertEqual(sum(f.endswith("vex.cdx.json") for f in files), 35 + 3 + 2 + 35 + 3)
-        self.assertEqual(sum(f.endswith("answers.json") for f in files), 35 + 3 + 2)
+        self.assertEqual(sum(f.endswith("vex.cdx.json") for f in files), len(IDS) + 3 + 2 + len(IDS) + 3)
+        self.assertEqual(sum(f.endswith("answers.json") for f in files), len(IDS) + 3 + 2)
         self.assertFalse(any("calls" in f.split(os.sep) for f in files))
         with open(os.path.join(archive, "SHA256SUMS")) as fh:
             sums = dict(reversed(line.rstrip("\n").split("  ", 1)) for line in fh)
