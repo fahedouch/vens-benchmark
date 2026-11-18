@@ -1,14 +1,23 @@
 """One `vens generate` laid out as an attempt folder: attempt.json written before vens starts and completed when it
 ends, vens's whole log, the debug folder and the VEX. The scenario runner's layout; the tests and the Java run use it
 on vens's mock.
+
+vens runs in a session of its own, so that no terminal signal reaches it and its whole group can be killed. Every
+group not yet seen to end is in a registry that kill_live() kills, which this module runs at exit and the runner on
+any stop. A SIGKILL of the runner runs nothing, and macOS has no parent-death signal: a watch process per vens,
+blocked on a pipe only this process can write to, sees the pipe close when this process dies and kills the group.
 """
+import atexit
+import base64
 import contextlib
 import datetime
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -16,6 +25,19 @@ SERIAL = "urn:uuid:00000000-0000-0000-0000-000000000001"
 MARKER = "schema_version: 2\n"
 TIMEOUT, STOPPED = "timeout", "the runner was stopped"
 POLL = 0.2
+# seconds vens's stderr may stay open once vens has ended and its group was killed; then a second kill, and as long
+DRAIN = 5.0
+WATCH = """import os, signal, sys
+pid = int(sys.argv[1])
+os.read(0, 1)
+try:
+    if os.getpgid(pid) == pid:
+        os.killpg(pid, signal.SIGKILL)
+except OSError:
+    pass
+"""
+
+_LIVE, _LOCK, _LIFELINE = set(), threading.Lock(), []
 
 
 def utc():
@@ -51,22 +73,94 @@ def write_json(path, doc):
     os.replace(tmp, path)
 
 
-def _copy(src, dst, key, done):
-    """vens's stderr into its log as it comes, the key cut out of each line before it is written; the pipe is read
-    to its end even when a write fails, so that vens never blocks on it."""
+def secret_pattern(key):
+    """What the log and the archive are cleaned of for one API key: the key; its base64, standard and URL-safe, at
+    each of the three byte alignments it can take inside a longer encoded text; and its first 8 and last 4
+    characters around what an SDK shows of a key it masks (sk-...XXXX). None for no key."""
+    if not key:
+        return None
+    raw, forms = key.encode(), {key.encode()}
+    for pad in range(3):
+        for encode in (base64.b64encode, base64.urlsafe_b64encode):
+            coded = encode(b"\0" * pad + raw)
+            # the characters that encode the key's bytes alone
+            part = coded[(pad * 8 + 5) // 6:((pad + len(raw)) * 8) // 6]
+            if len(part) >= 8:
+                forms.add(part)
+    alternatives = [re.escape(f) for f in sorted(forms, key=len, reverse=True)]
+    if len(raw) >= 12:
+        alternatives.append(re.escape(raw[:8]) + rb"[^\s\"']{0,%d}" % len(raw) + re.escape(raw[-4:]))
+    return re.compile(b"|".join(alternatives))
+
+
+def scrub(folder, pattern):
+    """The files under folder that held a form of the key, each rewritten with *** in its place."""
+    found = []
+    for d, _, names in os.walk(folder):
+        for n in names:
+            path = os.path.join(d, n)
+            with open(path, "rb") as fh:
+                data = fh.read()
+            clean = pattern.sub(b"***", data)
+            if clean != data:
+                tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
+                with open(tmp, "wb") as fh:
+                    fh.write(clean)
+                os.replace(tmp, path)
+                found.append(os.path.relpath(path, folder))
+    return sorted(found)
+
+
+def _killpg(pgid):
+    with contextlib.suppress(OSError):
+        os.killpg(pgid, signal.SIGKILL)
+
+
+def kill_live():
+    """Kills every vens group this process started and has not seen end."""
+    with _LOCK:
+        groups = sorted(_LIVE)
+    for pgid in groups:
+        _killpg(pgid)
+
+
+atexit.register(kill_live)
+
+
+def _watch(pid):
+    """WATCH over vens's group, its stdin the read end of this process's lifeline, whose write end this process holds
+    until it dies."""
+    with _LOCK:
+        if not _LIFELINE:
+            _LIFELINE.extend(os.pipe())
+        lifeline = _LIFELINE[0]
+    return subprocess.Popen([sys.executable, "-S", "-c", WATCH, str(pid)], stdin=lifeline,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={}, start_new_session=True)
+
+
+def _copy(src, dst, pattern, done):
+    """vens's stderr into its log as it comes, each form of the key cut out of each line before it is written; the
+    pipe is read to its end even when a write fails, so that vens never blocks on it."""
     whole = True
     for line in iter(src.readline, b""):
         if whole:
             try:
-                dst.write(line.replace(key, b"***") if key else line)
+                dst.write(pattern.sub(b"***", line) if pattern else line)
                 dst.flush()
             except OSError:
                 whole = False
     done.append(whole)
 
 
+def _drain(src, dst, pattern, done):
+    copier = threading.Thread(target=_copy, args=(src, dst, pattern, done), daemon=True)
+    copier.start()
+    return copier
+
+
 def _end(proc, timeout, stop):
-    """(vens's exit status, None), or (None, why) when the runner killed it: at its timeout, or once stop is set."""
+    """(vens's exit status, None), or (None, why) when the runner killed its group: at the timeout, or once stop is
+    set. A killed vens has no exit status of its own."""
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -74,31 +168,39 @@ def _end(proc, timeout, stop):
         except subprocess.TimeoutExpired:
             pass
         why = TIMEOUT if time.monotonic() >= deadline else STOPPED if stop is not None and stop.is_set() else None
-        if why is None:
-            continue
-        # vens runs in a session of its own: the kill takes its whole group, and no terminal signal reaches it.
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        status = proc.wait()
-        # a vens that ended on its own just before the kill keeps its exit status
-        return (None, why) if status == -signal.SIGKILL else (status, None)
+        if why is not None:
+            _killpg(proc.pid)
+            proc.wait()
+            return None, why
+
+
+def _drained(pgid, copier, done):
+    """Whether vens's stderr reached its log whole. What vens left in its group could hold the pipe open past its
+    end: the group is killed, the copier given DRAIN seconds, then killed again and given as long."""
+    for _ in range(2):
+        _killpg(pgid)
+        copier.join(DRAIN)
+        if not copier.is_alive():
+            return done == [True]
+    return False
 
 
 def run(cmd, folder, rec, *, env, cwd=None, timeout=600, key=None, stop=None):
     """Runs cmd, a vens command, into folder, which must not exist, and returns the attempt record completed.
 
     rec is written to folder/attempt.json before vens starts, then completed on the runner's clock: generate's
-    start and end, its exit status, or, when the runner killed it, none and timed_out or interrupted saying why;
-    log_complete, whether vens's stderr reached folder/vens.log whole. key, the API key vens gets, is cut out of the
-    log. vens's stdout is dropped: it writes nothing there. A vens that does not start leaves setup_error and no
-    start, and the OSError is raised."""
+    start and end, its exit status, or, when the runner killed it, none and interrupted saying why (timed_out for the
+    timeout); log_complete, whether vens's stderr reached folder/vens.log whole. key, the API key vens gets, is cut out
+    of the log in each of its forms (secret_pattern). vens's stdout is dropped: it writes nothing there. A vens that
+    does not start leaves setup_error and no start, and the OSError is raised; any error once it has started kills
+    its group, is recorded and is raised."""
     os.makedirs(folder)
     path = os.path.join(folder, "attempt.json")
     gen = {"started_at": None, "ended_at": None, "exit_status": None, "timed_out": False, "interrupted": None,
            "log_complete": None}
     rec = {**rec, "generate": gen}
     write_json(path, rec)
-    secret = key.encode() if key else None
+    pattern = secret_pattern(key)
     with open(os.path.join(folder, "vens.log"), "wb") as log:
         started = utc()
         write_json(path, {**rec, "generate": {**gen, "started_at": started}})
@@ -108,15 +210,31 @@ def run(cmd, folder, rec, *, env, cwd=None, timeout=600, key=None, stop=None):
         except OSError as e:
             write_json(path, {**rec, "setup_error": f"vens did not start: {e}"})
             raise
-        done = []
-        copier = threading.Thread(target=_copy, args=(proc.stderr, log, secret, done), daemon=True)
-        copier.start()
-        status, why = _end(proc, timeout, stop)
-        ended = utc()
-        copier.join()
-        proc.stderr.close()
+        with _LOCK:
+            _LIVE.add(proc.pid)
+        watch = None
+        try:
+            watch = _watch(proc.pid)
+            done = []
+            copier = _drain(proc.stderr, log, pattern, done)
+            status, why = _end(proc, timeout, stop)
+            ended = utc()
+            whole = _drained(proc.pid, copier, done)
+        except BaseException as e:
+            _killpg(proc.pid)
+            proc.wait()
+            with contextlib.suppress(Exception):
+                write_json(path, {**rec, "generate": {**gen, "started_at": started, "ended_at": utc(),
+                                                      "interrupted": f"the runner failed: {e!r}"}})
+            raise
+        finally:
+            with _LOCK:
+                _LIVE.discard(proc.pid)
+            if watch is not None:
+                watch.kill()
+                watch.wait()
     rec = {**rec, "generate": {**gen, "started_at": started, "ended_at": ended, "exit_status": status,
-                               "timed_out": why == TIMEOUT, "interrupted": why, "log_complete": done == [True]}}
+                               "timed_out": why == TIMEOUT, "interrupted": why, "log_complete": whole}}
     write_json(path, rec)
     return rec
 
