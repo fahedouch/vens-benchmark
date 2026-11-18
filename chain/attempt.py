@@ -3,25 +3,32 @@
 Two runners leave such a folder. vens-demo's baseline.yml uploads one artefact per attempt,
 baseline-<model>-<context>-r<replicate>-a<attempt>/, with the VEX, the enriched report, provenance.json, the
 attestation and calls/, and, once its Score step writes them, attempt.json and vens's log, vens-<context>.log. The
-scenario runner writes attempt.json, vens.log, calls/ and the VEX for each scenario run.
+scenario runner (ctx_runner.py) writes attempt.json, vens.log, calls/, the VEX and its attestation for each attempt
+of each scenario run, in its campaign's folder (chain/campaign.py).
 
 attempt.json, the attempt record, is written before `vens generate` runs and completed as the steps end:
 
     {"record": 1, "runner": "baseline.yml" | "scenarios", "arm": "before" | "after",
      "provider", "model", "llm_batch_size", "vens_ref", "vens_sha", "vens_binary_sha256",
      "run_id", "run_attempt", "job", "context", "replicate", "archived_scan", "config",      baseline.yml
-     "scenario", "report", "config", "replicate", "attempt",                                  the scenario runner
-     "setup_error",                                                                          baseline.yml
-     "generate": {"started_at", "ended_at", "exit_status", "timed_out", "log_complete"},
+     "campaign", "scenario", "report", "config", "replicate", "attempt", "freeze_sha256",    the scenario runner
+     "retry_cap", "timeout_seconds", "parallelism", "key_env", "mock_env", "command",
+     "retry_cap_reached",
+     "setup_error",
+     "generate": {"started_at", "ended_at", "exit_status", "timed_out", "interrupted", "log_complete"},
      "enrich": {"started_at", "ended_at", "exit_status"},                                    baseline.yml
      "archive_check": "success" | "failure" | "skipped" | "cancelled",                       baseline.yml
      "provenance": true | false}                                                             baseline.yml
 
-A field not yet written is absent or null. Times are UTC, ISO 8601. setup_error says why baseline.yml's Score step
-stopped before `vens generate` started (a missing key, a bad batch size); log_complete, whether vens's log, the key
-cut out of it, was written whole, which baseline.yml's archive check requires. The reader tells four outcomes apart:
-a scoring that did not complete; a scoring that completed and a later step that failed; a scoring interrupted, its
-start recorded and no exit status; a complete attempt. What a folder does not say stays an explicit unknown.
+A field not yet written is absent or null. Times are UTC, ISO 8601, on the runner's clock. setup_error says why
+`vens generate` never started (baseline.yml: a missing key, a bad batch size; the scenario runner: vens that does not
+start); log_complete, whether vens's log, the key cut out of it, was written whole, which baseline.yml's archive check
+requires. The scenario runner records a vens it killed with no exit status, interrupted saying why ("timeout", with
+timed_out, or "the runner was stopped"), and retry_cap_reached on a failed attempt that was the last the retry cap
+allows. The reader tells four outcomes apart: a scoring that did not complete; a scoring that
+completed and a later step that failed (baseline.yml's alone: the scenario runner has no step after vens generate); a
+scoring interrupted, its start recorded and no exit status; a complete attempt. What a folder does not say stays an
+explicit unknown.
 """
 import os
 import re
@@ -174,6 +181,11 @@ def _what(rj, prov, name, line, arm, meta=None):
         "run_id": _pick(rj.get("run_id"), prov.get("run_id"), line.get("run_id"), meta.get("run_id")),
         "run_attempt": _pick(rj.get("run_attempt"), prov.get("run_attempt"), name.get("attempt"), rj.get("attempt")),
         "job": job,
+        "campaign": rj.get("campaign"),
+        "key_env": rj.get("key_env"),
+        "retry_cap": rj.get("retry_cap"),
+        "timeout_seconds": rj.get("timeout_seconds"),
+        "parallelism": rj.get("parallelism"),
     }
 
 
@@ -232,8 +244,9 @@ def _from_record(rj, provenance_present, job):
             cause = rj.get("setup_error")
             return FAILED, _failure(None, None, cause, "attempt.json"), steps, unknown + ["failure.kind"], problems + (
                 [] if cause else ["attempt.json records neither the start nor the exit status of vens generate"])
-        if gen.get("timed_out"):
-            return FAILED, _failure(INTERRUPTED, "generate", "timeout", "attempt.json"), steps, unknown, problems
+        if gen.get("timed_out") or gen.get("interrupted"):
+            return FAILED, _failure(INTERRUPTED, "generate", gen.get("interrupted") or "timeout", "attempt.json"), \
+                steps, unknown, problems
         cause, source, problem = _job_cause(job, "vens generate")
         if problem:
             return FAILED, _failure(None, "generate", None, None), steps, unknown + ["failure.kind"], problems + [
@@ -463,6 +476,7 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
         "recovery": rec, "cost_estimate": estimate, "archive_check": {"passed": check[0], "reason": check[1]},
         "answers": answers, "ratings": ratings, "vex_problems": vex_problems, "scores_usable": usable,
         "excluded": excluded, "incomplete": incomplete, "problems": problems,
+        "retry_cap_reached": (rj or {}).get("retry_cap_reached"),
     }
 
 
@@ -485,7 +499,8 @@ def without_artefact(job, model, run_id, line=None, arm=None):
             "calls": {"archived": None, "with_reply": None, "kinds": None}, "recovery": None, "cost_estimate": None,
             "archive_check": {"passed": None, "reason": "no artefact"}, "answers": None, "ratings": None,
             "vex_problems": [], "scores_usable": False, "excluded": _excluded(line),
-            "incomplete": [] if what["arm"] else ["arm unknown"], "problems": ["artefact missing"]}
+            "incomplete": [] if what["arm"] else ["arm unknown"], "problems": ["artefact missing"],
+            "retry_cap_reached": None}
 
 
 def not_downloaded(line, why, arm=None, reason="not downloaded"):
@@ -501,4 +516,4 @@ def not_downloaded(line, why, arm=None, reason="not downloaded"):
             "calls": {"archived": None, "with_reply": None, "kinds": None}, "recovery": None, "cost_estimate": None,
             "archive_check": {"passed": None, "reason": reason}, "answers": None, "ratings": None,
             "vex_problems": [], "scores_usable": False, "excluded": _excluded(line), "incomplete": [],
-            "problems": [why]}
+            "problems": [why], "retry_cap_reached": None}

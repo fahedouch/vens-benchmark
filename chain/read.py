@@ -4,9 +4,11 @@
                           [--failures FILE] DIR...
 
 DIR is an attempt folder (it holds attempt.json or provenance.json), one workflow run's download (it holds
-baseline-* folders) or a campaign's downloads (one numeric folder per run). With --dispatch-log, every artefact is
-mapped through it, a folder given on its own included; without it, a download's campaign replicate is its
-artefacts' r<n>. --commit refuses an attempt whose vens commit is not its arm's.
+baseline-* folders), a campaign's downloads (one numeric folder per run) or a scenario campaign (it holds
+campaign.json, chain/campaign.py). With --dispatch-log, every artefact is mapped through it, a folder given on its
+own included; without it, a download's campaign replicate is its artefacts' r<n>. A scenario campaign's records name
+their arm and replicate: no dispatch log, --arm or --failures applies to it. --commit refuses an attempt whose vens
+commit is not its arm's.
 """
 import argparse
 import glob
@@ -14,13 +16,18 @@ import json
 import os
 import sys
 
-from chain import attempt, dispatch, downloads
+from chain import attempt, campaign, dispatch, downloads
 from chain.errors import Refused
 
 
 def read_any(path, lines=None, arm=None, failures=(), commits=None):
     """An attempt folder, a workflow run's download (its artefact folders, or its run.json or jobs.json from the API
     even with no artefact), or a campaign's downloads; never nothing."""
+    if os.path.exists(os.path.join(path, campaign.CAMPAIGN)):
+        if lines is not None or arm is not None or failures:
+            raise Refused(f"{path}: a scenario campaign, whose records name their arm and replicate: no dispatch "
+                          f"log, --arm or --failures applies to it")
+        return campaign.read_campaign(path, commits=commits)
     kw = {"lines": lines, "arm": arm, "failures": failures, "commits": commits}
     if any(os.path.exists(os.path.join(path, f)) for f in ("attempt.json", "provenance.json")) or \
             attempt.parse_name(os.path.basename(os.path.normpath(path))):
