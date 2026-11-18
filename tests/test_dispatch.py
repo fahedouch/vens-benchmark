@@ -95,7 +95,7 @@ class Base(unittest.TestCase):
         s.write(self.gh, FAKE_GH.format(python=sys.executable))
         os.chmod(self.gh, 0o755)
         self.state = os.path.join(self.dir, "state.json")
-        self.save({"commits": {"fa7fc9a": s.AFTER_SHA, s.AFTER_SHA: s.AFTER_SHA, "43ab10b": s.BEFORE_SHA},
+        self.save({"commits": {"b7c0435": s.AFTER_SHA, s.AFTER_SHA: s.AFTER_SHA, "43ab10b": s.BEFORE_SHA},
                    "runs": {}, "next_id": 5001, "print_url": True})
         self.log = os.path.join(self.dir, "dispatch-log.jsonl")
         os.environ["FAKE_GH_STATE"] = self.state
@@ -118,7 +118,7 @@ class Base(unittest.TestCase):
             return [json.loads(x) for x in fh]
 
     def args(self, **kw):
-        base = dict(log=self.log, campaign="c1", arm="after", vens_ref="fa7fc9a", provider="openai",
+        base = dict(log=self.log, campaign="c1", arm="after", vens_ref="b7c0435", provider="openai",
                     model=s.MODEL, replicate=1, batch_size=1, archived_run="2026-09-23", repo="venslabs/vens-demo",
                     workflow_ref="main", max_side_by_side=2, run_id=None, retry_cap=4, no_run=False, no_rerun=False,
                     stray=False)
@@ -168,7 +168,7 @@ class TestDispatch(Base):
         self.assertEqual({k: line[k] for k in ("campaign", "arm", "vens_ref", "vens_commit", "provider", "model",
                                                 "batch_size", "replicate", "run_id", "run_attempt", "action",
                                                 "replaces")},
-                         {"campaign": "c1", "arm": "after", "vens_ref": "fa7fc9a", "vens_commit": s.AFTER_SHA,
+                         {"campaign": "c1", "arm": "after", "vens_ref": "b7c0435", "vens_commit": s.AFTER_SHA,
                           "provider": "openai", "model": s.MODEL, "batch_size": 1, "replicate": 1, "run_id": 5001,
                           "run_attempt": 1, "action": "dispatch", "replaces": None})
         self.assertRegex(line["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
@@ -240,14 +240,14 @@ class TestConcurrentCommands(Base):
         return sorted(p.wait() for p in procs)
 
     def test_one_replicate_is_not_dispatched_twice(self):
-        cmd = ["--arm", "after", "--vens-ref", "fa7fc9a", "--replicate", "1", "--max-side-by-side", "4"]
+        cmd = ["--arm", "after", "--vens-ref", "b7c0435", "--replicate", "1", "--max-side-by-side", "4"]
         self.assertEqual(self.race(cmd, cmd), [0, 2])
         self.assertEqual(len(self.workflow_runs()), 1)
         self.assertEqual(self.actions(), ["pending", "dispatch"])
 
     def test_the_cap_holds(self):
         self.assertEqual(self.race(
-            ["--arm", "after", "--vens-ref", "fa7fc9a", "--replicate", "1", "--max-side-by-side", "1"],
+            ["--arm", "after", "--vens-ref", "b7c0435", "--replicate", "1", "--max-side-by-side", "1"],
             ["--arm", "before", "--vens-ref", "43ab10b", "--replicate", "1", "--max-side-by-side", "1"]), [0, 2])
         self.assertEqual(len(self.workflow_runs()), 1)
 
@@ -496,7 +496,7 @@ class TestPairingAndCap(Base):
         for bad in ([], ["--max-side-by-side", "0"]):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 dispatch.main(["--gh", self.gh, "dispatch", "--log", self.log, "--campaign", "c1", "--arm", "after",
-                               "--vens-ref", "fa7fc9a", "--provider", "openai", "--model", s.MODEL, "--replicate",
+                               "--vens-ref", "b7c0435", "--provider", "openai", "--model", s.MODEL, "--replicate",
                                "1", *bad])
         self.assertEqual(self.workflow_runs(), [])
 

@@ -1,8 +1,8 @@
 """Shared helpers: the environment the optional tests need, and synthetic folders as vens and baseline.yml leave them.
 
-    VB_VENS_AFTER, VB_VENS_BEFORE   vens binaries built from 310-step3 fa7fc9a and main 43ab10b
+    VB_VENS_AFTER, VB_VENS_BEFORE   vens binaries built from 310-step3 b7c0435 and main 43ab10b
     VB_DEMO                         a vens-demo tree at 7ab1570 (runs/2026-09-23/scan/scan.json, contexts/)
-    VB_QUICKSTART                   vens's examples/quickstart at fa7fc9a
+    VB_QUICKSTART                   vens's examples/quickstart at b7c0435
     VB_JAR, VB_JDK                  the calculator's 1.0.1 JAR and a JDK bin folder (JAVA_HOME/bin otherwise)
     VB_0B_MEASUREMENTS              a folder holding 0B's archives, 0b-phase1 and 0b-phase2
     VB_0B_READ0B                    0B's frozen reader, read0b.py, to compare with
@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 
-AFTER_SHA = "fa7fc9aa38306944f01845fd97aa1fc990b597a4"
+AFTER_SHA = "b7c0435835447027b04d54d4e6befaaee6b0626b"
 BEFORE_SHA = "43ab10bf980d42b77157e003a27921805a546770"
 MODEL = "gpt-5.4-mini-2026-03-17"
 VECTOR = "SL:9/M:1/O:7/S:9/ED:9/EE:5/A:9/ID:9/LC:9/LI:9/LAV:7/LAC:9/FD:1/RD:4/NC:2/PV:9"

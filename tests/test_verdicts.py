@@ -226,7 +226,7 @@ class MockCorpus(unittest.TestCase):
     def setUpClass(cls):
         cls.after, cls.before = s.env("VB_VENS_AFTER"), s.env("VB_VENS_BEFORE")
         if cls.after is None or cls.before is None:
-            raise unittest.SkipTest("set VB_VENS_AFTER and VB_VENS_BEFORE to vens binaries built from fa7fc9a and "
+            raise unittest.SkipTest("set VB_VENS_AFTER and VB_VENS_BEFORE to vens binaries built from b7c0435 and "
                                     "43ab10b to run the corpus on the mock")
         if not _CORPUS:
             tmp, runs = tempfile.TemporaryDirectory(), {}
@@ -419,7 +419,7 @@ class TestTheRulesUnderOtherValues(unittest.TestCase):
     def setUpClass(cls):
         after = s.env("VB_VENS_AFTER")
         if after is None:
-            raise unittest.SkipTest("set VB_VENS_AFTER to a vens binary built from fa7fc9a")
+            raise unittest.SkipTest("set VB_VENS_AFTER to a vens binary built from b7c0435")
         cls.tmp = tempfile.TemporaryDirectory()
         cls.runs = {}
         for sid, (n, values) in itertools.product(SAMPLE, enumerate((None,) + ALTERNATES)):

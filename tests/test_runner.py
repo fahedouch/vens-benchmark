@@ -462,7 +462,7 @@ class MockCampaign(Base):
     def setUpClass(cls):
         cls.real = {"after": s.env("VB_VENS_AFTER"), "before": s.env("VB_VENS_BEFORE")}
         if None in cls.real.values():
-            raise unittest.SkipTest("set VB_VENS_AFTER and VB_VENS_BEFORE to vens binaries built from fa7fc9a and "
+            raise unittest.SkipTest("set VB_VENS_AFTER and VB_VENS_BEFORE to vens binaries built from b7c0435 and "
                                     "43ab10b to run the runner on the mock")
         with open(os.path.join(ROOT, "scenarios", "comp_gdpr", "report.json")) as fh:
             cls.cve = json.load(fh)["Results"][0]["Vulnerabilities"][0]["VulnerabilityID"]

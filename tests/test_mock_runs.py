@@ -27,7 +27,7 @@ class MockRuns(unittest.TestCase):
     def setUpClass(cls):
         cls.after, cls.before = s.env("VB_VENS_AFTER"), s.env("VB_VENS_BEFORE")
         if cls.after is None or cls.before is None:
-            raise unittest.SkipTest("set VB_VENS_AFTER and VB_VENS_BEFORE to vens binaries built from fa7fc9a and "
+            raise unittest.SkipTest("set VB_VENS_AFTER and VB_VENS_BEFORE to vens binaries built from b7c0435 and "
                                     "43ab10b to run the mock tests")
         cls.tmp = tempfile.TemporaryDirectory()
         cls.dir = cls.tmp.name
