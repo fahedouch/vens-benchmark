@@ -216,12 +216,53 @@ class TestMoves(unittest.TestCase):
         rows = self.rows(recs + [floored, second])
         t = next(x for x in rows if x["check"].quantity == "T" and x["arm"] == "after")
         self.assertEqual(report_scen._sources(t["row"]),
-                         "r1: LC LI LAV LAC answer | r2: LC floor/answer; LI LAV LAC answer")
+                         "r1: LC LI LAV LAC answer; r2: LC floor/answer, LI LAV LAC answer")
+
+    def test_a_level_go_set_in_one_run_and_answered_in_the_other_is_mixed(self):
+        answered = sens_run("b", 6, "extensive")
+        for source in ("config", "floor"):
+            with self.subTest(source=source):
+                go_set = sens_run("a", 2, None, source)
+                self.assertEqual(families.move(go_set, answered, "T"), families.MIXED)
+                self.assertEqual(families.move(answered, go_set, "T"), families.MIXED)
+        # compliance: NC is Go's 2 without a framework, the model's answer with one
+        vid = "CVE-2099-0007"
+        comp = lambda sid, level, answer, source: r.record(
+            "after", sid, 1, {vid: r.rating(r.vector(NC=level))}, scenario=True,
+            answers={vid: r.factors(r.vector(NC=level), NC=(answer, source))})
+        none, gdpr = comp("comp_none", 2, None, "config"), comp("comp_gdpr", 5, "major_violation", "answer")
+        self.assertEqual((families.move(none, gdpr, "NC"), families.move(none, gdpr, "B")),
+                         (families.MIXED, families.MIXED))
+
+    def test_a_table_cell_holds_no_pipe(self):
+        floored = sens_run("sens_low", 2, None, "floor")
+        floored["what"]["replicate"] = 2
+        second = sens_run("sens_high", 6, "minimal")
+        second["what"]["replicate"] = 2
+        rows = self.rows([sens_run("sens_low", 2, "minimal"), sens_run("sens_high", 6, "minimal"), floored, second])
+        lines = [ln for ln in report_scen.families_section({"rows": rows, "moves": {}}) if ln.startswith("|")]
+        self.assertTrue(any("r1: LC LI LAV LAC answer; r2: LC floor/answer, " in ln for ln in lines))
+        self.assertEqual({ln.count("|") for ln in lines}, {lines[0].count("|")})
 
     def test_the_before_is_not_attributed(self):
         rows = [x for x in self.rows([run("before", "sens_low", 3, "T"), run("before", "sens_high", 5, "T")])
                 if x["arm"] == "before"]
         self.assertEqual([p["move"] for x in rows for p in x["row"]["per"]], [None])
+
+
+class TestScenarioRuns(unittest.TestCase):
+    def test_a_clash_needs_complete_runs_at_two_commits(self):
+        done = run("after", "ctrl_on", 3, "VU", 1)
+        never = run("after", "ctrl_on", 3, "VU", 2, outcome="failed")
+        never["what"]["vens_commit"] = None
+        cells = cellmod.group([done, never])
+        self.assertEqual((len(cells), cellmod.conflicts(cells)), (2, {}))
+        got = families.scenario_runs(cells)[(MODEL, "ctrl_on", "after")]
+        self.assertEqual((list(got["runs"]), got["replicates"]), ([1], {1, 2}))
+        other = run("after", "ctrl_on", 3, "VU", 2)
+        other["what"]["vens_commit"] = "c" * 40
+        cells = cellmod.group([done, other])
+        self.assertEqual((len(cellmod.conflicts(cells)), families.scenario_runs(cells)), (1, {}))
 
 
 class TestDiagnostics(unittest.TestCase):
@@ -239,13 +280,26 @@ class TestDiagnostics(unittest.TestCase):
         # every answer is a<level>, every level 3 then 5: no question agrees
         self.assertEqual(got["answers"][(MODEL, "PV")], (0.0, 1))
 
+    def test_a_run_without_a_score_is_left_out_of_the_median_and_the_mode(self):
+        vid = "CVE-2099-0001"
+        unrated = r.record("after", "wrong_yaml", 1, {}, scenario=True, answers={vid: r.factors(r.vector())})
+        unrated["answers"]["per_cve"][vid]["unrated"] = True
+        cells = cellmod.group([unrated, run("after", "wrong_yaml", 3, "score", 2)])
+        (row,) = diagnostics.null_table(cells, {"wrong_yaml": {"null": NULL}})
+        self.assertEqual(row["arms"], {(MODEL, "after"): (9.0, "medium", 1, 2)})
+        sc = {"null": [row], "fallback": None, "wrong_yaml": diagnostics.wrong_yaml(cells)}
+        text = "\n".join(report_scen.null_table(sc) + report_scen.wrong_yaml(sc))
+        self.assertIn(f"| {MODEL} after: 9.000 medium (2 runs, 1 scored) |", text)
+        self.assertIn(f"| {MODEL} | after | r1 | n/a | n/a | no rated answers.json entry |", text)
+
     def test_the_table_with_the_fallback(self):
         recs = [run("after", "wrong_yaml", 3, "score"), run("before", "wrong_yaml", 5, "score")]
         fallback = [run("after", "wrong_yaml", 9, "score"), run("before", "wrong_yaml", 1, "score")]
         (row,) = diagnostics.null_table(cellmod.group(recs), {"wrong_yaml": {"null": NULL}},
                                         diagnostics.fallback_cells(fallback))
-        self.assertEqual(row["arms"], {(MODEL, "after"): (9.0, "medium", 1), (MODEL, "before"): (25.0, "medium", 1)})
-        self.assertEqual(row["fallback"], (81.0, "critical", 1))
+        self.assertEqual(row["arms"], {(MODEL, "after"): (9.0, "medium", 1, 1),
+                                       (MODEL, "before"): (25.0, "medium", 1, 1)})
+        self.assertEqual(row["fallback"], (81.0, "critical", 1, 1))
         self.assertEqual([x[:3] for x in diagnostics.wrong_yaml(cellmod.group(recs))[(MODEL, "after")]],
                          [(1, 9.0, "medium")])
 

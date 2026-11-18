@@ -8,6 +8,7 @@ replicate whose run is complete but not usable has no scores, and says why. Ever
 counts in its cell's attempts, failures, calls and cost; one whose arm or replicate is unknown is never a run.
 """
 import collections
+import os
 import re
 from typing import NamedTuple
 
@@ -26,6 +27,15 @@ class Cell(NamedTuple):
     unit: object
     batch: object
     commit: object
+
+
+class Unnamed(NamedTuple):
+    """A campaign no record and no dispatch log names: told apart by its input's canonical path, shown by the
+    input's own name, so that two inputs of one name are two campaigns."""
+    path: str
+
+    def __str__(self):
+        return os.path.basename(self.path)
 
 
 def corpus(rec):

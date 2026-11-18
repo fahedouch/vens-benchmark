@@ -8,9 +8,9 @@ model with the after's conservative fallback. Each is printed and judged by noth
 - The table against the null model (baseline.py, frozen): per scenario, its four aggregates scored under each arm's
   own rule, the before's ((TA + VU) / 2) x ((T + B) / 2) and its 60/40/20/5 thresholds, the after's L x max(T, B)
   with L = (TA + VU) / 2 and OWASP's matrix; beside them each arm's median score and most common severity per model,
-  and the after's fallback: the after's own binary with every answer forced to cannot_tell (vens's mock with
-  VENS_MOCK_LLM_CANNOT_TELL), every model-answered factor at its worst case. The fallback is not a null model and
-  measures no benefit of the model's answers.
+  over the runs that give one, and the after's fallback: the after's own binary with every answer forced to
+  cannot_tell (vens's mock with VENS_MOCK_LLM_CANNOT_TELL), every model-answered factor at its worst case. The
+  fallback is not a null model and measures no benefit of the model's answers.
 """
 import collections
 import itertools
@@ -90,11 +90,12 @@ def wrong_yaml(cells):
 
 
 def summary(recs):
-    """(median score, most common severity or None on a tie, runs)."""
-    scores = [families.value(x, "score") for x in recs]
-    sevs = collections.Counter(families.value(x, "severity") for x in recs).most_common()
+    """(median score, most common severity or None on a tie, runs with a score, runs), over the runs that give each:
+    a run whose one CVE carries no score or no severity gives none."""
+    scores = [v for v in (families.value(x, "score") for x in recs) if v is not None]
+    sevs = collections.Counter(v for v in (families.value(x, "severity") for x in recs) if v is not None).most_common()
     mode = sevs[0][0] if sevs and (len(sevs) == 1 or sevs[0][1] > sevs[1][1]) else None
-    return (statistics.median(scores) if scores else None), mode, len(recs)
+    return (statistics.median(scores) if scores else None), mode, len(scores), len(recs)
 
 
 def null_table(cells, scen, fallback=None):

@@ -12,7 +12,8 @@ spreads, the cross-model figures, the floor and #340's report on the demo scan.
   against the before by the non-inferiority bound on mean(after) / mean(before). The two arms score with two formulas
   over two level grids, so beside it, a diagnostic: W and H of the before rescored under L x max(T, B) from its own
   vector, and their ratio to the after's.
-- Cross-model spread: per context and arm, for each model pair, the cross-model MPD, Delta and its gap test.
+- Cross-model spread: per context and arm, for each model pair, over the CVEs both models' runs rate, the
+  cross-model MPD, Delta and its gap test; a pair with no such CVE is unavailable, none of them computed.
 - Band agreement: per context, arm and model pair, the mean over the cross-model run pairs of the share of CVEs whose
   two severities are equal; the same over each model's own run pairs is its floor.
 - #340's report: per run, the distinct values of T, B and max(T, B), the shares of CVEs where B > T, T > B and B = T,
@@ -166,28 +167,42 @@ def spreads(cells):
     return out
 
 
+NO_COMMON = "unavailable: no CVE both models' runs rate"
+
+
 def cross_model(cells):
     """Per (campaign, context, arm, model a, model b): the CVEs, the two within-model MPDs, the cross MPD, Delta and
-    its p, and the band agreement, cross and within each model."""
+    its p with the gap test's key, and the band agreement, cross and within each model; without a CVE both models'
+    runs rate, none of them, the pair unavailable."""
     out = {}
+    key_of = {id(c): k for k, c in cells.items()}
     for (campaign, ctx, arm), models in sorted(model_pairs(cells).items(), key=lambda kv: str(kv[0])):
         for a, b in itertools.combinations(sorted(models), 2):
             ra, rb = runs_of(models[a]), runs_of(models[b])
             ids = cellmod.common(ra + rb)
+            key = gap_key(key_of[id(models[a])], key_of[id(models[b])])
+            row = {"cves": len(ids), "replicates": (sorted(models[a]["runs"]), sorted(models[b]["runs"])),
+                   "key": key, "mpd": (None, None), "cross": None, "delta": None, "p": None, "bands": None,
+                   "bands_within": (None, None)}
+            if not ids:
+                out[(campaign, ctx, arm, a, b)] = {**row, "unavailable": NO_COMMON}
+                continue
             ma, mb = cellmod.matrix(ra, ids), cellmod.matrix(rb, ids)
-            d, p = stats.gap_test(ma, mb, stats.rng_for(gap_key(campaign, arm, ctx, a, b)))
+            d, p = stats.gap_test(ma, mb, stats.rng_for(key))
             sa, sb = cellmod.matrix(ra, ids, "severity"), cellmod.matrix(rb, ids, "severity")
             out[(campaign, ctx, arm, a, b)] = {
-                "cves": len(ids), "replicates": (sorted(models[a]["runs"]), sorted(models[b]["runs"])),
-                "mpd": (stats.mpd(ma), stats.mpd(mb)), "cross": stats.cross_mpd(ma, mb), "delta": d, "p": p,
+                **row, "mpd": (stats.mpd(ma), stats.mpd(mb)), "cross": stats.cross_mpd(ma, mb), "delta": d, "p": p,
                 "bands": stats.agreement(sa, sb),
                 "bands_within": (stats.within_agreement(sa), stats.within_agreement(sb))}
     return out
 
 
-def gap_key(campaign, arm, ctx, a, b):
-    """The gap test's key: its draws come from SeedSequence([310, crc32(key)])."""
-    return f"gap|{campaign}|{arm}|{ctx}|{a}|{b}"
+def gap_key(cell_a, cell_b):
+    """The gap test's key, from the two cells' own fields, never their labels: its draws come from
+    SeedSequence([310, crc32(key)]). A campaign enters by its name, an unnamed one by its input's own name, the same
+    wherever the input lies."""
+    return (f"gap|{cell_a.campaign}|{cell_a.arm}|{cell_a.batch}|{cell_a.unit}|{cell_a.provider}/{cell_a.model}|"
+            f"{cell_b.provider}/{cell_b.model}")
 
 
 def impact_report(rec):

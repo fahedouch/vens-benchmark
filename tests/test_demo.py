@@ -3,7 +3,7 @@ import math
 import unittest
 from fractions import Fraction
 
-from chain import cdx, demo, legal, report
+from chain import cdx, demo, legal, report, stats
 from chain import cells as cellmod
 from tests import records as r
 from tests import support as s
@@ -175,6 +175,37 @@ class TestCrossModel(unittest.TestCase):
         self.assertEqual((got["cross"], got["delta"], got["p"], got["mpd"]), (4.0, 2.0, 2 / 6, (2.0, 2.0)))
         # cross pairs low-low, low-high, low-low, low-high; within the first model 1, the second 0
         self.assertEqual((got["bands"], got["bands_within"]), (0.5, (1.0, 0.0)))
+
+    def test_no_cve_both_models_rate_is_unavailable(self):
+        rated = lambda vid, x, rep, model: r.record("after", CTX, rep, {vid: r.scored([x])["CVE-2099-0000"]},
+                                                    model=model)
+        recs = [rated("CVE-A", 1, 1, s.MODEL), rated("CVE-A", 3, 2, s.MODEL), rated("CVE-B", 5, 1, "m2"),
+                rated("CVE-B", 9, 2, "m2")]
+        cross = demo.cross_model(cellmod.group(recs))
+        (got,) = cross.values()
+        self.assertEqual((got["cves"], got["mpd"], got["cross"], got["delta"], got["p"], got["bands"],
+                          got["unavailable"]), (0, (None, None), None, None, None, None, demo.NO_COMMON))
+        self.assertIn(f"- None, {CTX}, after, {MODEL} / openai/m2: {demo.NO_COMMON}.", report.cross({"cross": cross}))
+        # every statistic on a matrix without a column is None, never a NaN read as a figure
+        none = [[], []]
+        self.assertEqual((stats.mpd(none), stats.cross_mpd(none, none), stats.delta(none, none),
+                          stats.gap_test(none, none, stats.rng_for("k")), stats.agreement(none, none),
+                          stats.within_agreement(none)), (None, None, None, (None, None), None, None))
+        self.assertEqual({k: v for k, v in stats.floor(none).items() if v is not None}, {"runs": 2, "cves": 0})
+        self.assertTrue(all(math.isnan(x) for x in list(stats.run_spread(none)) + list(stats.run_entropy(none))))
+        self.assertEqual(stats.noninferiority([math.nan, 1.0], [1.0, 2.0]), (None, None, None))
+
+    def test_the_gap_tests_key_is_the_cells_own(self):
+        pair = [r.record("after", CTX, rep, r.scored([x]), model=m, batch=10)
+                for m in (s.MODEL, "m2") for rep, x in ((1, 0), (2, 2))]
+        key = f"gap|None|after|10|{CTX}|openai/{s.MODEL}|openai/m2"
+        alone = demo.cross_model(cellmod.group(pair))
+        # a batch-1 run read beside them relabels their arm "after, batch 10", not their key
+        beside = demo.cross_model(cellmod.group(pair + [r.record("after", CTX, 1, r.scored([0]))]))
+        self.assertEqual(([x["key"] for x in alone.values()], [k[2] for k in beside]), ([key], ["after, batch 10"]))
+        self.assertEqual([x["key"] for x in beside.values()], [key])
+        self.assertIn(f"- None, {CTX}, after, batch 10, {MODEL} batch 10 / openai/m2 batch 10: key `{key}`.",
+                      report.cross({"cross": beside}))
 
     def test_models_are_paired_at_one_batch_size(self):
         recs = [r.record("after", CTX, 1, r.scored([0])), r.record("after", CTX, 1, r.scored([0]), model="m2"),

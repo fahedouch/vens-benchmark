@@ -19,6 +19,8 @@ crc32(key)]), so that a test's figures are the same on each reading.
 - The floor: a model's MPD, its 3-run spread (the mean over the CVEs of max - min over three runs) averaged over every
   triple of its runs, with the smallest and the largest, and its N-run spread over all its runs.
 - Agreement: the mean over run pairs of the share of CVEs whose two labels (severities, answers) are equal.
+A matrix without a column, no CVE every compared run rates, gives none of these: each is None, never a NaN that a
+comparison would read as a figure.
 """
 import itertools
 import math
@@ -47,17 +49,21 @@ def pair_matrix(runs):
     return np.abs(runs[:, None, :] - runs[None, :, :]).mean(axis=2)
 
 
+def _no_cve(m):
+    return m.ndim != 2 or m.shape[1] == 0
+
+
 def mpd(runs):
-    """The within-cell mean pairwise difference; None below two runs."""
+    """The within-cell mean pairwise difference; None below two runs or without a CVE."""
     runs = cell(runs)
-    if len(runs) < 2:
+    if len(runs) < 2 or _no_cve(runs):
         return None
     return float(pair_matrix(runs)[np.triu_indices(len(runs), 1)].mean())
 
 
 def cross_mpd(runs_a, runs_b):
     a, b = cell(runs_a), cell(runs_b)
-    if not len(a) or not len(b):
+    if not len(a) or not len(b) or _no_cve(a) or _no_cve(b):
         return None
     return float(np.abs(a[:, None, :] - b[None, :, :]).mean())
 
@@ -73,9 +79,9 @@ def _delta_labels(D, labels):
 
 
 def delta(runs_a, runs_b):
-    """Delta; None unless each model has two runs."""
+    """Delta; None unless each model has two runs, and without a CVE."""
     a, b = cell(runs_a), cell(runs_b)
-    if len(a) < 2 or len(b) < 2:
+    if len(a) < 2 or len(b) < 2 or _no_cve(a) or _no_cve(b):
         return None
     D = pair_matrix(np.vstack([a, b]))
     return float(_delta_labels(D, np.r_[np.ones(len(a)), np.zeros(len(b))][None, :])[0])
@@ -87,9 +93,9 @@ def _relabellings(n, k):
 
 
 def gap_test(runs_a, runs_b, rng, n_perm=N_PERM):
-    """(Delta, p); (None, None) unless each model has two runs."""
+    """(Delta, p); (None, None) unless each model has two runs, and without a CVE."""
     a, b = cell(runs_a), cell(runs_b)
-    if len(a) < 2 or len(b) < 2:
+    if len(a) < 2 or len(b) < 2 or _no_cve(a) or _no_cve(b):
         return None, None
     D = pair_matrix(np.vstack([a, b]))
     na, n = len(a), len(a) + len(b)
@@ -109,15 +115,19 @@ def gap_test(runs_a, runs_b, rng, n_perm=N_PERM):
 def run_spread(runs):
     """W per run; a run of one CVE has none (nan)."""
     runs = cell(runs)
-    if runs.shape[1] < 2:
+    if runs.ndim != 2 or runs.shape[1] < 2:
         return np.full(len(runs), np.nan)
     return runs.std(axis=1, ddof=1)
 
 
 def run_entropy(runs):
-    """H per run, its scores rounded to two decimals, equal rounded scores one value."""
+    """H per run, its scores rounded to two decimals, equal rounded scores one value; a run without a CVE has none
+    (nan)."""
     out = []
     for row in np.round(cell(runs), 2):
+        if not len(row):
+            out.append(float("nan"))
+            continue
         _, counts = np.unique(row, return_counts=True)
         p = counts / counts.sum()
         out.append(float(-(p * np.log2(p)).sum()) + 0.0)
@@ -145,9 +155,10 @@ def jackknife_se(theta, cells):
 
 def noninferiority(per_run_arm, per_run_ctrl, margin=MARGIN, z=Z):
     """(ratio, lower bound, 'pass' | 'fail' at margin) of mean(arm) / mean(control); (ratio, None, None) when a cell
-    has fewer than two runs, the jackknife needing one left out."""
+    has fewer than two runs, the jackknife needing one left out; (None, None, None) when a run has no figure (nan: W
+    below two CVEs, H without one)."""
     x, y = np.asarray(per_run_arm, float), np.asarray(per_run_ctrl, float)
-    if not len(x) or not len(y):
+    if not len(x) or not len(y) or np.isnan(x).any() or np.isnan(y).any():
         return None, None, None
     if y.mean() == 0:
         return None, None, "pass"
@@ -166,13 +177,16 @@ def noninferiority(per_run_arm, per_run_ctrl, margin=MARGIN, z=Z):
 
 def floor(runs):
     """{mpd, tri_mean, tri_min, tri_max, spread, runs, cves}; the triples' figures None below three runs, the MPD
-    and the N-run spread None below two."""
+    and the N-run spread None below two, all of them None without a CVE."""
     m = cell(runs)
+    if _no_cve(m):
+        return {"mpd": None, "tri_mean": None, "tri_min": None, "tri_max": None, "spread": None, "runs": len(m),
+                "cves": 0}
     tri = [float((m[list(t)].max(0) - m[list(t)].min(0)).mean()) for t in itertools.combinations(range(len(m)), 3)]
     return {"mpd": mpd(m), "tri_mean": float(np.mean(tri)) if tri else None, "tri_min": min(tri, default=None),
             "tri_max": max(tri, default=None),
             "spread": float((m.max(0) - m.min(0)).mean()) if len(m) > 1 else None, "runs": len(m),
-            "cves": m.shape[1] if m.ndim == 2 else 0}
+            "cves": m.shape[1]}
 
 
 def _share_equal(x, y):

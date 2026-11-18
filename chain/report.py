@@ -37,7 +37,8 @@ def ordered(d):
 
 def records(data):
     out = ["## Records", "", "Inputs, each read by chain/read.py, and the campaign each one's attempts belong to (its "
-           "dispatch log's, its campaign.json's, else the input's own name):", ""]
+           "dispatch log's, its campaign.json's, else the input's own name, two inputs of one name two campaigns "
+           "never pooled):", ""]
     out += [f"- `{path}`: {n} attempts, campaign {', '.join(map(str, data['campaigns'].get(path, []))) or 'none'}"
             for path, n in data["inputs"]] + [""]
     out += [f"- {' · '.join(map(str, k))}: runs at {len(commits)} vens commits ({', '.join(map(str, commits))}), "
@@ -192,9 +193,11 @@ def cross(data):
            "cross-model MPD, Delta (the cross-model MPD less the mean of the two within-model ones) and its gap test, "
            "10,000 permutations of whole runs, seeded per test; band agreement, the mean over cross-model run pairs "
            "of the share of CVEs with equal severities, and each model's own (its floor). Delta needs two runs per "
-           "model. The permutations draw from SeedSequence([310, crc32(key)]), the key "
-           "`gap|<campaign>|<arm>|<context>|<model a>|<model b>`: 0B's tests had other keys, so these p are not "
-           "0B's, though Delta and the MPDs are computed as 0B computed them.", ""]
+           "model. The permutations draw from SeedSequence([310, crc32(key)]), each pair's key, listed under the "
+           "table, built from its two cells' own fields, `gap|<campaign>|<arm>|<batch size>|<context>|<provider/model "
+           "a>|<provider/model b>`, an unnamed campaign by its input's own name: 0B's tests had other keys, so these p "
+           "are not 0B's, though Delta and the MPDs are computed as 0B computed them. A pair whose runs share no "
+           "rated CVE is unavailable, none of its figures computed.", ""]
     rows = [[campaign, ctx, arm, a, b,
              f"{cellmod.replicates(r['replicates'][0])} / {cellmod.replicates(r['replicates'][1])}", r["cves"],
              num(r["mpd"][0], 2), num(r["mpd"][1], 2), num(r["cross"], 2), num(r["delta"], 2), num(r["p"], 4),
@@ -208,6 +211,9 @@ def cross(data):
             largest[(campaign, ctx, arm)] = (r["delta"], f"{a} / {b}")
     out += table(["campaign", "context", "arm", "model a", "model b", "replicates a / b", "CVEs", "MPD a", "MPD b",
                   "cross MPD", "Delta", "gap p", "bands", "bands a", "bands b"], rows)
+    out += ["Each pair's gap test:", ""] + [
+        f"- {campaign}, {ctx}, {arm}, {a} / {b}: " + (r["unavailable"] if r.get("unavailable") else f"key `{r['key']}`")
+        + "." for (campaign, ctx, arm, a, b), r in ordered(data["cross"])] + [""]
     return out + (["The largest Delta over the pairs, which step 5's target bounds: " + "; ".join(
         f"{cp}, {ctx}, {arm}: {num(d, 2)} ({pair})" for (cp, ctx, arm), (d, pair) in sorted(largest.items(), key=str))
         + ".", ""] if largest else [])
@@ -308,12 +314,14 @@ def measured(data):
 
 
 def estimated(data):
-    out = ["### Estimated, per attempt (not measured)", "", f"{cost.LABEL}.", ""]
+    out = ["### Estimated, per attempt (not measured)", "", f"{cost.LABEL}. A cell none of whose attempts gives an "
+           "estimate has none, n/a, never 0.", ""]
     rows = []
     for k, led in ordered(data["ledgers"]):
-        est = led["estimate"]
-        rows.append([cellmod.label(k), num(sum(est.values()), 4), num(ledger.recovery_cost(led), 4),
-                     ", ".join(f"{kind} {num(v, 4)}" for kind, v in sorted(est.items())) or "none",
+        est, none = led["estimate"], led["estimate_unknown"] == led["attempts"]
+        rows.append([cellmod.label(k), NA if none else num(sum(est.values()), 4),
+                     NA if none else num(ledger.recovery_cost(led), 4),
+                     NA if none else ", ".join(f"{kind} {num(v, 4)}" for kind, v in sorted(est.items())) or "none",
                      led["estimate_unknown"]])
     return out + table(["cell", "estimate, USD", "of which recovery calls", "by kind", "attempts without one"], rows)
 

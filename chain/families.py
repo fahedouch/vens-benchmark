@@ -11,11 +11,13 @@ verdict on the medians over each scenario's runs (the most common value for a se
 analysis read them. The kind is the check's: carried and new say pass or fail, a diagnostic prints its values and is
 judged by nothing; which statistic over replicates a verdict takes is written before the run.
 
-The move between two runs of the after: none when no factor of the quantity changes level; Go's when every factor
-that changes took its level from Go in both runs (constant, config, floor), or the same answer in both, which Go
-crossed with a declared field (Loss of confidentiality's column, Loss of accountability's traceability, Privacy
-violation's cap); the model's when every factor that changes was answered differently; mixed otherwise. The before
-publishes four aggregates copied into its vector, with no source: its moves are not attributed.
+On one scenario, each replicate's value comes with the levels of the quantity's factors in the after and the source of
+each. The move between two runs of the after: none when no factor of the quantity changes level; Go's when every
+factor that changes took its level from Go in both runs (constant, config, floor), or the same answer in both, which
+Go crossed with a declared field (Loss of confidentiality's column, Loss of accountability's traceability, Privacy
+violation's cap); the model's when every factor that changes was answered in both runs, the two answers differing;
+mixed otherwise, a factor Go set in one run and the model answered in the other among them. The before publishes four
+aggregates copied into its vector, with no source: its moves are not attributed.
 """
 import collections
 import statistics
@@ -27,6 +29,7 @@ from chain import cells as cellmod
 GROUPS = {"L": cdx.FACTORS[:8], "TA": cdx.FACTORS[:4], "VU": cdx.FACTORS[4:8], "T": cdx.FACTORS[8:12],
           "B": cdx.FACTORS[12:], "score": cdx.FACTORS, "severity": cdx.FACTORS}
 GO_SOURCES = ("constant", "config", "floor")
+ANSWER = "answer"
 NONE, GO, MODEL, MIXED = "none", "Go's", "the model's", "mixed"
 NULL_FIELD = {"T": "technical_impact", "B": "business_impact"}
 
@@ -38,14 +41,19 @@ def who(cell):
 
 def scenario_runs(cells):
     """{(campaign's model, scenario, arm): {"runs": {replicate: record}, "replicates": every replicate attempted}}; a
-    scenario whose arm holds two vens commits in one campaign is left out."""
-    out, clash = {}, set()
+    scenario whose arm holds complete runs at two vens commits in one campaign is left out, as cells.conflicts() finds
+    it, and attempts that never completed at another commit only count as attempted."""
+    out, read, clash = {}, set(), set()
     for k, c in cells.items():
         if k.corpus == cellmod.SCENARIOS and k.arm in cellmod.ARMS:
             g = (who(k), k.unit, k.arm)
-            clash |= {g} if g in out else set()
-            reps = {r["what"]["replicate"] for r in c["attempts"] if isinstance(r["what"].get("replicate"), int)}
-            out[g] = {"runs": c["runs"], "replicates": reps | set(c["runs"])}
+            r = out.setdefault(g, {"runs": {}, "replicates": set()})
+            r["replicates"] |= {x["what"]["replicate"] for x in c["attempts"]
+                                if isinstance(x["what"].get("replicate"), int)} | set(c["runs"])
+            if c["runs"] or c["unusable"]:
+                clash |= {g} if g in read else set()
+                read.add(g)
+                r["runs"] = c["runs"]
     return {g: r for g, r in out.items() if g not in clash}
 
 
@@ -99,16 +107,34 @@ def moved(rec_a, rec_b, quantity):
     return out
 
 
+def _names(quantity):
+    return (quantity.split()[1],) if quantity.startswith("answer ") else GROUPS.get(quantity, (quantity,))
+
+
 def sources(rec_a, rec_b, quantity):
     """{(source a, source b): [factors]} of the quantity's factors, None without answers.json."""
     fa, fb = factors(rec_a), factors(rec_b)
     if fa is None or fb is None:
         return None
-    names = (quantity.split()[1],) if quantity.startswith("answer ") else GROUPS.get(quantity, (quantity,))
     out = {}
-    for f in names:
+    for f in _names(quantity):
         out.setdefault(((fa.get(f) or {}).get("source"), (fb.get(f) or {}).get("source")), []).append(f)
     return out
+
+
+def levels(rec, quantity):
+    """{factor: (level, source)} of the quantity's factors in one run, None without answers.json."""
+    fs = factors(rec)
+    if fs is None:
+        return None
+    return {f: (fs[f]["level"], fs[f]["source"]) for f in _names(quantity) if f in fs}
+
+
+def _by(source_a, source_b, same):
+    """Whose a changed factor's move is: Go's, the model's, or neither alone (mixed)."""
+    if same or (source_a in GO_SOURCES and source_b in GO_SOURCES):
+        return GO
+    return MODEL if source_a == source_b == ANSWER else MIXED
 
 
 def move(rec_a, rec_b, quantity):
@@ -120,8 +146,8 @@ def move(rec_a, rec_b, quantity):
         return None
     if not m:
         return NONE
-    go = [sa in GO_SOURCES and sb in GO_SOURCES or same for _, _, _, sa, sb, same in m]
-    return GO if all(go) else MODEL if not any(go) else MIXED
+    by = {_by(sa, sb, same) for _, _, _, sa, sb, same in m}
+    return by.pop() if len(by) == 1 else MIXED
 
 
 def _numeric(v):
@@ -185,7 +211,8 @@ def _ok_single(check, arm, sid, v, scen):
 
 
 def single(check, arm, sid, model, runs, scen):
-    """One scenario of one check in one arm for one model; None when it was not run."""
+    """One scenario of one check in one arm for one model, each replicate's value with, in the after, the levels of
+    the quantity's factors and their sources; None when it was not run."""
     r = runs.get((model, sid, arm))
     if r is None:
         return None
@@ -197,7 +224,8 @@ def single(check, arm, sid, model, runs, scen):
         if ok is None:
             missing.append(rep)
         else:
-            per.append({"replicate": rep, "value": v, "ok": ok})
+            per.append({"replicate": rep, "value": v, "ok": ok,
+                        "levels": levels(x, check.quantity) if arm == "after" else None})
     m = _summary([p["value"] for p in per])
     return {"item": sid, "per": per, "missing": missing, "median": (m, _ok_single(check, arm, sid, m, scen))}
 

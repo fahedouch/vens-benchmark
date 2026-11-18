@@ -11,7 +11,8 @@ with the same options; nothing here parses a record again. --demo names a vens-d
 archived scan is read for its report's CVEs; without it the two targets are unavailable, and say why.
 --fallback names a scenario campaign of the after on vens's mock with every answer cannot_tell
 (VENS_MOCK_LLM_CANNOT_TELL=cannot_tell), the after's conservative fallback: refused unless its flag names cannot_tell,
-its model is mock/mock, its after is the after's commit and every after answer it holds is cannot_tell. --usage names
+its model is mock/mock, its after is the after's commit, its corpus is the scenario campaigns' and every after answer
+it holds is cannot_tell. Scenario campaigns read together share one corpus, or are refused. --usage names
 the providers' usage exports copied into one CSV with a campaign column (chain/usage.py), the measured cost.
 --draw-list names the CVE ids earlier draws used, one per line or a TSV with a cve column: Opportunity's answers on the
 CVEs outside it are reported apart. --jar names the OWASP calculator's 1.0.1 JAR, its sha256 checked, for target (i);
@@ -63,7 +64,7 @@ def draw_list(path):
 
 def campaigns(inputs, lines):
     """campaign_of(record) and {input: [campaigns]}: a record's campaign is its campaign.json's, else its run's in the
-    dispatch log, else its input's own name."""
+    dispatch log, else its input's, told apart by the input's canonical path and shown by its own name."""
     logged = {run_id: line["campaign"] for run_id, attempts in (dispatch.index(lines) if lines else {}).items()
               for line in attempts.values()}
     named, per_input = {}, {}
@@ -71,7 +72,7 @@ def campaigns(inputs, lines):
         for rec in records:
             w = rec["what"]
             named[id(rec)] = w.get("campaign") or logged.get(w.get("run_id")) or \
-                os.path.basename(os.path.normpath(path))
+                cellmod.Unnamed(os.path.realpath(path))
         per_input[path] = sorted({named[id(r)] for r in records}, key=str)
     return (lambda rec: named.get(id(rec))), per_input
 
@@ -128,8 +129,8 @@ def java_targets(cells, reports, jar):
     return {id(recs[n]): {vid: r["accepted"] for vid, r in got[n].items()} for n in got}
 
 
-def _unqualified(doc, records, after_commit):
-    """Why a campaign is not the after's fallback; empty when it is."""
+def _unqualified(doc, after_commit, got_corpus, corpus):
+    """Why a campaign, by its campaign.json and its corpus copy, is not the after's fallback; empty when it may be."""
     flag = (doc.get("mock_env") or {}).get(CANNOT_TELL_ENV, "")
     why = [] if CANNOT_TELL in [v.strip() for v in flag.split(",")] else [
         f"{CANNOT_TELL_ENV} is {flag!r}: every question is forced to cannot_tell only when the list names "
@@ -138,23 +139,34 @@ def _unqualified(doc, records, after_commit):
     why += [] if models == [("mock", "mock")] else [f"its models are {models}, not mock/mock alone"]
     got = doc["arms"]["after"]["vens_sha"]
     why += [f"its after is {got}, not {after_commit}"] if got != after_commit else []
+    return why + ([f"its corpus is {got_corpus}, not the scenario campaigns' {corpus}"] if got_corpus != corpus else [])
+
+
+def _not_cannot_tell(records):
+    """Why a fallback's after runs are not every answer cannot_tell; empty when they are."""
     after = [r for r in records if r["what"].get("arm") == "after" and r["outcome"] == "complete"]
     n = sum(r["answers"] is None for r in after)
-    why += [f"{n} complete after run(s) without answers.json"] if n else []
+    why = [f"{n} complete after run(s) without answers.json"] if n else []
     other = sum(f.get("answer") not in (None, CANNOT_TELL) for r in after for e in (r["answers"] or {}).get(
         "per_cve", {}).values() for f in e["factors"].values())
     return why + ([f"{other} answer(s) other than {CANNOT_TELL}"] if other else [])
 
 
-def fallback(path, after_commit):
+def fallback(path, after_commit, freeze=None, corpus=None):
     """A fallback campaign's records and what names it in the report; refused unless it is the after's own binary on
-    vens's mock with every answer cannot_tell."""
+    vens's mock with every answer cannot_tell, on the scenario campaigns' corpus (corpus, its sha256), read under the
+    freeze they were read under."""
     if after_commit is None:
         raise InputError(f"{path}: no after commit to check the fallback against: give --commit after=SHA or a "
                          f"scenario campaign")
+    if corpus is None:
+        raise InputError(f"{path}: no scenario campaign read, whose corpus the fallback must share")
     doc = campaign._campaign(path)
-    records = read.read_any(path, commits={"after": after_commit, "before": doc["arms"]["before"]["vens_sha"]})
-    why = _unqualified(doc, records, after_commit)
+    why = _unqualified(doc, after_commit, corpus_digest(path), corpus)
+    if not why:
+        records = read.read_any(path, commits={"after": after_commit, "before": doc["arms"]["before"]["vens_sha"]},
+                                freeze=freeze)
+        why = _not_cannot_tell(records)
     if why:
         raise InputError(f"{path}: not the after's fallback: {'; '.join(why)}")
     flag = doc["mock_env"][CANNOT_TELL_ENV]
@@ -173,12 +185,27 @@ def after_commit(a, inputs):
     return next(iter(seen), None)
 
 
+def corpus_digest(path):
+    """The sha256 of a scenario campaign's corpus copy: its freeze-scenarios.json, whose files the reader checks the
+    copy's scenarios against."""
+    return digest(os.path.join(path, campaign.FREEZE))
+
+
+def scenario_corpus(inputs):
+    """(folder, sha256) of the scenario campaigns' corpus copy, the first campaign's; None without a campaign.
+    Refused when two campaigns ran on different corpora."""
+    found = [(path, corpus_digest(path)) for path, records in inputs
+             if any(cellmod.corpus(r) == cellmod.SCENARIOS for r in records)]
+    if len({sha for _, sha in found}) > 1:
+        raise InputError("the scenario campaigns ran on different corpora, their freezes "
+                         + "; ".join(f"{path} {sha}" for path, sha in found) + ": read one corpus's campaigns at once")
+    return found[0] if found else None
+
+
 def scenario_info(inputs):
-    """verdicts.load() of the first scenario campaign's corpus copy, None without a campaign."""
-    for path, records in inputs:
-        if any(cellmod.corpus(r) == cellmod.SCENARIOS for r in records):
-            return verdicts.load(os.path.join(path, campaign.SCENARIOS))
-    return None
+    """verdicts.load() of the scenario campaigns' one corpus copy, None without a campaign."""
+    found = scenario_corpus(inputs)
+    return None if found is None else verdicts.load(os.path.join(found[0], campaign.SCENARIOS))
 
 
 def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, lines=None):
@@ -190,7 +217,7 @@ def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, li
     java = java_targets(cells, reports, jar)
     out = {"inputs": [(p, len(recs)) for p, recs in inputs], "campaigns": per_input, "cells": cells,
            "conflicts": cellmod.conflicts(cells), "java": java is not None, "usage": usage, "draws": draws,
-           "batches": sorted({r["what"].get("batch_size") for r in records} - {None}),
+           "batches": sorted({k.batch for k, c in cells.items() if c["runs"] or c["unusable"]} - {None}),
            "targets": demo.targets(cells, reports.ids, (lambda r: java.get(id(r))) if java is not None else None),
            "spreads": demo.spreads(cells), "cross": demo.cross_model(cells), "impacts": demo.impacts(cells),
            "floors": demo.floors(cells), "ledgers": ledger.ledgers(cells), "scenarios": None,
@@ -252,8 +279,10 @@ def run(a):
     for path, records in inputs:
         reports.note(path, records)
     named = lambda path: {"name": os.path.basename(path), "sha256": digest(path)}
+    scen = scenario_corpus(inputs)
     data = compute(inputs, reports, jar=a.jar, lines=lines,
-                   fallback=fallback(a.fallback, after_commit(a, inputs)) if a.fallback else None,
+                   fallback=fallback(a.fallback, after_commit(a, inputs), a.freeze_sha256,
+                                     scen and scen[1]) if a.fallback else None,
                    usage={"rows": usage.load(a.usage), **named(a.usage)} if a.usage else None,
                    draws={"ids": draw_list(a.draw_list), **named(a.draw_list)} if a.draw_list else None)
     return report.render(data, reader=own_commit())

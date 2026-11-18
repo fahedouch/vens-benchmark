@@ -6,6 +6,7 @@ import unittest
 from chain import ledger, report, usage
 from chain import cells as cellmod
 from tests import records as r
+from tests import support as s
 
 CTX = "internal"
 HEADER = ",".join(usage.FIELDS)
@@ -60,6 +61,11 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(ledger.wall_seconds(recs[0]), 150.0)
         self.assertIsNone(ledger.wall_seconds(recs[1]))
 
+    def test_a_cell_without_any_estimate_is_na_not_zero(self):
+        recs = [r.record("after", CTX, 1, r.scored([1])), r.record("after", CTX, 2, None, outcome="failed")]
+        text = "\n".join(report.estimated({"ledgers": ledger.ledgers(cellmod.group(recs))}))
+        self.assertIn(f"| None · after · openai/{s.MODEL} · {CTX} | n/a | n/a | n/a | 2 |", text)
+
     def test_a_cause_without_its_step(self):
         rec = r.record("before", CTX, 1, None, outcome="failed",
                        failure={"kind": None, "cause": None, "reason": "no provenance.json: the job failed"})
@@ -90,11 +96,19 @@ class TestUsage(unittest.TestCase):
 
     def test_a_key_both_arms_share_gives_no_arm_total(self):
         rows = self.load(HEADER, "c1,2026-11-20,openai,k,before,m,1,10,0,1,0.01",
-                         "c1,2026-11-20,openai,k,after,m,1,10,0,1,0.01",
+                         "c1,2026-11-21,openai,k,after,m,1,10,0,1,0.01",
                          "c1,2026-11-20,anthropic,k2,after,m2,1,10,0,1,")
         kept, hidden = usage.by_arm(rows)
         self.assertEqual(hidden, {("c1", "openai"): "key k carries after, before"})
         self.assertEqual([r["provider"] for r in kept], ["anthropic"])
+
+    def test_a_key_day_and_model_twice_is_refused(self):
+        row = "c1,2026-11-20,openai,k,after,m,1,10,0,1,0.01"
+        why = r"usage\.csv:3: openai key k on 2026-11-20 for m is line 2's already, campaign c1"
+        for again in (row, "c2,2026-11-20,openai,k,after,m,1,10,0,1,0.01"):
+            with self.subTest(again=again), self.assertRaisesRegex(usage.UsageError, why):
+                self.load(HEADER, row, again)
+        self.assertEqual(len(self.load(HEADER, row, "c1,2026-11-20,openai,k,after,m2,1,10,0,1,0.01")), 2)
 
     def test_refused_rows(self):
         for bad in ("c1,2026-11-20,openai,k,both,m,1,1,1,1,1", "c1,20/11/2026,openai,k,,m,1,1,1,1,1",

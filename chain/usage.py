@@ -7,11 +7,12 @@ provider's console exports usage by day and key; the rows are copied as exported
     c1,2026-11-20,openai,key-after,after,gpt-5.4-mini-2026-03-17,694,1250000,0,61000,0.42
 
 campaign names the campaign whose runs the key's usage that day is (an export spanning several campaigns gives each
-its rows, which the key and day rule keeps apart); day is the UTC day (YYYY-MM-DD); arm is before or after for a key
-one arm used alone, empty for a key shared with other runs, whose rows count in the campaign's total only; an empty
-number is one the export does not give (an Anthropic export gives tokens, not dollars), never 0, and every number is
-finite. Per arm totals exist only with a key per arm and provider: a key that carries both arms gives none. The CSV
-holds key names, never key values; the exports themselves stay outside the repository.
+its rows, which the key and day rule keeps apart: a provider's key, day and model is one row, of one campaign); day
+is the UTC day (YYYY-MM-DD); arm is before or after for a key one arm used alone, empty for a key shared with other
+runs, whose rows count in the campaign's total only; an empty number is one the export does not give (an Anthropic
+export gives tokens, not dollars), never 0, and every number is finite. Per arm totals exist only with a key per arm
+and provider: a key that carries both arms gives none. The CSV holds key names, never key values; the exports
+themselves stay outside the repository.
 """
 import collections
 import csv
@@ -42,12 +43,13 @@ def _number(text, where):
 
 
 def load(path):
-    """The rows, each checked: a day, a provider, a key, an arm or none, a model, numbers or empty."""
+    """The rows, each checked: a day, a provider, a key, an arm or none, a model, numbers or empty; and no provider's
+    key, day and model twice, the same campaign's or two campaigns'."""
     with open(path, encoding="utf-8", newline="") as fh:
         reader = csv.DictReader(fh)
         if tuple(reader.fieldnames or ()) != FIELDS:
             raise UsageError(f"{path}: its header is not {','.join(FIELDS)}")
-        rows = []
+        rows, seen = [], {}
         for n, row in enumerate(reader, 2):
             where = f"{path}:{n}"
             if not row["campaign"] or not _DAY.fullmatch(row["day"] or "") or not all(
@@ -55,6 +57,13 @@ def load(path):
                 raise UsageError(f"{where}: a row needs a campaign, a day (YYYY-MM-DD), a provider, a key and a model")
             if row["arm"] not in ARMS:
                 raise UsageError(f"{where}: arm {row['arm']!r}, not before, after or empty")
+            same = (row["provider"], row["key"], row["day"], row["model"])
+            if same in seen:
+                line, campaign = seen[same]
+                raise UsageError(f"{where}: {row['provider']} key {row['key']} on {row['day']} for {row['model']} is "
+                                 f"line {line}'s already, campaign {campaign}: one row per key, day and model, of "
+                                 f"one campaign")
+            seen[same] = (n, row["campaign"])
             rows.append({**{k: row[k] for k in FIELDS[:6]}, **{k: _number(row[k], where) for k in NUMBERS}})
     return rows
 

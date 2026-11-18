@@ -52,16 +52,31 @@ def _moves(row):
         f"{f} {a}->{b} ({sa}/{sb}{', same answer' if same else ''})" for f, a, b, sa, sb, same in example["moved"])
 
 
-def _sources(row):
-    """The after's sources of the quantity's factors, replicate by replicate, a / b where the two differ; replicates
-    with the same sources share one entry."""
-    word = lambda a, b: str(a) if a == b else f"{a}/{b}"
+def _by_replicate(row, text_of):
+    """One entry per text, the replicates that give it, in a table cell: no pipe."""
     groups = {}
     for p in row["per"]:
-        if p.get("sources"):
-            text = "; ".join(f"{' '.join(fs)} {word(a, b)}" for (a, b), fs in p["sources"].items())
+        text = text_of(p)
+        if text:
             groups.setdefault(text, []).append(p["replicate"])
-    return " | ".join(f"{cellmod.replicates(reps)}: {text}" for text, reps in groups.items())
+    return "; ".join(f"{cellmod.replicates(reps)}: {text}" for text, reps in groups.items())
+
+
+def _sources(row):
+    """The after's sources of the quantity's factors, replicate by replicate, a / b where the two differ."""
+    word = lambda a, b: str(a) if a == b else f"{a}/{b}"
+    return _by_replicate(row, lambda p: ", ".join(f"{' '.join(fs)} {word(a, b)}"
+                                                  for (a, b), fs in (p.get("sources") or {}).items()))
+
+
+def _levels(row):
+    """On one scenario, the after's levels of the quantity's factors by source, replicate by replicate."""
+    def text(p):
+        by = {}
+        for f, (level, src) in (p.get("levels") or {}).items():
+            by.setdefault(src, []).append(f"{f}={level}")
+        return ", ".join(f"{' '.join(fs)} {src}" for src, fs in by.items())
+    return _by_replicate(row, text)
 
 
 def _check_rows(rows):
@@ -71,7 +86,7 @@ def _check_rows(rows):
         item = " / ".join(row["item"]) if c.pairs() else row["item"]
         out.append([c.label, r["arm"], r["kind"], r["model"], item, _diffs(row, c), _medians(row, c),
                     _verdict(row, r["kind"]), cellmod.replicates(row["missing"]) if row["missing"] else "none",
-                    _sources(row) if c.pairs() else "", _moves(row)])
+                    _sources(row) if c.pairs() else _levels(row), _moves(row)])
     return out
 
 
@@ -80,8 +95,10 @@ def families_section(sc):
            "Per check, arm and model, replicate by replicate, a pair's two runs of one replicate together; a "
            "diagnostic is printed and judged by nothing. The medians are over each scenario's runs, the most common "
            "value for a severity or an answer. The after's sources: where each factor of the quantity took its level, "
-           "replicate by replicate, a / b where the two differ. The move, in the after: none, Go's (levels Go "
-           "set, or one answer Go crossed with a declared field), the model's (answers that differ), or mixed.", ""]
+           "replicate by replicate, a / b where the two differ; on one scenario, each factor's level by its source. "
+           "The move, in the after: none, Go's (levels Go set, or one answer Go crossed with a declared field), the "
+           "model's (both runs answered, the answers differ), or mixed (any other mix, a level Go set in one run "
+           "and answered in the other among them).", ""]
     by_family = collections.OrderedDict()
     for r in sc["rows"]:
         by_family.setdefault(r["check"].family, []).append(r)
@@ -122,8 +139,9 @@ def wrong_yaml(sc):
             by = collections.defaultdict(list)
             for f, (level, src) in (lv or {}).items():
                 by[src].append(f"{f}{level}")
-            rows.append([model, arm, f"r{rep}", _v(score), sev,
-                         "; ".join(f"{s}: {' '.join(v)}" for s, v in sorted(by.items())) or "no answers.json"])
+            rows.append([model, arm, f"r{rep}", _v(score), NA if sev is None else sev,
+                         "; ".join(f"{s}: {' '.join(v)}" for s, v in sorted(by.items()))
+                         or "no rated answers.json entry"])
     return out + (table(["model", "arm", "run", "score", "severity", "levels by source"], rows) if rows
                   else ["Not run.", ""])
 
@@ -135,19 +153,25 @@ def _fallback(fb):
             f"VENS_MOCK_LLM_CANNOT_TELL={fb['flag']}.")
 
 
+def _summary(s):
+    score, sev, scored, runs = s
+    return f"{_v(score)} {NA if sev is None else sev} ({runs if scored == runs else f'{runs} runs, {scored} scored'})"
+
+
 def null_table(sc):
     out = ["### Against the null model (diagnostic)", "",
            "baseline.py's four aggregates per scenario, scored under the before's rule and under the after's; each "
-           "arm's median score and most common severity per model (runs); and the after's conservative fallback, "
-           "every answer cannot_tell, " + _fallback(sc["fallback"]) + " The fallback is not a null model.", ""]
+           "arm's median score and most common severity per model (n/a on a tie), over the runs that give one "
+           "(runs); and the after's conservative fallback, every answer cannot_tell, " + _fallback(sc["fallback"])
+           + " The fallback is not a null model.", ""]
     rows = []
     for t in sc["null"]:
         n, rules, fb = t["null"], t["rules"], t["fallback"]
-        arms = "; ".join(f"{m} {a}: {_v(s)} {sev} ({k})" for (m, a), (s, sev, k) in sorted(t["arms"].items()))
+        arms = "; ".join(f"{m} {a}: {_summary(s)}" for (m, a), s in sorted(t["arms"].items()))
         rows.append([t["scenario"], f"{n['threat_agent']}/{n['vulnerability']}/{n['technical_impact']}/"
                      f"{n['business_impact']}", f"{_v(rules['before'][0])} {rules['before'][1]}",
                      f"{_v(rules['after'][0])} {rules['after'][1]}", arms or "not run",
-                     NA if fb is None else f"{_v(fb[0])} {fb[1]} ({fb[2]})"])
+                     NA if fb is None else _summary(fb)])
     return out + table(["scenario", "null TA/VU/T/B", "null, before's rule", "null, after's rule", "runs",
                         "fallback"], rows)
 

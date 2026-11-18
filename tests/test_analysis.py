@@ -12,15 +12,18 @@
 The archives are read through mirrors, never written."""
 import contextlib
 import io
+import json
 import os
 import re
+import shutil
 import tempfile
 import unittest
 
 import ctx_analyze
 import ctx_runner
 from chain import cells as cellmod
-from chain import demo, downloads, javacheck, usage
+from chain import campaign, demo, downloads, javacheck, report_scen, usage, verdicts
+from tests import records as r
 from tests import support as s
 from tests.test_0b import mirror
 
@@ -32,6 +35,7 @@ ARM_A = re.compile(r"  (?P<ctx>[\w-]+): control gap p [\d.]+ \((?:gap|no gap)\),
 GUARD = re.compile(r"(openai|anthropic) (W|H) ([\d.]+) (pass|fail)")
 MPD = re.compile(r"    (openai|anthropic): S [-+\d.]+, D [\d.]+ \(p [\d.]+\), MPD arm ([\d.]+) / control ([\d.]+), .*")
 ARM_B = re.compile(r"  (openai|anthropic) ([\w-]+): median A_BI .*; W ratio ([\d.]+), H ratio ([\d.]+)")
+OTHER_AFTER = "e" * 40  # a commit the after's fallback below claims, not the after's
 
 
 def analyze(*argv):
@@ -39,6 +43,27 @@ def analyze(*argv):
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = ctx_analyze.main(list(argv))
     return code, out.getvalue(), err.getvalue()
+
+
+def refrozen(src, dst):
+    """A copy of campaign src as if its corpus had been frozen again: freeze-scenarios.json one byte longer, every
+    record naming its new sha256, SHA256SUMS rewritten. The new sha256."""
+    shutil.copytree(src, dst)
+    for d, _, names in os.walk(dst):
+        os.chmod(d, 0o755)
+        for n in names:
+            os.chmod(os.path.join(d, n), 0o644)
+    with open(os.path.join(dst, campaign.FREEZE), "a", encoding="utf-8") as fh:
+        fh.write("\n")
+    sha = ctx_analyze.digest(os.path.join(dst, campaign.FREEZE))
+    for path in [os.path.join(dst, campaign.CAMPAIGN)] + [os.path.join(d, "attempt.json")
+                                                         for d in campaign.attempt_folders(dst)]:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        (doc["corpus"] if "corpus" in doc else doc)["freeze_sha256"] = sha
+        s.write(path, doc)
+    campaign.write_sums(dst)
+    return sha
 
 
 def optional(*names):
@@ -66,7 +91,7 @@ class TestTheCommand(unittest.TestCase):
             root = self.downloads(tmp)
             use = s.write(os.path.join(tmp, "usage.csv"), ",".join(usage.FIELDS) + "\n"
                           + "downloads,2026-11-20,openai,key-after,after,gpt-5.4-mini-2026-03-17,2,1000,0,100,0.0012\n"
-                          + "downloads,2026-11-20,openai,key-after,before,gpt-5.4-mini-2026-03-17,1,10,0,1,0.0001\n")
+                          + "downloads,2026-11-21,openai,key-after,before,gpt-5.4-mini-2026-03-17,1,10,0,1,0.0001\n")
             code, text, err = analyze("--usage", use, root)
         self.assertEqual((code, err), (0, ""))
         for heading in ("## Records", "## Targets", "## The demo scan", "## The scenarios",
@@ -81,8 +106,8 @@ class TestTheCommand(unittest.TestCase):
                       "given", text)
         measured = text.split("### Measured")[1].split("### Estimated")[0]
         self.assertIn("The export `usage.csv`, sha256 ", measured)
-        self.assertIn("| downloads | openai | gpt-5.4-mini-2026-03-17 | 3 | 1010 | 0 | 101 | 0.00 | 2026-11-20 |",
-                      measured)
+        self.assertIn("| downloads | openai | gpt-5.4-mini-2026-03-17 | 3 | 1010 | 0 | 101 | 0.00 | 2026-11-20, "
+                      "2026-11-21 |", measured)
         # one key carries both arms: no per-arm total
         self.assertIn("No per-arm total for downloads at openai: key key-after carries after, before.", measured)
         self.assertNotIn("estimate", measured)
@@ -101,6 +126,38 @@ class TestTheCommand(unittest.TestCase):
         # after's vector, off main's rule: 0 of 2
         self.assertIn(f"| downloads · after · openai/{s.MODEL} · internal | r1 | 1/2 (0.500) | 1/2 (0.500) |", text)
         self.assertIn(f"| downloads · before · openai/{s.MODEL} · internal | r1 | 0/2 (0.000) | 0/2 (0.000) |", text)
+
+    def test_two_inputs_of_one_name_are_two_campaigns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = [os.path.join(tmp, c, "downloads") for c in ("c1", "c2")]
+            for root in roots:
+                s.baseline_folder(root, 4001, "internal", 1, 1, record=s.COMPLETE_RECORD)
+            code, text, err = analyze(*roots)
+        self.assertEqual((code, err), (0, ""))
+        row = f"| demo scan | downloads · after · openai/{s.MODEL} · internal | b7c043583544 | 1 | 1 | 1 (r1) | 0 | 0 |"
+        self.assertEqual(text.count(row + " 0 | 0 |"), 2)
+        self.assertNotIn("complete attempts, the first one read", text)
+
+    def test_scenario_campaigns_on_two_corpora_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = []
+            for name, freeze in (("c1", "{}"), ("c2", "{} ")):
+                s.write(os.path.join(tmp, name, campaign.FREEZE), freeze)
+                inputs.append((os.path.join(tmp, name), [r.record("after", "wrong_yaml", 1, {}, scenario=True,
+                                                                  campaign=name)]))
+            self.assertEqual(ctx_analyze.scenario_corpus(inputs[:1] * 2)[0], inputs[0][0])
+            with self.assertRaisesRegex(ctx_analyze.InputError, "the scenario campaigns ran on different corpora"):
+                ctx_analyze.scenario_info(inputs)
+
+    def test_the_batch_scope_reads_the_runs_alone(self):
+        rated = {vid: r.rating(s.VECTOR) for vid in ("CVE-A", "CVE-B")}
+        # a complete run whose scores are not usable is still read, by the targets; a failed attempt is not a run
+        recs = [r.record("after", "internal", 1, rated), r.record("after", "internal", 1, rated, batch=5, usable=False),
+                r.record("after", "internal", 1, None, batch=10, outcome="failed")]
+        data = ctx_analyze.compute([("downloads", recs)], ctx_analyze.Reports(None))
+        self.assertEqual(data["batches"], [1, 5])
+        self.assertIn("- Batch size: the runs read are at batch sizes 1, 5; each size is its own cell, never pooled, "
+                      "and no statistic here compares two sizes.", report_scen.scope(data))
 
     def test_a_refused_input(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -289,12 +346,16 @@ class TestEndToEndOnTheMock(unittest.TestCase):
         for out, replicates, extra in ((cls.camp, 2, {}), (cls.fb, 1, {"VENS_MOCK_LLM_CANNOT_TELL": "cannot_tell"}),
                                        (cls.off, 1, {"VENS_MOCK_LLM_CANNOT_TELL": "0"})):
             cls.campaign(out, replicates, extra, ["--scenario", "wrong_yaml"] if out == cls.off else [])
+        # the after's own binary on the mock, every answer cannot_tell, but run as another after commit
+        cls.elsewhere = os.path.join(cls.tmp.name, "fallback-elsewhere")
+        cls.campaign(cls.elsewhere, 1, {"VENS_MOCK_LLM_CANNOT_TELL": "cannot_tell"}, ["--scenario", "wrong_yaml"],
+                     after_commit=OTHER_AFTER)
         cls.code, cls.text, cls.err = analyze("--fallback", cls.fb, cls.camp)
 
     @classmethod
-    def campaign(cls, out, replicates, extra, only):
+    def campaign(cls, out, replicates, extra, only, after_commit=s.AFTER_SHA):
         argv = ["--campaign", os.path.basename(out), "--out", out, "--before", cls.before, "--before-commit",
-                s.BEFORE_SHA, "--after", cls.after, "--after-commit", s.AFTER_SHA, "--model", "mock/mock",
+                s.BEFORE_SHA, "--after", cls.after, "--after-commit", after_commit, "--model", "mock/mock",
                 "--replicates", str(replicates), "--retry-cap", "2", "--timeout", "120", "--parallel", "4", *only]
         env = {"PATH": os.environ.get("PATH", ""), "HOME": cls.tmp.name, **extra}
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -318,7 +379,7 @@ class TestEndToEndOnTheMock(unittest.TestCase):
         self.assertIn("| the score not falling | after | carried | c1 · mock/mock | expo_internal / expo_private | ",
                       self.text)
         self.assertIn("e.g. r1: S 4->6 (config/config)", self.text)
-        self.assertIn("| r1-r2: SL ED A constant; M O EE LC LI LAV LAC FD RD PV answer; S ID NC config | Go's x2;",
+        self.assertIn("| r1-r2: SL ED A constant, M O EE LC LI LAV LAC FD RD PV answer, S ID NC config | Go's x2;",
                       self.text)
         self.assertIn("showcase_high_to_low: CVSS 10.0 RCE -> expect LOW; showcase_med_to_high: CVSS 6.5 leak -> "
                       "expect HIGH.", self.text)
@@ -338,8 +399,36 @@ class TestEndToEndOnTheMock(unittest.TestCase):
             code, _, err = analyze("--fallback", campaign, self.camp)
             self.assertEqual(code, 1, campaign)
             self.assertIn("not the after's fallback: " + why, err)
+        # a --commit the scenario campaign did not run at refuses the campaign itself, before any fallback
         code, _, err = analyze("--fallback", self.fb, "--commit", "after=" + "f" * 40, self.camp)
         self.assertEqual(code, 1)
+        self.assertIn(f"gives vens {s.AFTER_SHA}, not the after's {'f' * 40}", err)
+        code, _, err = analyze("--fallback", self.elsewhere, self.camp)
+        self.assertEqual(code, 1)
+        self.assertIn(f"not the after's fallback: its after is {OTHER_AFTER}, not {s.AFTER_SHA}", err)
+
+    def test_a_fallback_on_another_corpus_is_refused(self):
+        # the scenario campaign on a corpus frozen again, read under its freeze; the fallback ran on the old one
+        regenerated = os.path.join(self.tmp.name, "regenerated")
+        sha = refrozen(self.off, regenerated)
+        code, _, err = analyze("--freeze-sha256", sha, regenerated)
+        self.assertEqual((code, err), (0, ""))
+        code, _, err = analyze("--freeze-sha256", sha, "--fallback", self.fb, regenerated)
+        self.assertEqual(code, 1)
+        self.assertIn(f"not the after's fallback: its corpus is {campaign.FROZEN}, not the scenario campaigns' {sha}",
+                      err)
+
+    def test_the_single_checks_give_each_level_and_its_source(self):
+        rows = [ln for ln in self.text.splitlines() if ln.startswith("| ")]
+        (dos,) = [ln for ln in rows if ln.startswith("| T below the null model's | after | diagnostic | c1 · mock/mock "
+                                                    "| disc_dos |")]
+        # in the after the vector floors C and I on the DoS discriminator; availability and accountability answered
+        self.assertTrue(dos.endswith("| r1-r2: LC=2 LI=1 floor, LAV=5 LAC=7 answer |  |"), dos)
+        lac = {ln.split(" | ")[4]: ln for ln in rows
+               if ln.startswith("| LAC's answer defeats_attribution, traceability per_individual | after | new |")}
+        self.assertEqual(sorted(lac), sorted(verdicts.ACCOUNTABILITY))
+        for sid, level in (("disc_audit", 1), ("disc_audit3", 9)):
+            self.assertTrue(lac[sid].endswith(f"| r1-r2: LAC={level} answer |  |"), lac[sid])
 
 
 if __name__ == "__main__":
