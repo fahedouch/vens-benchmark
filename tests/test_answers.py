@@ -1,8 +1,9 @@
+import json
 import os
 import tempfile
 import unittest
 
-from chain import answers, cdx
+from chain import answers, cdx, errors
 from tests import support as s
 
 A, B = "CVE-2099-0001", "CVE-2099-0002"
@@ -53,8 +54,10 @@ class TestAnswers(unittest.TestCase):
         self.assertEqual(answers.unrated_shape(load(doc)), [f"{B}: an unrated entry with a level or a source"])
 
     def test_not_answers_json(self):
-        with self.assertRaises(ValueError):
-            load({"vulnerabilities": []})
+        for doc in ({"vulnerabilities": []}, {"vulnerabilities": [{"vulnId": ["x"], "factors": []}], "counters": {},
+                                              "defects": {}}):
+            with self.assertRaisesRegex(errors.Refused, "not answers.json"):
+                load(doc)
 
     def test_a_cve_listed_twice(self):
         for doc in (s.answers_doc([(A, s.VECTOR), (A, s.VECTOR)]), s.answers_doc([(A, s.VECTOR)], [(A, ["M"])]),
@@ -96,6 +99,44 @@ class TestVex(unittest.TestCase):
             cdx.levels("SL:9/M:1")
         with self.assertRaises(ValueError):
             cdx.levels(s.VECTOR.replace("M:1", "X:1"))
+
+    def test_a_missing_or_null_score_stays_none(self):
+        main_vector = "SL:3/M:3/O:3/S:3/ED:4/EE:4/A:4/ID:4/LC:2/LI:2/LAV:2/LAC:2/FD:3/RD:3/NC:3/PV:3"
+        doc = s.vex([(A, s.VECTOR, s.SEVERITY, None), (B, main_vector, "low", None), ("CVE-2099-0003", s.VECTOR,
+                                                                                    s.SEVERITY, "61.625")])
+        del doc["vulnerabilities"][1]["ratings"][0]["score"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = s.write(os.path.join(tmp, "vex.cdx.json"), doc)
+            r, problems = cdx.ratings(path)
+            rows = cdx.vex_rows(path)
+        self.assertEqual({vid: x["score"] for vid, x in r.items()}, {A: None, B: None, "CVE-2099-0003": None})
+        self.assertEqual(r[A]["L"], 7.25)
+        self.assertEqual(problems, [f"{A}: score None, not a number", f"{B}: score None, not a number",
+                                    "CVE-2099-0003: score '61.625', not a number"])
+        self.assertEqual([row[3] for row in rows], ["NaN", "NaN", "NaN"])
+        self.assertEqual(cdx.main_rule({B: r[B]}), [f"{B}: score None, main's rule gives 8.75"])
+
+    def test_a_null_or_missing_vector(self):
+        doc = s.vex([(A, s.VECTOR, s.SEVERITY, s.SCORE), (B, s.VECTOR, s.SEVERITY, s.SCORE)])
+        doc["vulnerabilities"][0]["ratings"][0]["vector"] = None
+        del doc["vulnerabilities"][1]["ratings"][0]["vector"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = s.write(os.path.join(tmp, "vex.cdx.json"), doc)
+            r, problems = cdx.ratings(path)
+            rows = cdx.vex_rows(path)
+        self.assertEqual((r, problems), ({}, [f"{A}: vector None: not a string", f"{B}: vector None: not a string"]))
+        self.assertEqual(rows, [(A, "", s.SEVERITY, repr(s.SCORE)), (B, "", s.SEVERITY, repr(s.SCORE))])
+
+    def test_a_file_that_is_no_vex_or_cut_short(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, content in (("list.json", []),
+                                  ("ratings.json", {"vulnerabilities": [{"id": A, "ratings": {"method": "OWASP"}}]}),
+                                  ("noid.json", {"vulnerabilities": [{"ratings": []}]}),
+                                  ("cut.json", json.dumps(s.vex([(A, s.VECTOR, s.SEVERITY, s.SCORE)]))[:50])):
+                path = s.write(os.path.join(tmp, name), content)
+                for read in (cdx.ratings, cdx.vex_rows):
+                    with self.assertRaisesRegex(errors.Refused, f"{name}: (a JSON list|not a VEX|not readable)"):
+                        read(path)
 
 
 if __name__ == "__main__":

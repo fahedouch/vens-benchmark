@@ -47,7 +47,7 @@ import subprocess
 import sys
 import time
 
-from chain.attempt import Refused
+from chain.errors import Refused
 
 FIELDS = ("campaign", "arm", "repo", "vens_ref", "vens_commit", "provider", "model", "batch_size", "archived_run",
           "replicate", "run_id", "run_attempt", "time", "action", "replaces")

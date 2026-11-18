@@ -4,23 +4,24 @@ Per CVE, each factor's answer as the reply wrote it, its reading, its level and 
 lists, marked `unrated`, the CVEs of its failing batch already answered, with their answers and readings only.
 """
 import collections
-import json
 
 from chain.cdx import FACTORS
+from chain.errors import Refused, load_json
 
 
 def load(path):
-    """The document; ValueError when it is not answers.json's shape."""
-    with open(path, encoding="utf-8") as fh:
-        doc = json.load(fh)
+    """The document; Refused when it is cut short or not answers.json's shape."""
+    doc = load_json(path)
     if not isinstance(doc, dict) or not isinstance(doc.get("vulnerabilities"), list):
-        raise ValueError("no vulnerabilities list")
+        raise Refused(f"{path}: not answers.json, no vulnerabilities list")
     for key in ("counters", "defects"):
         if not isinstance(doc.get(key), dict):
-            raise ValueError(f"no {key} object")
+            raise Refused(f"{path}: not answers.json, no {key} object")
     for e in doc["vulnerabilities"]:
-        if not isinstance(e, dict) or "vulnId" not in e or not isinstance(e.get("factors"), list):
-            raise ValueError("an entry without vulnId or factors")
+        factors = e.get("factors") if isinstance(e, dict) else None
+        if not isinstance(factors, list) or not isinstance(e.get("vulnId"), str) or any(
+                not isinstance(f, dict) or "factor" not in f for f in factors):
+            raise Refused(f"{path}: not answers.json, an entry without vulnId or factors")
     return doc
 
 

@@ -142,6 +142,11 @@ def after_calls(vid, questions=("M", "O")):
     return [(SYSTEM, after_human(f"Question {q}?", [vid]), reply([vid])) for q in questions]
 
 
+def before_calls(vid, packages=("p1", "p2")):
+    """main's calls at batch 1, one per row: here one CVE in two packages."""
+    return [(SYSTEM, before_human([(vid, p)]), json.dumps({"results": []})) for p in packages]
+
+
 def baseline_folder(root, run_id, context, replicate, attempt, *, record, model=MODEL, provider="openai",
                     commit=AFTER_SHA, vid="CVE-2099-0001", calls=None, log=None, provenance=True, vex_file=True,
                     answers=True, arm="after"):
@@ -149,7 +154,7 @@ def baseline_folder(root, run_id, context, replicate, attempt, *, record, model=
     attempt.json fields past what was dispatched (generate, enrich, archive_check, provenance), None for a
     download made before the record."""
     folder = os.path.join(root, str(run_id), f"baseline-{model}-{context}-r{replicate}-a{attempt}")
-    calls = after_calls(vid) if calls is None else calls
+    calls = (before_calls(vid) if arm == "before" else after_calls(vid)) if calls is None else calls
     write_calls(os.path.join(folder, "calls", "run-1"), calls)
     write(os.path.join(folder, f"vex-{context}.attestation.cdx.json"), attestation(calls, provider, model))
     if vex_file:

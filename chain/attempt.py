@@ -20,13 +20,13 @@ A field not yet written is absent or null. Times are UTC, ISO 8601. The reader t
 that did not complete; a scoring that completed and a later step that failed; a scoring interrupted, its start
 recorded and no exit status; a complete attempt. What a folder does not say stays an explicit unknown.
 """
-import json
 import os
 import re
 
 from chain import answers as answersmod
 from chain import calls as callmod
 from chain import cdx, cost, recovery, venslog
+from chain.errors import Refused, load_object
 
 COMPLETE, FAILED = "complete", "failed"
 SCORING, LATER_STEP, INTERRUPTED = "scoring", "later_step", "interrupted"
@@ -38,11 +38,6 @@ RECORD = ("generate.started_at", "generate.ended_at", "generate.exit_status", "e
           "enrich.ended_at", "enrich.exit_status", "archive_check", "vens_binary_sha256")
 IDENTITY = ("run_id", "run_attempt", "job", "context", "replicate", "provider", "model", "llm_batch_size",
             "vens_ref", "vens_sha")
-
-
-class Refused(Exception):
-    """A folder the reader will not read: a download it cannot tell from another, or one its dispatch log or its
-    expected commits contradict."""
 
 
 def parse_name(name):
@@ -58,11 +53,36 @@ def parse_name(name):
             "attempt": int(m.group(3))}
 
 
-def _json(path):
+def _record(path):
+    """attempt.json, None when there is none; Refused when it does not read or a step in it is no object."""
     if path is None:
         return None
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+    rj = load_object(path)
+    for step in ("generate", "enrich"):
+        if rj.get(step) is not None and not isinstance(rj[step], dict):
+            raise Refused(f"{path}: {step} is a JSON {type(rj[step]).__name__}, not an object")
+    return rj
+
+
+def check_arm(where, arm, line, rj):
+    """Refused when the caller's arm, the dispatch log's and attempt.json's are not one: the log's line, and the
+    record the workflow wrote from it, name what was run, and an argument never overrides them."""
+    given = {source: value for source, value in (("the argument", arm), ("the dispatch log", (line or {}).get("arm")),
+                                                 ("attempt.json", (rj or {}).get("arm"))) if value is not None}
+    if len(set(given.values())) > 1:
+        raise Refused(f"{where}: arms that disagree, " + ", ".join(f"{v} from {s}" for s, v in given.items()))
+
+
+def _part(load, path, problems):
+    """A file of the attempt read by load, or None, its problem added, when it is cut short or not of its shape: a
+    failed job's artefact can hold a file vens was writing when it stopped."""
+    if path is None:
+        return None
+    try:
+        return load(path)
+    except Refused as e:
+        problems.append(str(e))
+        return None
 
 
 def _files(folder):
@@ -128,7 +148,7 @@ def _what(rj, prov, name, line, arm, meta=None):
     job = _pick(rj.get("job"), f"{context} · run {in_run}" if runner == "baseline.yml" and in_run else None)
     return {
         "runner": runner,
-        "arm": _pick(arm, line.get("arm"), rj.get("arm")),
+        "arm": _pick(line.get("arm"), rj.get("arm"), arm),
         "corpus": _pick(rj.get("archived_scan"), rj.get("report"), prov.get("archived_scan")),
         "config": _pick(rj.get("config"), prov.get("context")),
         "context": context,
@@ -302,20 +322,20 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     rated once (vex_problems empty), whose archive check passes restated from its calls and attestation, whose record
     is not incomplete (the after with its answers.json), and whose answers.json, for the after, matches its VEX with
     no CVE listed twice (answers' problems empty). The other problems are reported beside the scores and leave them
-    usable: arms, logs, summaries, counters or defects that disagree, calls out of vens's order, a missing summary."""
+    usable: logs, summaries, counters or defects that disagree, calls out of vens's order, a missing summary. A VEX,
+    an attestation or an answers.json that does not read is a problem of the attempt, its content unknown. Arms
+    that disagree, commits that disagree and a record or provenance.json that does not read are refused."""
     files = _files(folder)
-    rj, prov = _json(files["record"]), _json(files["provenance"])
+    rj = _record(files["record"])
+    prov = load_object(files["provenance"]) if files["provenance"] else None
     name = parse_name(os.path.basename(os.path.normpath(folder)))
     if rj is None and prov is None and name is None:
         raise Refused(f"{folder}: no attempt.json, no provenance.json and not an artefact's name")
     check_name(folder, name, rj, prov)
     check_files(folder, files, rj, job)
+    check_arm(folder, arm, line, rj)
     what = _what(rj, prov, name, line, arm, meta)
     problems = []
-    for source, value in (("argument", arm), ("dispatch log", (line or {}).get("arm")), ("attempt.json",
-                                                                                         (rj or {}).get("arm"))):
-        if value is not None and value != what["arm"]:
-            problems.append(f"arm {value} from the {source}, {what['arm']} taken")
     check_commits(folder, rj, prov, what["arm"], commits)
     if rj is not None:
         outcome, failure, steps, unknown, found = _from_record(rj, files["provenance"] is not None, job)
@@ -350,17 +370,21 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     problems += rec.pop("problems")
     estimate = cost.estimate(archived, kinds, what["model"])
 
-    evidence = cdx.evidence(files["attestation"]) if files["attestation"] else None
+    evidence = _part(cdx.evidence, files["attestation"], problems)
     attested = [[e.get("provider"), e.get("model")] for e in evidence] if evidence is not None else None
     if attested is None:
         unknown.append("models_attested")
     if evidence is not None and archived is not None:
         check = callmod.archive_check(run_dirs, archived, evidence, what["provider"], what["model"])
+    elif files["attestation"] is not None and evidence is None:
+        check = (None, "the attestation does not read")
     else:
         check = (None, "no attestation or no archived calls")
-    ratings, vex_problems = cdx.ratings(files["vex"]) if files["vex"] else (None, [])
+    unread = []
+    ratings, vex_problems = _part(cdx.ratings, files["vex"], unread) or (None, [])
+    vex_problems = unread + vex_problems
 
-    doc = answersmod.load(files["answers"]) if files["answers"] else None
+    doc = _part(answersmod.load, files["answers"], problems)
     answers = None
     if doc is not None:
         rated, unrated = answersmod.entries(doc)
@@ -374,9 +398,11 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
 
     incomplete = [] if what["arm"] in ("before", "after") else ["arm unknown"]
     if outcome == COMPLETE and what["arm"] == "after" and doc is None:
-        incomplete.append("a complete run's VEX without its answers.json")
+        incomplete.append("a complete run's VEX without its answers.json" if files["answers"] is None else
+                          "a complete run's answers.json that does not read")
     if outcome == COMPLETE and ratings is None:
-        incomplete.append("a complete attempt without a VEX")
+        incomplete.append("a complete attempt without a VEX" if files["vex"] is None else
+                          "a complete attempt whose VEX does not read")
     if outcome == COMPLETE and recs is not None and summary is None:
         problems.append("the log holds no run summary")
     usable = (outcome == COMPLETE and ratings is not None and not vex_problems and check[0] is True
@@ -396,13 +422,15 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     }
 
 
-def without_artefact(job, model, run_id, line=None):
+def without_artefact(job, model, run_id, line=None, arm=None):
     """An attempt jobs.json lists, its job not successful, with no artefact downloaded: a failed attempt of which
-    only the job is known. With no record of a scoring start, its kind stays unknown, the job's conclusion its cause."""
+    only the job is known. With no record of a scoring start, its kind stays unknown, the job's conclusion its cause.
+    Its arm is the dispatch log's line's, else the caller's; refused when the two disagree."""
+    check_arm(f"run {run_id} job {job.get('id')}", arm, line, None)
     m = re.fullmatch(r"(.+) · run (\d+)", job["name"])
     what = {"runner": "baseline.yml", "context": m.group(1) if m else None,
             "replicate_in_run": int(m.group(2)) if m else None, "model": model, "run_id": run_id,
-            "run_attempt": job.get("run_attempt"), "job": job["name"], "arm": (line or {}).get("arm"),
+            "run_attempt": job.get("run_attempt"), "job": job["name"], "arm": _pick((line or {}).get("arm"), arm),
             "replicate": (line or {}).get("replicate")}
     unknown = list(RECORD) + ["artefact", "calls", "log", "summary", "vens_commit", "models_attested", "failure.kind",
                               "failure.step"]
@@ -416,13 +444,16 @@ def without_artefact(job, model, run_id, line=None):
             "problems": ["artefact missing"]}
 
 
-def not_downloaded(line, why):
-    """A run attempt the dispatch log names with no artefact folder and no job: flagged, its outcome unknown."""
-    what = {"runner": "baseline.yml", "arm": line.get("arm"), "model": line.get("model"),
+def not_downloaded(line, why, arm=None, reason="not downloaded"):
+    """A run attempt the dispatch log names, or jobs.json lists, with no artefact folder and no job scoring a
+    context, or one a pending line asked for: flagged, its outcome unknown. line: its line of the log, or what the
+    download says of it. Refused when the caller's arm is not the line's."""
+    check_arm(why, arm, line, None)
+    what = {"runner": "baseline.yml", "arm": _pick(line.get("arm"), arm), "model": line.get("model"),
             "replicate": line.get("replicate"), "run_id": line.get("run_id"), "run_attempt": line.get("run_attempt"),
             "vens_commit": line.get("vens_commit")}
     return {"folder": None, "record": None, "what": what, "models_attested": None, "outcome": None, "failure": None,
             "steps": None, "implied": [], "unknown": ["outcome"] + list(RECORD), "job": None, "summary": None,
             "calls": {"archived": None, "with_reply": None, "kinds": None}, "recovery": None, "cost_estimate": None,
-            "archive_check": {"passed": None, "reason": "not downloaded"}, "answers": None, "ratings": None,
+            "archive_check": {"passed": None, "reason": reason}, "answers": None, "ratings": None,
             "vex_problems": [], "scores_usable": False, "incomplete": [], "problems": [why]}

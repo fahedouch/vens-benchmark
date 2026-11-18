@@ -2,6 +2,7 @@
 read with its added fields unknown, none inferred."""
 import json
 import os
+import re
 import tempfile
 import unittest
 
@@ -11,6 +12,7 @@ from tests import support as s
 B = "CVE-2099-0002"
 
 A = "CVE-2099-0001"
+COUNTS = ("planned", "again_omission", "again_unreadable", "split_halves", "recovery_calls")
 GEN_OK = {"started_at": "2026-11-20T10:00:00Z", "ended_at": "2026-11-20T10:01:00Z", "exit_status": 0}
 CAUSE = f"failed to generate risk scores: model returned no answer to Motive (M) for {A} after asking again; " \
         f"stopping the run"
@@ -102,9 +104,9 @@ class TestOutcomes(Base):
         self.assertTrue(rec["scores_usable"])
 
     def test_the_commit_of_another_arm_is_refused(self):
-        folder = self.folder(s.COMPLETE_RECORD)
+        folder = self.folder({**s.COMPLETE_RECORD, "arm": None})
         commits = {"before": s.BEFORE_SHA, "after": s.AFTER_SHA}
-        self.assertTrue(attempt.read_attempt(folder, commits=commits)["scores_usable"])
+        self.assertTrue(attempt.read_attempt(folder, arm="after", commits=commits)["scores_usable"])
         with self.assertRaisesRegex(attempt.Refused, "not the before's"):
             attempt.read_attempt(folder, arm="before", commits=commits)
 
@@ -214,9 +216,10 @@ class TestOutcomes(Base):
         rec = attempt.read_attempt(self.folder(s.COMPLETE_RECORD, arm="before"))
         self.assertEqual((rec["what"]["arm"], rec["incomplete"], rec["scores_usable"]), ("before", [], True))
 
-    def test_an_arm_the_record_contradicts(self):
-        rec = attempt.read_attempt(self.folder(s.COMPLETE_RECORD), arm="before")
-        self.assertIn("arm after from the attempt.json, before taken", rec["problems"])
+    def test_an_arm_the_record_contradicts_is_refused(self):
+        with self.assertRaisesRegex(attempt.Refused, "arms that disagree, before from the argument, after from "
+                                                     "attempt.json"):
+            attempt.read_attempt(self.folder(s.COMPLETE_RECORD), arm="before")
 
     def test_reply_unreadable_in_answers_json_and_the_summary(self):
         log = [s.summary_line(rows=1, cves=1, llm_calls=2, asked_again=0, splits=0, calls__M=1, calls__O=1,
@@ -242,7 +245,7 @@ class TestOutcomes(Base):
 
 class TestBeforeTheRecord(Base):
     def test_a_complete_download_its_added_fields_unknown(self):
-        rec = attempt.read_attempt(self.folder(None, log=None, answers=False), arm="before")
+        rec = attempt.read_attempt(self.folder(None, log=None, arm="before"), arm="before")
         self.assertEqual((rec["record"], rec["outcome"]), (None, "complete"))
         self.assertEqual(rec["implied"], ["generate.exit_status", "enrich.exit_status", "archive_check"])
         for field in ("generate.started_at", "generate.ended_at", "enrich.started_at", "enrich.ended_at",
@@ -253,7 +256,7 @@ class TestBeforeTheRecord(Base):
         self.assertTrue(rec["scores_usable"])
 
     def test_a_failed_download_without_a_vex_read_as_0b_read_it(self):
-        folder = self.folder(None, log=None, provenance=False, vex_file=False, answers=False)
+        folder = self.folder(None, log=None, provenance=False, vex_file=False, arm="before")
         os.remove(os.path.join(folder, "vex-internal.attestation.cdx.json"))
         failure = {"attempt": 1, "job": "internal · run 1", "error": CAUSE}
         rec = attempt.read_attempt(folder, arm="before", failure_line=failure)
@@ -264,7 +267,7 @@ class TestBeforeTheRecord(Base):
         self.assertEqual((rec["implied"], rec["problems"]), ([], []))
 
     def test_a_vex_without_provenance_its_job_failed(self):
-        folder = self.folder(None, log=None, provenance=False, answers=False)
+        folder = self.folder(None, log=None, provenance=False, arm="before")
         job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "failure"}
         failure = {"attempt": 1, "job": "internal · run 1", "error": "vens enrich: exit 1"}
         rec = attempt.read_attempt(folder, arm="before", job=job, failure_line=failure)
@@ -279,7 +282,7 @@ class TestBeforeTheRecord(Base):
         self.assertFalse(rec["scores_usable"])
 
     def test_a_vex_without_provenance_its_job_succeeded_or_not_listed(self):
-        folder = self.folder(None, log=None, provenance=False, answers=False)
+        folder = self.folder(None, log=None, provenance=False, arm="before")
         job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
         with self.assertRaisesRegex(attempt.Refused, "its job succeeded, yet the download holds no provenance.json; "
                                                      "a truncated download is not a failed job"):
@@ -288,10 +291,79 @@ class TestBeforeTheRecord(Base):
             attempt.read_attempt(folder, arm="before")
 
     def test_calls_alone_its_job_succeeded(self):
-        folder = self.folder(None, log=None, provenance=False, vex_file=False, answers=False)
+        folder = self.folder(None, log=None, provenance=False, vex_file=False, arm="before")
         job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
         with self.assertRaisesRegex(attempt.Refused, "a truncated download is not a failed job"):
             attempt.read_attempt(folder, arm="before", job=job)
+
+    def test_a_before_call_whose_human_prompt_is_missing_stays_unknown(self):
+        folder = self.folder(None, log=None, provenance=False, vex_file=False, arm="before")
+        for part in ("human.prompt", "response"):
+            os.remove(os.path.join(folder, "calls", "run-1", f"batch-00002.{part}"))
+        failure = {"attempt": 1, "job": "internal · run 1", "error": CAUSE}
+        rec = attempt.read_attempt(folder, arm="before", failure_line=failure)
+        self.assertEqual(rec["calls"]["kinds"], ["planned", None])
+        self.assertIn("call 2's human prompt does not read: it and the calls after it are not classified",
+                      rec["problems"])
+        self.assertEqual({k: rec["recovery"][k] for k in COUNTS}, dict.fromkeys(COUNTS))
+        self.assertEqual(sorted(rec["cost_estimate"]["by_kind"]), ["planned", "unclassified"])
+        log = os.path.join(folder, "vens-internal.log")
+        s.write(log, s.summary_line(rows=2, cves=1, llm_calls=2, asked_again=0, splits=0, failed=True) + "\n")
+        rec = attempt.read_attempt(folder, arm="before", failure_line=failure)
+        self.assertEqual(rec["calls"]["kinds"], ["planned", None])
+        self.assertEqual({k: rec["recovery"][k] for k in COUNTS},
+                         {"planned": 2, "again_omission": 0, "again_unreadable": 0, "split_halves": 0,
+                          "recovery_calls": 0})
+        self.assertEqual(sorted(rec["cost_estimate"]["by_kind"]), ["planned", "unclassified"])
+
+
+class TestFilesThatDoNotRead(Base):
+    def cut(self, folder, name):
+        path = os.path.join(folder, name)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        with open(path, "wb") as fh:
+            fh.write(data[:len(data) // 2])
+        return path
+
+    def test_a_vex_cut_mid_write(self):
+        folder = self.folder(s.COMPLETE_RECORD)
+        path = self.cut(folder, "vex-internal.cdx.json")
+        rec = attempt.read_attempt(folder)
+        self.assertEqual((rec["outcome"], rec["ratings"], rec["scores_usable"]), ("complete", None, False))
+        self.assertEqual(rec["incomplete"], ["a complete attempt whose VEX does not read"])
+        self.assertTrue(rec["vex_problems"][0].startswith(f"{path}: not readable as JSON, a file cut short"))
+
+    def test_answers_json_cut_mid_write(self):
+        folder = self.folder(s.COMPLETE_RECORD)
+        path = self.cut(folder, os.path.join("calls", "run-1", "answers.json"))
+        rec = attempt.read_attempt(folder)
+        self.assertEqual((rec["answers"], rec["scores_usable"]), (None, False))
+        self.assertEqual(rec["incomplete"], ["a complete run's answers.json that does not read"])
+        self.assertTrue(any(p.startswith(f"{path}: not readable as JSON") for p in rec["problems"]))
+
+    def test_an_attestation_cut_or_malformed(self):
+        malformed = ({"declarations": {"evidence": [{"data": [{"name": "model"}]}]}}, {"declarations": []},
+                     {"declarations": {"evidence": [{"data": [{"name": "model", "contents": {"attachment": {
+                         "content": "/w==", "encoding": "base64"}}}]}]}})
+        for n, doc in enumerate((None,) + malformed):
+            folder = self.folder_at(1100 + n, s.COMPLETE_RECORD)
+            name = "vex-internal.attestation.cdx.json"
+            path = self.cut(folder, name) if doc is None else s.write(os.path.join(folder, name), doc)
+            rec = attempt.read_attempt(folder)
+            self.assertEqual((rec["models_attested"], rec["archive_check"]["passed"], rec["scores_usable"]),
+                             (None, None, False))
+            self.assertTrue(any(p.startswith(f"{path}: not") for p in rec["problems"]), rec["problems"])
+
+    def test_a_record_cut_mid_write_or_of_another_shape_is_refused_by_name(self):
+        folder = self.folder(s.COMPLETE_RECORD)
+        path = self.cut(folder, "attempt.json")
+        with self.assertRaisesRegex(attempt.Refused, f"^{re.escape(path)}: not readable as JSON, a file cut short"):
+            attempt.read_attempt(folder)
+        for doc in ([], {**s.COMPLETE_RECORD, "generate": "done"}):
+            s.write(path, doc)
+            with self.assertRaisesRegex(attempt.Refused, f"^{re.escape(path)}: (a JSON list|generate is a JSON str)"):
+                attempt.read_attempt(folder)
 
 
 class TestNames(unittest.TestCase):

@@ -66,7 +66,9 @@ def asked(call, arm):
     try:
         if arm == "before":
             rows = json.loads(text)
-            return Asked("batch", None, tuple(json.dumps(r, sort_keys=True) for r in rows))
+            if isinstance(rows, list):
+                return Asked("batch", None, tuple(json.dumps(r, sort_keys=True) for r in rows))
+            return Asked("unknown", None, ())
         lines = text.split("\n")
         if lines[0] == "FLAGGED VULNERABILITY":
             return Asked("adjustment", None, (json.loads(lines[1])["vulnId"],))
@@ -154,10 +156,14 @@ def _classify_after(calls):
 
 def _classify_before(calls):
     """main at 43ab10b: one call per batch of rows, its rows the batch's not yet scored; an ask-again over the
-    rows its reply skipped, right after it; a truncated call's rows asked again in smaller batches."""
-    rows = [collections.Counter(asked(c, "before").ids) for c in calls]
+    rows its reply skipped, right after it; a truncated call's rows asked again in smaller batches. (kinds, problem):
+    a call whose human prompt does not read leaves it and every call after it unclassified, since what it asked
+    decides how the next calls read; it is never taken for a planned call."""
+    asks = [asked(c, "before") for c in calls]
+    stop = next((i for i, a in enumerate(asks) if a.kind != "batch"), len(calls))
+    rows = [collections.Counter(a.ids) for a in asks[:stop]]
     kinds, stack = [], []
-    for i, call in enumerate(calls):
+    for i, call in enumerate(calls[:stop]):
         here = rows[i]
         answered_before = i > 0 and kinds[-1] in (PLANNED, HALF) and calls[i - 1].response is not None
         if here and answered_before and here <= rows[i - 1]:
@@ -173,7 +179,10 @@ def _classify_before(calls):
         if call.response is None and sum(here.values()) > 1 and i + 1 < len(calls):
             stack = stack + [here]
         kinds.append(kind)
-    return kinds
+    if stop == len(calls):
+        return kinds, None
+    return kinds + [None] * (len(calls) - stop), (f"call {calls[stop].number}'s human prompt does not read: it and "
+                                                  f"the calls after it are not classified")
 
 
 def classify(calls, arm):
@@ -182,7 +191,7 @@ def classify(calls, arm):
     if arm not in ("before", "after"):
         return [None] * len(calls), "arm unknown: the calls are not classified"
     if arm == "before":
-        return _classify_before(calls), None
+        return _classify_before(calls)
     try:
         return _classify_after(calls), None
     except _Mismatch as m:

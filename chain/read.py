@@ -15,6 +15,7 @@ import os
 import sys
 
 from chain import attempt, dispatch, downloads
+from chain.errors import Refused
 
 
 def read_any(path, lines=None, arm=None, failures=(), commits=None):
@@ -29,7 +30,7 @@ def read_any(path, lines=None, arm=None, failures=(), commits=None):
         return downloads.read_run(path, **kw)
     records = downloads.read_downloads(path, **kw)
     if not records:
-        raise attempt.Refused(f"{path}: no attempt, no workflow run and no dispatch log line read there")
+        raise Refused(f"{path}: no attempt, no workflow run and no dispatch log line read there")
     return records
 
 
@@ -48,14 +49,14 @@ def main(argv=None):
     ap.add_argument("--failures", action="append", default=[])
     ap.add_argument("dirs", nargs="+")
     a = ap.parse_args(argv)
-    lines = dispatch.load(a.dispatch_log) if a.dispatch_log else None
-    failures = [f for path in a.failures for f in downloads.load_failures(path)]
     commits = dict(a.commit) or None
     try:
+        failures = [f for path in a.failures for f in downloads.load_failures(path)]
+        lines = dispatch.load(a.dispatch_log) if a.dispatch_log else None
         for path in a.dirs:
             for rec in read_any(path, lines, a.arm, failures, commits):
                 print(json.dumps(rec, sort_keys=True))
-    except attempt.Refused as e:
+    except (Refused, dispatch.DispatchError) as e:
         print(f"refused: {e}", file=sys.stderr)
         return 1
     return 0
