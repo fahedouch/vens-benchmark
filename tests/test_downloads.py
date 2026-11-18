@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 
-from chain import attempt, downloads, read
+from chain import attempt, dispatch, downloads, read
 from chain.attempt import Refused
 from tests import support as s
 
@@ -24,13 +24,25 @@ def log_line(run_id, replicate, attempt=1, arm="after", model=s.MODEL, commit=s.
 
 
 def as_logged(*lines):
-    """The lines as the dispatch script writes them: each dispatch after its pending line."""
+    """The lines as the dispatch script writes them: each dispatch after its pending line, each rerun after its
+    pending rerun."""
     out = []
     for line in lines:
         if line["action"] == "dispatch":
             out.append({**line, "run_id": None, "run_attempt": None, "action": "pending"})
+        if line["action"] == "rerun-failed":
+            out.append({**line, "action": "rerun-pending"})
         out.append(line)
     return out
+
+
+class TestTheHelper(unittest.TestCase):
+    def test_the_lines_load_as_a_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = s.write(os.path.join(tmp, "log.jsonl"), "".join(
+                json.dumps(l) + "\n" for l in as_logged(log_line(1, 1), log_line(1, 1, attempt=2))))
+            self.assertEqual([l["action"] for l in dispatch.load(path)],
+                             ["pending", "dispatch", "rerun-pending", "rerun-failed"])
 
 
 class Base(unittest.TestCase):
@@ -143,7 +155,7 @@ class TestTheDispatchLog(Base):
         self.complete(1014, commit=s.BEFORE_SHA)
         self.assertTrue(downloads.read_run(os.path.join(self.root, "1013"), arm="after", commits=COMMITS)[0][
                             "scores_usable"])
-        with self.assertRaisesRegex(Refused, "is not the after's"):
+        with self.assertRaisesRegex(Refused, "not the after's"):
             downloads.read_run(os.path.join(self.root, "1014"), arm="after", commits=COMMITS)
 
 
@@ -186,6 +198,40 @@ class TestCommandLine(Base):
         self.assertEqual((code, recs), (1, []))
         self.assertIn("refused: ", err)
 
+    def test_one_folder_without_a_log_matched_with_its_run(self):
+        folder = self.complete(1006, provenance=False)
+        os.remove(os.path.join(folder, "attempt.json"))
+        self.run_json(1006)
+        s.write(os.path.join(self.root, "1006", "jobs.json"),
+                {"jobs": [{"id": 9, "run_attempt": 1, "name": "internal · run 1", "conclusion": "failure"}]})
+        failures = s.write(os.path.join(self.root, "failures.txt"),
+                           f"run 1006 | attempt 1 | job 9 | internal · run 1 | "
+                           f'level=ERROR msg=Error error="{CAUSE}"\n')
+        code, recs, _ = self.main("--arm", "after", "--failures", failures, folder)
+        self.assertEqual((code, recs[0]["outcome"], recs[0]["failure"]["cause"]), (0, "failed", CAUSE))
+        self.assertEqual(recs[0]["job"]["id"], 9)
+
+    def test_a_run_folder_with_jobs_and_no_artefact(self):
+        run_dir = os.path.join(self.root, "run")
+        s.write(os.path.join(run_dir, "run.json"), {"id": 1007, "display_title":
+                f"baseline · 2026-09-23 · openai/{s.MODEL} · batch 1 · x1 · vens {s.AFTER_SHA}"})
+        s.write(os.path.join(run_dir, "jobs.json"),
+                {"jobs": [{"id": 1, "run_attempt": 1, "name": "internal · run 1", "conclusion": "cancelled"}]})
+        code, recs, _ = self.main("--arm", "after", run_dir)
+        self.assertEqual((code, [r["failure"]["cause"] for r in recs]), (0, ["job cancelled"]))
+
+    def test_a_run_folder_with_nothing_to_read(self):
+        run_dir = os.path.join(self.root, "run")
+        s.write(os.path.join(run_dir, "run.json"), {"id": 1008})
+        code, recs, err = self.main(run_dir)
+        self.assertEqual((code, recs), (1, []))
+        self.assertIn("a workflow run with no attempt", err)
+        empty = os.path.join(self.root, "empty")
+        os.makedirs(empty)
+        code, recs, err = self.main(empty)
+        self.assertEqual((code, recs), (1, []))
+        self.assertIn("no attempt", err)
+
 
 class TestJobsAndFailures(Base):
     def test_both_jobs_shapes(self):
@@ -207,24 +253,33 @@ class TestJobsAndFailures(Base):
         self.assertEqual([(f["run_id"], f["attempt"], f["job_id"], f["job"], f["error"]) for f in got],
                          [(None, 1, 11, "internal · run 3", CAUSE), (1001, 2, 12, "internal-api · run 6", CAUSE)])
 
-    def test_jobs_without_an_artefact_whatever_their_conclusion(self):
+    def test_jobs_that_did_not_succeed_without_an_artefact(self):
         self.complete(1020)
         self.run_json(1020)
         s.write(os.path.join(self.root, "1020", "jobs.json"),
                 {"jobs": [{"id": 1, "run_attempt": 1, "name": "internal · run 1", "conclusion": "success"},
                           {"id": 2, "run_attempt": 1, "name": "internal-api · run 1", "conclusion": "cancelled"},
-                          {"id": 3, "run_attempt": 1, "name": "internet-facing · run 1", "conclusion": "success"},
+                          {"id": 3, "run_attempt": 1, "name": "internet-facing · run 1", "conclusion": "failure"},
                           {"id": 4, "run_attempt": 1, "name": "plan", "conclusion": "success"},
                           {"id": 5, "run_attempt": 1, "name": "internal · run 2", "conclusion": None}]})
         recs = downloads.read_run(os.path.join(self.root, "1020"), lines=as_logged(log_line(1020, 1)))
         self.assertEqual(len(recs), 3)
-        for rec, kind, cause in ((recs[1], "interrupted", "artefact missing; job cancelled"),
-                                 (recs[2], None, "artefact missing; job success")):
+        for rec, cause in ((recs[1], "job cancelled"), (recs[2], "job failure")):
             self.assertEqual((rec["folder"], rec["outcome"], rec["failure"]["kind"], rec["failure"]["cause"]),
-                             (None, "failed", kind, cause))
-            self.assertEqual(rec["what"]["replicate"], 1)
-            for field in attempt.RECORD + ("calls", "vens_commit"):
+                             (None, "failed", None, cause))
+            self.assertEqual((rec["what"]["replicate"], rec["problems"]), (1, ["artefact missing"]))
+            for field in attempt.RECORD + ("calls", "vens_commit", "failure.kind"):
                 self.assertIn(field, rec["unknown"])
+
+    def test_a_job_that_succeeded_without_its_artefact_is_refused(self):
+        self.complete(1024)
+        self.run_json(1024)
+        s.write(os.path.join(self.root, "1024", "jobs.json"),
+                {"jobs": [{"id": 1, "run_attempt": 1, "name": "internal · run 1", "conclusion": "success"},
+                          {"id": 2, "run_attempt": 1, "name": "internal-api · run 1", "conclusion": "success"}]})
+        with self.assertRaisesRegex(Refused, r"job 2 \(internal-api · run 1, attempt 1\) succeeded, yet its artefact "
+                                             r"is not in the download"):
+            downloads.read_run(os.path.join(self.root, "1024"), lines=as_logged(log_line(1024, 1)))
 
     def test_jobs_a_rerun_carries_over(self):
         log = [s.summary_line(rows=1, cves=1, llm_calls=2, asked_again=0, splits=0, calls__M=1, calls__O=1,

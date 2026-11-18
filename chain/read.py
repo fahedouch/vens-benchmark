@@ -18,12 +18,19 @@ from chain import attempt, dispatch, downloads
 
 
 def read_any(path, lines=None, arm=None, failures=(), commits=None):
+    """An attempt folder, a workflow run's download (its artefact folders, or its run.json or jobs.json from the API
+    even with no artefact), or a campaign's downloads; never nothing."""
+    kw = {"lines": lines, "arm": arm, "failures": failures, "commits": commits}
     if any(os.path.exists(os.path.join(path, f)) for f in ("attempt.json", "provenance.json")) or \
             attempt.parse_name(os.path.basename(os.path.normpath(path))):
-        return [downloads.read_folder(path, lines=lines, arm=arm, failures=failures, commits=commits)]
-    if glob.glob(os.path.join(path, "baseline-*")):
-        return downloads.read_run(path, lines=lines, arm=arm, failures=failures, commits=commits)
-    return downloads.read_downloads(path, lines=lines, arm=arm, failures=failures, commits=commits)
+        return [downloads.read_folder(path, **kw)]
+    runs = [d for d in os.listdir(path) if d.isdigit() and os.path.isdir(os.path.join(path, d))]
+    if glob.glob(os.path.join(path, "baseline-*")) or (downloads.is_run_dir(path) and not runs):
+        return downloads.read_run(path, **kw)
+    records = downloads.read_downloads(path, **kw)
+    if not records:
+        raise attempt.Refused(f"{path}: no attempt, no workflow run and no dispatch log line read there")
+    return records
 
 
 def _commit(text):

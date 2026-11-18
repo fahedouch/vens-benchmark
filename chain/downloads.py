@@ -112,25 +112,33 @@ def _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits):
 
 
 def read_folder(folder, *, lines=None, arm=None, failures=(), commits=None):
-    """One attempt folder read on its own. With a dispatch log, it must be a baseline.yml artefact the log maps,
-    its run id from its parent folder or its records."""
-    if lines is None:
-        return attemptmod.read_attempt(folder, arm=arm, commits=commits)
+    """One attempt folder read on its own. A baseline.yml artefact is matched as read_run matches it, with its
+    parent's run.json, jobs.json and the failures, and through the dispatch log when there is one; a scenario run's
+    folder is read alone, and no dispatch log maps it."""
     if attemptmod.parse_name(os.path.basename(os.path.normpath(folder))) is None:
-        raise Refused(f"{folder}: a dispatch log maps baseline.yml artefacts, and this is not one")
+        if lines is not None:
+            raise Refused(f"{folder}: a dispatch log maps baseline.yml artefacts, and this is not one")
+        return attemptmod.read_attempt(folder, arm=arm, commits=commits)
     parent = os.path.dirname(os.path.normpath(folder))
-    run_id, meta = _run(parent, [folder]) if os.path.basename(parent).isdigit() else _run(folder, [folder])
+    run_id, meta = _run(parent, [folder]) if is_run_dir(parent) else _run(folder, [folder])
     jobs = load_jobs(os.path.join(parent, "jobs.json"))
-    rec, _ = _artefact(folder, run_id, meta, jobs, dispatch.index(lines), arm, failures, commits)
+    idx = dispatch.index(lines) if lines is not None else None
+    rec, _ = _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits)
     return rec
+
+
+def is_run_dir(path):
+    """Whether path is one workflow run's download: a numeric name, or its run.json or jobs.json from the API."""
+    return os.path.basename(os.path.normpath(path)).isdigit() or any(
+        os.path.exists(os.path.join(path, n)) for n in ("run.json", "jobs.json"))
 
 
 def read_run(run_dir, *, lines=None, arm=None, failures=(), commits=None):
     """Every attempt of one workflow run. lines: the dispatch log, when the campaign has one: each folder is then
     mapped through it, and refused when no line names its run or attempt, or when its record gives another commit
     or model. Without a log, the folders with provenance.json must agree on what was dispatched (0B's rule). A job
-    with no artefact folder is a failed attempt whatever its conclusion, and a logged attempt with neither folder
-    nor job is flagged."""
+    with no artefact folder is a failed attempt unless it succeeded, which a truncated download is refused for; a
+    logged attempt with neither folder nor job is flagged; a run that yields no attempt is refused."""
     folders = sorted(f for f in glob.glob(os.path.join(run_dir, "baseline-*")) if os.path.isdir(f))
     run_id, meta = _run(run_dir, folders)
     jobs = load_jobs(os.path.join(run_dir, "jobs.json"))
@@ -151,12 +159,17 @@ def read_run(run_dir, *, lines=None, arm=None, failures=(), commits=None):
         m = _JOB.fullmatch(job["name"] or "")
         if not m or job["conclusion"] is None or (m.group(1), int(m.group(2)), job["run_attempt"]) in seen:
             continue
+        if job["conclusion"] == "success":
+            raise Refused(f"{run_dir}: job {job['id']} ({job['name']}, attempt {job['run_attempt']}) succeeded, yet "
+                          f"its artefact is not in the download; a truncated download is not a failed job")
         line = dispatch.line_for(idx, run_id, job["run_attempt"], f"{run_dir} job {job['id']}") if idx else None
         records.append(attemptmod.without_artefact(job, model, run_id, line))
     for attempt, line in sorted((idx or {}).get(run_id, {}).items()):
         if not any(a == attempt for _, _, a in seen) and not any(j["run_attempt"] == attempt for j in ran):
             records.append(attemptmod.not_downloaded(
                 line, f"run {run_id} attempt {attempt} is in the dispatch log, with no artefact folder and no job"))
+    if not records:
+        raise Refused(f"{run_dir}: a workflow run with no attempt, no artefact folder and no job")
     return records
 
 

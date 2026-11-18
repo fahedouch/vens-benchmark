@@ -1,5 +1,6 @@
 """The attempt record: its four outcomes told apart, and a download made before the record
 read with its added fields unknown, none inferred."""
+import json
 import os
 import tempfile
 import unittest
@@ -22,9 +23,12 @@ class Base(unittest.TestCase):
         self.root = tmp.name
 
     def folder(self, record, **kw):
+        return self.folder_at(1001, record, **kw)
+
+    def folder_at(self, run_id, record, **kw):
         kw.setdefault("log", [s.summary_line(rows=1, cves=1, llm_calls=2, asked_again=0, splits=0, calls__M=1,
                                              calls__O=1, failed=False)])
-        return s.baseline_folder(self.root, 1001, "internal", 1, 1, record=record, **kw)
+        return s.baseline_folder(self.root, run_id, "internal", 1, 1, record=record, **kw)
 
 
 class TestOutcomes(Base):
@@ -57,16 +61,51 @@ class TestOutcomes(Base):
 
     def test_a_job_that_succeeded_without_an_exit_status(self):
         job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
-        rec = attempt.read_attempt(self.folder({"generate": {"started_at": "2026-11-20T10:00:00Z"}}, log=[],
-                                               vex_file=False, provenance=False, answers=False), job=job)
+        rec = attempt.read_attempt(self.folder({"generate": {"started_at": "2026-11-20T10:00:00Z"}}, log=[]), job=job)
         self.assertEqual((rec["failure"]["kind"], rec["failure"]["cause"]), (None, None))
         self.assertIn("job success, yet attempt.json gives vens generate no exit status", rec["problems"])
+
+    def test_a_job_that_succeeded_with_its_files_missing_is_refused(self):
+        job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
+        folder = self.folder(s.COMPLETE_RECORD, vex_file=False, provenance=False, answers=False)
+        with self.assertRaisesRegex(attempt.Refused, "its job succeeded, yet the download holds no provenance.json "
+                                                     "and no VEX; a truncated download is not a failed job"):
+            attempt.read_attempt(folder, job=job)
+
+    def test_a_record_that_says_provenance_without_the_file_is_refused(self):
+        folder = self.folder(s.COMPLETE_RECORD, provenance=False)
+        with self.assertRaisesRegex(attempt.Refused, "attempt.json says provenance.json was written, yet the download "
+                                                     "holds none"):
+            attempt.read_attempt(folder)
+
+    def test_commits_that_contradict_each_other_or_the_arm(self):
+        folder = self.folder(s.COMPLETE_RECORD)
+        prov = os.path.join(folder, "provenance.json")
+        with open(prov) as fh:
+            doc = json.load(fh)
+        s.write(prov, {**doc, "vens_sha": s.BEFORE_SHA})
+        with self.assertRaisesRegex(attempt.Refused, "attempt.json gives vens .*, provenance.json"):
+            attempt.read_attempt(folder)
+        other = self.folder_at(1002, s.COMPLETE_RECORD, commit=s.BEFORE_SHA)
+        with self.assertRaisesRegex(attempt.Refused, "attempt.json gives vens .*, not the after's"):
+            attempt.read_attempt(other, commits={"before": s.BEFORE_SHA, "after": s.AFTER_SHA})
+
+    def test_an_unknown_arm_is_incomplete(self):
+        folder = self.folder({**s.COMPLETE_RECORD, "arm": None})
+        rec = attempt.read_attempt(folder)
+        self.assertEqual((rec["outcome"], rec["incomplete"], rec["scores_usable"]),
+                         ("complete", ["arm unknown"], False))
+
+    def test_a_complete_attempt_whose_log_has_no_summary(self):
+        rec = attempt.read_attempt(self.folder(s.COMPLETE_RECORD, log=[s.line("INFO", "Config loaded")]))
+        self.assertIn("the log holds no run summary", rec["problems"])
+        self.assertTrue(rec["scores_usable"])
 
     def test_the_commit_of_another_arm_is_refused(self):
         folder = self.folder(s.COMPLETE_RECORD)
         commits = {"before": s.BEFORE_SHA, "after": s.AFTER_SHA}
         self.assertTrue(attempt.read_attempt(folder, commits=commits)["scores_usable"])
-        with self.assertRaisesRegex(attempt.Refused, "is not the before's"):
+        with self.assertRaisesRegex(attempt.Refused, "not the before's"):
             attempt.read_attempt(folder, arm="before", commits=commits)
 
     def test_a_name_its_record_contradicts_is_refused(self):
@@ -234,18 +273,25 @@ class TestBeforeTheRecord(Base):
                                           "cause_source": "failures.txt", "reason": attempt.NO_PROVENANCE})
         for field in ("failure.kind", "failure.step", "generate.exit_status", "enrich.exit_status", "archive_check"):
             self.assertIn(field, rec["unknown"])
-        self.assertIn("a VEX but no provenance.json, its job failure: the job failed after the scoring wrote the VEX, "
-                      "at a step the download does not name", rec["problems"])
+        self.assertIn("a VEX but no provenance.json, the job ended failure: read as a failed attempt at a step the "
+                      "download does not name", rec["problems"])
         self.assertIsNotNone(rec["ratings"])
         self.assertFalse(rec["scores_usable"])
 
     def test_a_vex_without_provenance_its_job_succeeded_or_not_listed(self):
         folder = self.folder(None, log=None, provenance=False, answers=False)
         job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
-        with self.assertRaisesRegex(attempt.Refused, "its job success; a truncated download is not a failed job"):
+        with self.assertRaisesRegex(attempt.Refused, "its job succeeded, yet the download holds no provenance.json; "
+                                                     "a truncated download is not a failed job"):
             attempt.read_attempt(folder, arm="before", job=job)
         with self.assertRaisesRegex(attempt.Refused, "its job not listed; a truncated download is not a failed job"):
             attempt.read_attempt(folder, arm="before")
+
+    def test_calls_alone_its_job_succeeded(self):
+        folder = self.folder(None, log=None, provenance=False, vex_file=False, answers=False)
+        job = {"id": 1, "name": "internal · run 1", "run_attempt": 1, "conclusion": "success"}
+        with self.assertRaisesRegex(attempt.Refused, "a truncated download is not a failed job"):
+            attempt.read_attempt(folder, arm="before", job=job)
 
 
 class TestNames(unittest.TestCase):

@@ -211,8 +211,6 @@ def _from_record(rj, provenance_present, job):
     if check != "success":
         return FAILED, _failure(LATER_STEP, "archive_check", f"archive check {check}", "attempt.json"), steps, \
             unknown, problems
-    if rj.get("provenance") and not provenance_present:
-        problems.append("attempt.json says provenance.json was written; the download holds none")
     if not (rj.get("provenance") and provenance_present):
         return FAILED, _failure(LATER_STEP, "provenance", "provenance.json not written", "attempt.json"), steps, \
             unknown, problems
@@ -236,8 +234,8 @@ def _without_record(folder, files, failure_line, job):
         if conclusion in (None, "success"):
             raise Refused(f"{folder}: a VEX but no provenance.json and no attempt.json, its job "
                           f"{conclusion or 'not listed'}; a truncated download is not a failed job")
-        problems = [f"a VEX but no provenance.json, its job {conclusion}: the job failed after the scoring wrote the "
-                    f"VEX, at a step the download does not name"]
+        problems = [f"a VEX but no provenance.json, the job ended {conclusion}: read as a failed attempt at a step the "
+                    f"download does not name"]
     error = (failure_line or {}).get("error")
     failure = {**_failure(None, None, error, "failures.txt"), "reason": NO_PROVENANCE}
     steps = {"generate": None, "enrich": None, "archive_check": None, "provenance": False}
@@ -269,25 +267,56 @@ def _run_failed(summary, outcome, failure):
     return True if failure["kind"] in (SCORING, INTERRUPTED) else None
 
 
+def check_files(folder, files, rj, job):
+    """Refused when a job that succeeded, or a record that says provenance.json was written, left a download without
+    the files such a job uploads: a truncated download is not a failed job."""
+    lacking = [n for n, f in (("provenance.json", files["provenance"]), ("VEX", files["vex"])) if f is None]
+    if (job or {}).get("conclusion") == "success" and lacking:
+        raise Refused(f"{folder}: its job succeeded, yet the download holds no {' and no '.join(lacking)}; a "
+                      f"truncated download is not a failed job")
+    if (rj or {}).get("provenance") and files["provenance"] is None:
+        raise Refused(f"{folder}: attempt.json says provenance.json was written, yet the download holds none; a "
+                      f"truncated download is not a failed job")
+
+
+def check_commits(folder, rj, prov, arm, commits):
+    """Refused when attempt.json and provenance.json give two vens commits, or one other than the arm's expected
+    commit."""
+    given = {src: doc["vens_sha"] for src, doc in (("attempt.json", rj), ("provenance.json", prov))
+             if doc and doc.get("vens_sha")}
+    if len(set(given.values())) > 1:
+        raise Refused(f"{folder}: attempt.json gives vens {given['attempt.json']}, provenance.json "
+                      f"{given['provenance.json']}")
+    for src, sha in given.items():
+        if commits and arm in commits and sha != commits[arm]:
+            raise Refused(f"{folder}: {src} gives vens {sha}, not the {arm}'s {commits[arm]}")
+
+
 def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, meta=None, commits=None):
     """The record of one attempt. arm: 'before' or 'after' when the caller knows it (the dispatch log's line gives
     it otherwise); line: the dispatch log's line for this attempt; job: its jobs.json entry; failure_line: the
     failures.txt entry for its job (downloads made before the record); meta: its run's dispatch metadata
-    (run_meta), the last source of what was dispatched; commits: {arm: vens commit}, each arm's expected commit."""
+    (run_meta), the last source of what was dispatched; commits: {arm: vens commit}, each arm's expected commit.
+
+    scores_usable is true only for a complete attempt whose arm is known, whose VEX reads with each CVE listed and
+    rated once (vex_problems empty), whose archive check passes restated from its calls and attestation, whose record
+    is not incomplete (the after with its answers.json), and whose answers.json, for the after, matches its VEX with
+    no CVE listed twice (answers' problems empty). The other problems are reported beside the scores and leave them
+    usable: arms, logs, summaries, counters or defects that disagree, calls out of vens's order, a missing summary."""
     files = _files(folder)
     rj, prov = _json(files["record"]), _json(files["provenance"])
     name = parse_name(os.path.basename(os.path.normpath(folder)))
     if rj is None and prov is None and name is None:
         raise Refused(f"{folder}: no attempt.json, no provenance.json and not an artefact's name")
     check_name(folder, name, rj, prov)
+    check_files(folder, files, rj, job)
     what = _what(rj, prov, name, line, arm, meta)
     problems = []
     for source, value in (("argument", arm), ("dispatch log", (line or {}).get("arm")), ("attempt.json",
                                                                                          (rj or {}).get("arm"))):
         if value is not None and value != what["arm"]:
             problems.append(f"arm {value} from the {source}, {what['arm']} taken")
-    if commits and what["arm"] in commits and what["vens_commit"] not in (None, commits[what["arm"]]):
-        raise Refused(f"{folder}: vens {what['vens_commit']} is not the {what['arm']}'s {commits[what['arm']]}")
+    check_commits(folder, rj, prov, what["arm"], commits)
     if rj is not None:
         outcome, failure, steps, unknown, found = _from_record(rj, files["provenance"] is not None, job)
         implied = []
@@ -343,11 +372,13 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
         if summary is not None and (summary["counters"], summary["defects"]) != (doc["counters"], doc["defects"]):
             problems.append("answers.json's counters or defects differ from the run summary's")
 
-    incomplete = []
+    incomplete = [] if what["arm"] in ("before", "after") else ["arm unknown"]
     if outcome == COMPLETE and what["arm"] == "after" and doc is None:
         incomplete.append("a complete run's VEX without its answers.json")
     if outcome == COMPLETE and ratings is None:
         incomplete.append("a complete attempt without a VEX")
+    if outcome == COMPLETE and recs is not None and summary is None:
+        problems.append("the log holds no run summary")
     usable = (outcome == COMPLETE and ratings is not None and not vex_problems and check[0] is True
               and not incomplete and not (answers or {}).get("problems"))
     if outcome == COMPLETE and check[0] is not True:
@@ -366,23 +397,23 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
 
 
 def without_artefact(job, model, run_id, line=None):
-    """An attempt jobs.json lists with no artefact downloaded, whatever its job's conclusion: a failed attempt of
-    which only the job is known."""
+    """An attempt jobs.json lists, its job not successful, with no artefact downloaded: a failed attempt of which
+    only the job is known. With no record of a scoring start, its kind stays unknown, the job's conclusion its cause."""
     m = re.fullmatch(r"(.+) · run (\d+)", job["name"])
-    conclusion = job.get("conclusion")
-    kind = INTERRUPTED if conclusion in ("cancelled", "timed_out") else None
     what = {"runner": "baseline.yml", "context": m.group(1) if m else None,
             "replicate_in_run": int(m.group(2)) if m else None, "model": model, "run_id": run_id,
             "run_attempt": job.get("run_attempt"), "job": job["name"], "arm": (line or {}).get("arm"),
             "replicate": (line or {}).get("replicate")}
-    unknown = list(RECORD) + ["artefact", "calls", "log", "summary", "vens_commit", "models_attested", "failure.step"]
+    unknown = list(RECORD) + ["artefact", "calls", "log", "summary", "vens_commit", "models_attested", "failure.kind",
+                              "failure.step"]
     return {"folder": None, "record": None, "what": what, "models_attested": None, "outcome": FAILED,
-            "failure": _failure(kind, None, f"artefact missing; job {conclusion}", "jobs.json"),
+            "failure": _failure(None, None, f"job {job.get('conclusion')}", "jobs.json"),
             "steps": {"generate": None, "enrich": None, "archive_check": None, "provenance": None}, "implied": [],
-            "unknown": sorted(unknown + ([] if kind else ["failure.kind"])), "job": job, "summary": None,
+            "unknown": sorted(unknown), "job": job, "summary": None,
             "calls": {"archived": None, "with_reply": None, "kinds": None}, "recovery": None, "cost_estimate": None,
             "archive_check": {"passed": None, "reason": "no artefact"}, "answers": None, "ratings": None,
-            "vex_problems": [], "scores_usable": False, "incomplete": [], "problems": ["artefact missing"]}
+            "vex_problems": [], "scores_usable": False, "incomplete": [] if what["arm"] else ["arm unknown"],
+            "problems": ["artefact missing"]}
 
 
 def not_downloaded(line, why):
