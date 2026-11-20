@@ -39,6 +39,17 @@ class TestEstimate(unittest.TestCase):
         self.assertEqual(cost.price("gpt-5.4-mini-2026-03-17"), cost.price("gpt-5.4-mini"))
         self.assertIsNone(cost.price("claude-sonnet-5"))
 
+    def test_the_third_model_dated_or_not(self):
+        for model in ("claude-haiku-4-5-20251001", "claude-haiku-4-5"):
+            self.assertEqual(cost.price(model), (1.0, 5.0))
+        got = cost.estimate(self.calls, ["planned", "planned"], "claude-haiku-4-5-20251001")
+        self.assertAlmostEqual(got["total"], (1600 / 4 * 1.0 + 100 / 4 * 5.0) / 1e6)
+
+    def test_the_pair_priced_as_before(self):
+        for model in ("gpt-5.4-mini-2026-03-17", "gpt-5.4-mini"):
+            self.assertEqual(cost.price(model), (0.75, 4.50))
+        self.assertEqual(cost.price("claude-sonnet-4-6"), (3.0, 15.0))
+
 
 if __name__ == "__main__":
     unittest.main()

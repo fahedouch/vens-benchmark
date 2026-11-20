@@ -7,15 +7,16 @@ estimate beside it, from each archived call's prompts and reply, never added to 
 import re
 
 # List prices per 1M tokens (input, output), standard tier.
-PRICES = {"gpt-5.4-mini": (0.75, 4.50), "claude-sonnet-4-6": (3.0, 15.0)}
+PRICES = {"gpt-5.4-mini": (0.75, 4.50), "claude-sonnet-4-6": (3.0, 15.0), "claude-haiku-4-5": (1.0, 5.0)}
 CHARS_PER_TOKEN = 4.0
 LABEL = ("estimate, not measured: each archived call's prompt and reply characters at 4 per token and the model's "
          "list price, the JSON schema sent with each call not counted")
 
 
 def price(model):
-    """(input, output) dollars per 1M tokens, a dated snapshot priced as its model; None for a model not listed."""
-    return PRICES.get(re.sub(r"-\d{4}-\d{2}-\d{2}$", "", model or ""))
+    """(input, output) dollars per 1M tokens, a dated snapshot (OpenAI's -YYYY-MM-DD, Anthropic's -YYYYMMDD) priced as
+    its model; None for a model not listed."""
+    return PRICES.get(re.sub(r"-(\d{4}-\d{2}-\d{2}|\d{8})$", "", model or ""))
 
 
 def _chars(raw):
