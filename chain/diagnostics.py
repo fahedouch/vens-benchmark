@@ -2,8 +2,9 @@
 model with the after's conservative fallback. Each is printed and judged by nothing.
 
 - Consistency: per model, scenario and arm, the SD (n - 1) of the score over the replicates' runs, and their mean over
-  the scenarios; for the after, per question, the agreement of its answers, the mean over replicate pairs of whether
-  the two answers are the same, averaged over the scenarios that ask it.
+  the scenarios; for the after, per question, reachability's included from 310-step3b 19b333a, the agreement of its
+  answers, the mean over replicate pairs of whether the two answers are the same, averaged over the scenarios that ask
+  it.
 - The wrong YAML: the runs of wrong_yaml, whose context contradicts its CVE's text, as published.
 - The table against the null model (baseline.py, frozen): per scenario, its four aggregates scored under each arm's
   own rule, the before's ((TA + VU) / 2) x ((T + B) / 2) and its 60/40/20/5 thresholds, the after's L x max(T, B)
@@ -17,7 +18,7 @@ import itertools
 import statistics
 from fractions import Fraction
 
-from chain import cdx, demo, families
+from chain import cdx, contract, demo, families
 from chain import cells as cellmod
 
 WRONG_YAML = "wrong_yaml"
@@ -59,7 +60,9 @@ def consistency(cells):
             continue
         by_q = collections.defaultdict(list)
         for x in recs:
-            for f, e in (families.factors(x) or {}).items():
+            reach = families.reachability(x)
+            asked = {**({contract.R: reach} if reach is not None else {}), **(families.factors(x) or {})}
+            for f, e in asked.items():
                 if e["answer"] is not None:
                     by_q[f].append(families.norm(e["answer"]))
         for f, got in by_q.items():

@@ -1,6 +1,7 @@
 """Shared helpers: the environment the optional tests need, and synthetic folders as vens and baseline.yml leave them.
 
     VB_VENS_AFTER, VB_VENS_BEFORE   vens binaries built from 310-step3 b7c0435 and main 43ab10b
+    VB_VENS_REACH                   a vens binary built from 310-step3b 0421679, which asks reachability first
     VB_DEMO                         a vens-demo tree at 7ab1570 (runs/2026-09-23/scan/scan.json, contexts/)
     VB_QUICKSTART                   vens's examples/quickstart at b7c0435
     VB_JAR, VB_JDK                  the calculator's 1.0.1 JAR and a JDK bin folder (JAVA_HOME/bin otherwise)
@@ -13,6 +14,7 @@ import os
 
 AFTER_SHA = "b7c0435835447027b04d54d4e6befaaee6b0626b"
 BEFORE_SHA = "43ab10bf980d42b77157e003a27921805a546770"
+REACH_SHA = "04216798708545341d3867f9f7b92fcfc350b4e4"
 MODEL = "gpt-5.4-mini-2026-03-17"
 VECTOR = "SL:9/M:1/O:7/S:9/ED:9/EE:5/A:9/ID:9/LC:9/LI:9/LAV:7/LAC:9/FD:1/RD:4/NC:2/PV:9"
 SCORE, SEVERITY = 61.625, "critical"

@@ -15,15 +15,17 @@ On one scenario, each replicate's value comes with the levels of the quantity's 
 each. The move between two runs of the after: none when no factor of the quantity changes level; Go's when every
 factor that changes took its level from Go in both runs (constant, config, floor), or the same answer in both, which
 Go crossed with a declared field (Loss of confidentiality's column, Loss of accountability's traceability, Privacy
-violation's cap); the model's when every factor that changes was answered in both runs, the two answers differing;
-mixed otherwise, a factor Go set in one run and the model answered in the other among them. The before publishes four
-aggregates copied into its vector, with no source: its moves are not attributed.
+violation's cap), reachability's not_reachable in both included (310-step3b 19b333a); the model's when every factor
+that changes was answered in both runs, the two answers differing; mixed otherwise, a factor Go set in one run and the
+model answered in the other among them, reachability's among them. The before publishes four aggregates copied into
+its vector, with no source: its moves are not attributed. "answer R" reads the reachability answer, which no run
+before 19b333a gives.
 """
 import collections
 import statistics
 from fractions import Fraction
 
-from chain import cdx, verdicts
+from chain import cdx, contract, verdicts
 from chain import cells as cellmod
 
 GROUPS = {"L": cdx.FACTORS[:8], "TA": cdx.FACTORS[:4], "VU": cdx.FACTORS[4:8], "T": cdx.FACTORS[8:12],
@@ -69,6 +71,13 @@ def factors(rec):
     return None if entry is None or entry["unrated"] else entry["factors"]
 
 
+def reachability(rec):
+    """{answer, reading} of the run's one CVE's reachability, None without, or before 19b333a."""
+    vid = _cve(rec)
+    entry = ((rec.get("answers") or {}).get("per_cve") or {}).get(vid)
+    return None if entry is None or entry["unrated"] else entry.get("reachability")
+
+
 def norm(answer):
     return tuple(sorted(answer)) if isinstance(answer, list) else answer
 
@@ -82,6 +91,9 @@ def value(rec, quantity):
     if quantity in ("score", "severity", "L", "TA", "VU", "T", "B"):
         return r[quantity]
     fs = factors(rec)
+    if quantity == f"answer {contract.R}":
+        reach = reachability(rec)
+        return None if reach is None else norm(reach["answer"])
     if quantity.startswith("answer "):
         f = (fs or {}).get(quantity.split()[1])
         return None if f is None else norm(f["answer"])
@@ -102,8 +114,10 @@ def moved(rec_a, rec_b, quantity):
         if x is None or y is None:
             return None
         if x["level"] != y["level"]:
-            out.append((f, x["level"], y["level"], x["source"], y["source"],
-                        x["answer"] is not None and norm(x["answer"]) == norm(y["answer"])))
+            # Both from reachability: one answer, not_reachable, which Go crossed with traceability.
+            same = (x["answer"] is not None and norm(x["answer"]) == norm(y["answer"])) or (
+                x["source"] == y["source"] == contract.REACH_SOURCE)
+            out.append((f, x["level"], y["level"], x["source"], y["source"], same))
     return out
 
 

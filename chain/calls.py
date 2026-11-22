@@ -120,7 +120,8 @@ def _ordered_subset(sub, full):
 def _classify_after(calls):
     """Mirrors ask.go at 310-step3: per batch and question one call, split in half while the provider truncates
     it, then one ask-again over the CVEs still without an answer, itself split if truncated; then the
-    adjustments."""
+    adjustments. From 310-step3b 19b333a reachability is the first question, and the six it decides list only the
+    CVEs it leaves reachable: a question none of the batch gets makes no call."""
     asks = [asked(c, "after") for c in calls]
     kinds, n = [None] * len(calls), len(calls)
 

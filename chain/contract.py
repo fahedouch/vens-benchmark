@@ -4,6 +4,15 @@ pkg/owasp/levels.go, pkg/cvss/applicability.go and pkg/riskconfig/fields.go ther
 scenarios through them. tests/test_verdicts.py checks them against the levels and sources the after's mock writes:
 every scenario under its declared values, and six scenarios under four other assignments of G2 to G4. The 45
 combinations chain/verdicts.py enumerates run on these Python rules alone.
+
+The same rules at 310-step3b 19b333a, which asks reachability first, take reach=, the CVE's answer to it: R is no
+factor and has no level; read as reachable unless it is not_reachable, it otherwise sets Opportunity and Ease of
+exploit to their lowest levels, the three impacts to their floors where the vector does not floor them already, and
+Loss of accountability to no accountability loss's cell of its traceability column, each with source reachability and
+none of the six asked. Since 219aad9 the three impacts also answer no_impact, at their floors. From 0421679 a flagged
+CVE not reachable whose Privacy violation was asked gets an adjustment call on confidentiality alone, which can lower
+Privacy violation (source adjustment), never the six. tests/test_reach.py checks these rules against the mock of a
+binary built at 0421679. reach=None is b7c0435's contract, which asks no R.
 """
 import json
 
@@ -64,6 +73,32 @@ ANSWER_IDS = {**{f: tuple(a) for f, a in ANSWERS.items()}, "LC": tuple(LC_EXTENT
               "ID": CHANNELS + (CANNOT_TELL,)}
 
 
+# 310-step3b 19b333a's reachability question, asked first, and what its answer decides.
+R = "R"
+NOT_REACHABLE, NO_IMPACT = "not_reachable", "no_impact"
+REACHABILITY = ("reachable", NOT_REACHABLE, CANNOT_TELL)
+REACH_SOURCE = "reachability"
+REACHED_ONLY = ("O", "EE", "LC", "LI", "LAV", "LAC")
+REACH_QUESTIONS = (R,) + QUESTIONS
+# The lowest level each factor reachability decides takes; Loss of accountability's is no accountability loss's,
+# identified's row, by traceability.
+UNREACHED = {"O": 0, "EE": 1, "LC": FLOOR["LC"], "LI": FLOOR["LI"], "LAV": FLOOR["LAV"]}
+AXIS = {"LC": "C", "LI": "I", "LAV": "A"}
+REACH_ANSWER_IDS = {**ANSWER_IDS, R: REACHABILITY, **{f: (NO_IMPACT,) + ANSWER_IDS[f] for f in AXIS}}
+
+
+def reachable(answer):
+    """Whether Go reads a reachability answer as reachable: every answer but not_reachable, cannot_tell and one off
+    the list taking the worst case."""
+    return answer != NOT_REACHABLE
+
+
+def _unreached(f, floored, reach):
+    """Whether reachability, answered reach under 19b333a's contract, sets factor f: one of the six, the CVE read as
+    not reachable, and not an impact whose axis the vector floors, which keeps its floor."""
+    return reach is not None and f in REACHED_ONLY and not reachable(reach) and AXIS.get(f) not in floored
+
+
 def v3_axes(vector):
     """{C, I, A: value} of a CVSS 3.x vector."""
     parts = dict(p.partition(":")[::2] for p in vector.split("/")[1:])
@@ -105,8 +140,14 @@ def deployment(config):
             "traceability": ctx.get("traceability"), "data_subjects": ctx.get("data_subjects")}
 
 
-def asked(f, dep, floored, described=True):
-    """Whether a CVE gets factor f's question."""
+def asked(f, dep, floored, described=True, *, reach=None):
+    """Whether a CVE gets factor f's question; reach: its reachability answer under 19b333a's contract, None under
+    b7c0435's."""
+    if reach is not None:
+        if f == R:
+            return True
+        if f in REACHED_ONLY and not reachable(reach):
+            return False
     if f in ("M", "O", "EE"):
         return described
     if f == "ID":
@@ -126,12 +167,21 @@ def asked(f, dep, floored, described=True):
     return f in ("LAC", "FD", "RD")
 
 
-def options(f, dep, floored, described=True):
-    """Factor f's level for each answer its question can get, {answer: level}; {None: level} where Go sets it."""
+def options(f, dep, floored, described=True, *, reach=None):
+    """Factor f's level for each answer its question can get, {answer: level}; {None: level} where Go sets it. reach:
+    the CVE's reachability answer under 19b333a's contract, None under b7c0435's."""
+    if f == R:
+        raise ValueError("R is the reachability question, no factor: it has no level")
     if f in CONSTANT:
         return {None: CONSTANT[f]}
     if f == "S":
         return {None: SIZE[dep["exposure"]]}
+    if _unreached(f, floored, reach):
+        if f == "LAC":
+            return {None: LAC_ACTOR["identified"][dep["traceability"] or "none"]}
+        return {None: UNREACHED[f]}
+    if reach is not None and f in AXIS and asked(f, dep, floored, described):
+        return {NO_IMPACT: FLOOR[f], **options(f, dep, floored, described)}
     if not asked(f, dep, floored, described):
         if f == "ID":
             det = dep["detection"]
@@ -156,13 +206,16 @@ def options(f, dep, floored, described=True):
     return dict(ANSWERS[f])
 
 
-def source(f, dep, floored, answer=None, described=True):
-    """Where factor f's level comes from, as answers.json names it: constant, config, floor or answer. An asked
-    Privacy violation's source is config where data_subjects caps the answer given."""
+def source(f, dep, floored, answer=None, described=True, *, reach=None):
+    """Where factor f's level comes from, as answers.json names it: constant, config, floor, answer or, under
+    19b333a's contract (reach, the CVE's reachability answer), reachability. An asked Privacy violation's source is
+    config where data_subjects caps the answer given."""
     if f in CONSTANT:
         return "constant"
     if f == "S":
         return "config"
+    if _unreached(f, floored, reach):
+        return REACH_SOURCE
     if f in ("M", "O", "EE"):
         # Without a description the level is cannot_tell's, still recorded as the answer's.
         return "answer"
@@ -178,8 +231,16 @@ def source(f, dep, floored, answer=None, described=True):
     return "answer"
 
 
+def questions(dep, floored, described=True, *, reach=None):
+    """The questions a CVE gets, in the order its calls ask them: under b7c0435's contract (reach None) the factors
+    asked; under 19b333a's, R first, then those its answer, reach, leaves."""
+    order = QUESTIONS if reach is None else REACH_QUESTIONS
+    return [q for q in order if asked(q, dep, floored, described, reach=reach)]
+
+
 def question_of(human_prompt):
-    """The factor a call's question belongs to, from the answer ids its prompt lists; None for another call."""
+    """The question a call asks, from the answer ids its prompt lists, at b7c0435 or 19b333a: a factor, or R for
+    reachability; None for another call."""
     lines = human_prompt.split("\n")
     if "ANSWERS" not in lines:
         return None
@@ -188,5 +249,5 @@ def question_of(human_prompt):
         if not line.startswith("- "):
             break
         ids.append(line[2:].partition(":")[0])
-    found = [f for f, known in ANSWER_IDS.items() if tuple(ids) == known]
-    return found[0] if len(found) == 1 else None
+    found = {f for table in (ANSWER_IDS, REACH_ANSWER_IDS) for f, known in table.items() if tuple(ids) == known}
+    return next(iter(found)) if len(found) == 1 else None

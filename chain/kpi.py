@@ -5,7 +5,8 @@ and conformance, not whether a score is right.
 
 - Stability: each model's own MPD and run spreads (the floor, chain/demo.py), the agreement of each factor's level
   and of the whole vector over its run pairs, the share of CVEs whose severity is the same in every run at the cell's
-  N, and for the after each question's answer agreement over the run pairs that asked it.
+  N, and for the after each question's answer agreement over the run pairs that asked it, reachability's from
+  310-step3b 19b333a included.
 - Model sensitivity: per CVE, the gap between the two models' mean scores, averaged over the CVEs, and the CVEs whose
   two ranges over the runs do not overlap; against each model's own variation by Delta's gap test and band agreement
   (chain/demo.py). It measures agreement, neither independence nor correctness.
@@ -29,11 +30,13 @@ import itertools
 import statistics
 
 from chain import attempt as attemptmod
-from chain import cdx, demo, diagnostics, ledger, stats
+from chain import cdx, contract, demo, diagnostics, ledger, stats
 from chain import cells as cellmod
 
 CONTEXT_ORDER = ("internal", "internal-api", "internet-facing")
 CANNOT_TELL = "cannot_tell"
+# The questions an after asks: reachability, which no run before 19b333a answers, then the factors.
+QUESTIONS = (contract.R,) + cdx.FACTORS
 
 
 def _mean(xs):
@@ -46,7 +49,7 @@ def _answers(rec):
 
 
 def _answer(entry, f):
-    got = entry["factors"].get(f) or {}
+    got = (entry.get("reachability") if f == contract.R else entry["factors"].get(f)) or {}
     a = got.get("answer")
     return tuple(sorted(a)) if isinstance(a, list) else a
 
@@ -87,7 +90,7 @@ def stability(cells):
                                           if ids and len(runs) > 1 else None)}
             if arm == "after":
                 per = [_answers(r) for r in runs]
-                row["answers"] = {f: a for f in cdx.FACTORS if (a := _mean(
+                row["answers"] = {f: a for f in QUESTIONS if (a := _mean(
                     [diagnostics.agreement(_given(per, v, f)) for v in ids])) is not None}
             out[(campaign, model, ctx, arm)] = row
     return out
@@ -140,7 +143,7 @@ def answers_across(runs_x, runs_y, ids):
     """{question: (agreement across the two contexts, mean agreement within each)}, averaged over the CVEs."""
     ax, ay = [_answers(r) for r in runs_x], [_answers(r) for r in runs_y]
     out = {}
-    for f in cdx.FACTORS:
+    for f in QUESTIONS:
         cross, within = [], []
         for v in ids:
             gx, gy = _given(ax, v, f), _given(ay, v, f)
@@ -186,11 +189,11 @@ def failures(cells):
 def cannot_tell(runs):
     """{"questions": {question: {rate, asked, agreement}}, "cves_affected": mean share over the runs}."""
     per = [_answers(r) for r in runs]
-    affected = [sum(1 for e in a.values() if any(f.get("answer") == CANNOT_TELL for f in e["factors"].values()))
-                / len(a) for a in per if a]
+    affected = [sum(1 for e in a.values() if _answer(e, contract.R) == CANNOT_TELL or any(
+        f.get("answer") == CANNOT_TELL for f in e["factors"].values())) / len(a) for a in per if a]
     ids = sorted(set().union(*[set(a) for a in per])) if per else []
     out = {}
-    for f in cdx.FACTORS:
+    for f in QUESTIONS:
         flags = [[x == CANNOT_TELL for x in _given(per, v, f)] for v in ids]
         asked = sum(len(x) for x in flags)
         if asked:

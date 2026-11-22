@@ -99,7 +99,7 @@ def answers_check(folders, out):
         present += 1
         checked += len(ratings)
         doc = answersmod.load(found[0])
-        problems += answersmod.duplicates(doc) + answersmod.check(doc, ratings)
+        problems += answersmod.duplicates(doc) + answersmod.check(doc, ratings) + answersmod.reachability(doc)
     return present, checked, problems
 
 

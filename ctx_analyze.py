@@ -154,13 +154,18 @@ def _unqualified(doc, after_commit, got_corpus, corpus):
     return why + ([f"its corpus is {got_corpus}, not the scenario campaigns' {corpus}"] if got_corpus != corpus else [])
 
 
+def _asked(entry):
+    """An answers.json entry's answers as per_cve gives them, reachability's with the factors'."""
+    return list(entry["factors"].values()) + ([entry["reachability"]] if entry.get("reachability") else [])
+
+
 def _not_cannot_tell(records):
-    """Why a fallback's after runs are not every answer cannot_tell; empty when they are."""
+    """Why a fallback's after runs are not every answer cannot_tell, reachability's included; empty when they are."""
     after = [r for r in records if r["what"].get("arm") == "after" and r["outcome"] == "complete"]
     n = sum(r["answers"] is None for r in after)
     why = [f"{n} complete after run(s) without answers.json"] if n else []
     other = sum(f.get("answer") not in (None, CANNOT_TELL) for r in after for e in (r["answers"] or {}).get(
-        "per_cve", {}).values() for f in e["factors"].values())
+        "per_cve", {}).values() for f in _asked(e))
     return why + ([f"{other} answer(s) other than {CANNOT_TELL}"] if other else [])
 
 

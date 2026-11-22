@@ -507,7 +507,7 @@ def report(scen, reach, differs, checks=CHECKS):
     lines = ["the prompts each contrast differs in (batch 1, the mock):"]
     for (a, b), (qs, system) in reach.items():
         lines.append(f"  {a} / {b}: after, system prompt differs {system}, questions "
-                     f"{[q for q in contract.QUESTIONS if q in qs]}; before, its one call's prompt differs "
+                     f"{[q for q in contract.REACH_QUESTIONS if q in qs]}; before, its one call's prompt differs "
                      f"{differs[(a, b)]}")
     rows, problems = check(scen, reach, differs, checks)
     lines.append("each check, its kind in each arm it reads, what its scenarios can give, and in the after the "
