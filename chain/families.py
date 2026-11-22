@@ -19,7 +19,8 @@ violation's cap), reachability's not_reachable in both included (310-step3b 19b3
 that changes was answered in both runs, the two answers differing; mixed otherwise, a factor Go set in one run and the
 model answered in the other among them, reachability's among them. The before publishes four aggregates copied into
 its vector, with no source: its moves are not attributed. "answer R" reads the reachability answer, which no run
-before 19b333a gives.
+before 19b333a gives. A row read on a run that asks reachability is marked historical False: the checks' kinds come
+from chain/verdicts.py's b7c0435 rules, which certify none of it.
 """
 import collections
 import statistics
@@ -244,8 +245,16 @@ def single(check, arm, sid, model, runs, scen):
     return {"item": sid, "per": per, "missing": missing, "median": (m, _ok_single(check, arm, sid, m, scen))}
 
 
+def _historical(runs, model, item, arm):
+    """Whether no run a row reads asks reachability, so that b7c0435's rules hold for it."""
+    sids = item if isinstance(item, tuple) else (item,)
+    return not any(verdicts.asks_reachability(x) for sid in sids
+                   for x in (runs.get((model, sid, arm)) or EMPTY)["runs"].values())
+
+
 def evaluate(cells, scen, checks=verdicts.CHECKS):
-    """[{check, arm, kind, model, row}] for every check, arm it reads, model with runs, and pair or scenario."""
+    """[{check, arm, kind, model, row, historical}] for every check, arm it reads, model with runs, and pair or
+    scenario; historical False where a run it reads asks reachability."""
     runs = scenario_runs(cells)
     models = sorted({m for m, _, _ in runs})
     out = []
@@ -255,7 +264,8 @@ def evaluate(cells, scen, checks=verdicts.CHECKS):
                 for item in c.scenarios:
                     row = pair(c, arm, *item, model, runs) if c.pairs() else single(c, arm, item, model, runs, scen)
                     if row is not None:
-                        out.append({"check": c, "arm": arm, "kind": kind, "model": model, "row": row})
+                        out.append({"check": c, "arm": arm, "kind": kind, "model": model, "row": row,
+                                    "historical": _historical(runs, model, item, arm)})
     return out
 
 

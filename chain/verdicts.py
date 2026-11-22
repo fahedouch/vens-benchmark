@@ -15,6 +15,10 @@ four levels: two scenarios whose prompts differ can get any two sets, otherwise 
     python3 -m chain.verdicts --after BIN --before BIN --work DIR [--scenarios DIR]
 
 prints each contrast and check and exits 1 when a check labelled carried or new has one outcome only.
+
+The after's rules here are chain.contract's at 310-step3 b7c0435 (reach=None), which asks no reachability: they hold
+for historical runs alone and certify no run that asks R (310-step3b 19b333a on). after_prompts refuses such a run,
+and chain/families.py marks every row read on one.
 """
 import argparse
 import functools
@@ -437,11 +441,20 @@ def run_dir(folder):
     return found[0]
 
 
+def asks_reachability(rec):
+    """Whether an attempt's answers.json holds reachability: a run these rules do not certify."""
+    return any(e.get("reachability") for e in ((rec.get("answers") or {}).get("per_cve") or {}).values())
+
+
 def after_prompts(folder):
-    """{question: (system prompt, human prompt)} of a batch-1 run on one CVE."""
+    """{question: (system prompt, human prompt)} of a batch-1 run on one CVE; refused for a run that asks
+    reachability, which b7c0435's rules do not hold for."""
     out = {}
     for c in calls.load(run_dir(folder)):
         q = contract.question_of(c.text("human"))
+        if q == contract.R:
+            raise RuntimeError(f"{folder}: call {c.number} asks reachability (R): chain.verdicts holds b7c0435's "
+                               f"rules, for historical runs only")
         if q is None or q in out:
             raise RuntimeError(f"{folder}: call {c.number} is not one question asked once")
         out[q] = (c.text("system"), c.text("human"))
@@ -507,7 +520,7 @@ def report(scen, reach, differs, checks=CHECKS):
     lines = ["the prompts each contrast differs in (batch 1, the mock):"]
     for (a, b), (qs, system) in reach.items():
         lines.append(f"  {a} / {b}: after, system prompt differs {system}, questions "
-                     f"{[q for q in contract.REACH_QUESTIONS if q in qs]}; before, its one call's prompt differs "
+                     f"{[q for q in contract.QUESTIONS if q in qs]}; before, its one call's prompt differs "
                      f"{differs[(a, b)]}")
     rows, problems = check(scen, reach, differs, checks)
     lines.append("each check, its kind in each arm it reads, what its scenarios can give, and in the after the "

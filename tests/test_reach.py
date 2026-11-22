@@ -1,14 +1,17 @@
 """Reachability, the question 310-step3b asks of every CVE first from 19b333a (venslabs/vens#310, path A):
 chain.contract's rules under it, answers.json's reachability record and the omissions it decides as the reader takes
-them, 0421679's adjustment of a flagged CVE not reachable, R in the measures, and, with VB_VENS_REACH, every scenario
-and a flagged copy of one on the mock of a binary built at 0421679. No model is called and vens gets no API key."""
+them, the adjustment of a flagged CVE not reachable through 5f797bf's exact request, R in the measures,
+chain/verdicts.py kept to historical runs, and, with VB_VENS_REACH, every scenario and a flagged copy of one on the mock
+of a binary built at 5f797bf. No model is called and vens gets no API key."""
+import hashlib
 import json
 import os
 import tempfile
 import unittest
 
 import ctx_analyze
-from chain import answers, attempt, calls, cdx, contract, diagnostics, families, kpi, runvens, venslog, verdicts
+from chain import answers, attempt, calls, cdx, contract, diagnostics, families, kpi, report_scen, runvens, venslog
+from chain import verdicts
 from chain import cells as cellmod
 from chain.errors import Refused
 from tests import records as r
@@ -24,7 +27,8 @@ NONE = frozenset()
 DEP = {"exposure": "internet", "data_sensitivity": "high", "frameworks": ("gdpr",),
        "detection": {"network": "logged", "host": "not_logged", "application": "active_in_application"},
        "traceability": "per_individual", "data_subjects": "millions"}
-# vens 19b333a's request for the reachability question (pkg/contract/testdata/internet-facing/00-R.request.txt).
+# vens's request for the reachability question, 19b333a to 5f797bf
+# (pkg/contract/testdata/internet-facing/00-R.request.txt).
 R_PROMPT = """VULNERABILITIES
 [entries]
 
@@ -39,25 +43,28 @@ deployment, as defined above.
 - cannot_tell: The facts given do not decide between the answers above.
 
 Answer every vulnerability listed above once, by its vulnId, with one answer id from ANSWERS.
-Reply with {"answers": [{"vulnId": "...", "reasoning": "...", "answer": "..."}]}.
-"""
-# vens 0421679's adjustment request for a flagged CVE not reachable
+Reply with {"answers": [{"vulnId": "...", "reasoning": "...", "answer": "..."}]}."""
+# vens 5f797bf's adjustment request for a flagged CVE not reachable
 # (pkg/contract/testdata/internet-facing/13-adjustment-not-reachable.request.txt).
 ADJ_PROMPT = """FLAGGED VULNERABILITY
 [entry]
 
 This vulnerability is flagged: its maintainers dispute it, or its severity sources disagree. Its entry carries the \
 evidence: every CVSS vector published for it with its source, every vendor severity, the flag's quoted evidence, and \
-the answer it was given without that evidence: not reachable here, as reachability is defined above. Reconsider it \
-from that evidence.
+the answer it was given without that evidence: not reachable here, as reachability is defined above. That answer \
+stands and is not asked again. Assuming exploitation were possible here, with every other deployment fact unchanged, \
+answer the question below from the supplied evidence alone. Unreachability alone does not justify `not_affected`.
 
 QUESTIONS
 confidentiality: Given this evidence, can exploiting it here affect confidentiality at all? Answer with affected, \
 not_affected or cannot_tell.
 
 Choose cannot_tell only when the evidence does not decide.
-Reply with {"reasoning": "...", "confidentiality": "..."}.
-"""
+Reply with {"reasoning": "...", "confidentiality": "..."}."""
+# The sha256 vens 5f797bf's pkg/contract/testdata/SHA256SUMS records for those two internet-facing requests, each
+# golden file the request as sent and a newline.
+VENS_SUMS = {"R": "ac0a725638f332b3afa7c596983543f3a363aea39dbf85fdd7583ba3f90274ab",
+             "adjustment": "efee93ade5b49b0c1de908c269875abab1f55975a3ad53e368b40162a677c86b"}
 # An unreachable CVE's vector: O 0, EE 1, LC 2, LI 1, LAV 1, LAC 7 (traceability none).
 UNREACHED = "SL:9/M:4/O:0/S:9/ED:9/EE:1/A:9/ID:9/LC:2/LI:1/LAV:1/LAC:7/FD:1/RD:4/NC:2/PV:9"
 SIX = {f: (None, contract.REACH_SOURCE) for f in contract.REACHED_ONLY}
@@ -92,11 +99,21 @@ def adj_prompt(vid):
     return ADJ_PROMPT.replace("[entry]", json.dumps({"vulnId": vid, "answers": {"reachability": "not_reachable"}}))
 
 
-def adjusted(vid, lc_source=contract.REACH_SOURCE):
-    """0421679's entry for a flagged CVE not reachable: confidentiality adjusted not_affected, which leaves Loss of
-    confidentiality at reachability's floor and lowers Privacy violation to its own."""
-    e = entry(vid, "not_reachable", UNREACHED.replace("PV:9", "PV:3"),
-              {**SIX, "LC": (None, lc_source), "PV": ("hundreds", "adjustment")})
+def request_parts(human):
+    """An adjustment request's entry, the request with its entry line put back as [entry], and the fields its
+    QUESTIONS ask."""
+    lines = human.split("\n")
+    block = lines[lines.index("QUESTIONS") + 1:]
+    template = "\n".join([lines[0], "[entry]"] + lines[2:])
+    return json.loads(lines[1]), template, [ln.partition(":")[0] for ln in block[:block.index("")]]
+
+
+def adjusted(vid, lc_source=contract.REACH_SOURCE, floored=()):
+    """The entry 0421679 on writes for a flagged CVE not reachable: confidentiality adjusted not_affected, which
+    leaves Loss of confidentiality at reachability's floor and lowers Privacy violation to its own; floored, the
+    impacts whose axis the vector floors, from floor."""
+    given = {**SIX, **{f: (None, "floor") for f in floored}, "LC": (None, lc_source), "PV": ("hundreds", "adjustment")}
+    e = entry(vid, "not_reachable", UNREACHED.replace("PV:9", "PV:3"), given)
     lc = lambda x: {**x, "adjusted": "not_affected"} if x["factor"] == "LC" else x
     return {**e, "adjustment": "answered", "factors": [lc(x) for x in e["factors"]]}
 
@@ -285,7 +302,13 @@ class TestTheAttempt(unittest.TestCase):
             printed = json.loads(json.dumps(rec, sort_keys=True))
             self.assertEqual(printed["answers"]["per_cve"][A]["reachability"], {"answer": reach, "reading": "answered"})
 
-    def test_a_flagged_cve_not_reachable_and_its_adjustment_call(self):
+    def test_the_fixtures_are_5f797bfs_requests(self):
+        for name, text in (("R", R_PROMPT), ("adjustment", ADJ_PROMPT)):
+            self.assertEqual(hashlib.sha256((text + "\n").encode()).hexdigest(), VENS_SUMS[name], name)
+
+    def test_5f797bfs_unreachable_adjustment_through_parsing_and_adjustment(self):
+        # Not reachable, the vector flooring integrity and availability: R, then the questions R leaves, then the
+        # adjustment on confidentiality alone, 5f797bf's request word for word.
         questions = [(s.SYSTEM, r_prompt([A]), s.reply([A]))] + s.after_calls(A, ("M", "FD", "RD", "NC", "PV"))
         questions.append((s.SYSTEM, adj_prompt(A), json.dumps({"reasoning": "r", "confidentiality": "not_affected"})))
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,11 +316,26 @@ class TestTheAttempt(unittest.TestCase):
                                        vid=A, calls=questions, vex_file=False, answers=False)
             s.write(os.path.join(folder, "vex-internal.cdx.json"),
                     s.vex([(A, UNREACHED.replace("PV:9", "PV:3"), "high", 49.5)]))
-            s.write(os.path.join(folder, "calls", "run-1", "answers.json"), doc(adjusted(A)))
+            s.write(os.path.join(folder, "calls", "run-1", "answers.json"), doc(adjusted(A, floored=("LI", "LAV"))))
+            last = calls.load(os.path.join(folder, "calls", "run-1"))[-1]
             rec = attempt.read_attempt(folder, commits={"after": s.REACH_SHA})
+        got = calls.asked(last, "after")
+        self.assertEqual((got.kind, got.ids), ("adjustment", (A,)))
+        shown, template, fields = request_parts(last.text("human"))
+        self.assertEqual((shown["answers"], template, fields),
+                         ({"reachability": "not_reachable"}, ADJ_PROMPT, ["confidentiality"]))
         self.assertEqual((rec["scores_usable"], rec["problems"], rec["answers"]["problems"]), (True, [], []))
-        self.assertEqual((rec["calls"]["kinds"][-1], rec["recovery"]["adjustment"]), ("adjustment", 1))
-        self.assertEqual(rec["answers"]["per_cve"][A]["factors"]["LC"]["adjusted"], "not_affected")
+        self.assertEqual((rec["calls"]["kinds"], rec["recovery"]["adjustment"]), (["planned"] * 6 + ["adjustment"], 1))
+        cve = rec["answers"]["per_cve"][A]
+        self.assertEqual((cve["adjustment"], cve["reachability"]), ("answered", {"answer": "not_reachable",
+                                                                                "reading": "answered"}))
+        fs = cve["factors"]
+        self.assertEqual({f: (fs[f]["answer"], fs[f]["level"], fs[f]["source"], fs[f]["adjusted"])
+                          for f in contract.REACHED_ONLY + ("PV",)},
+                         {"O": (None, 0, "reachability", None), "EE": (None, 1, "reachability", None),
+                          "LC": (None, 2, "reachability", "not_affected"), "LI": (None, 1, "floor", None),
+                          "LAV": (None, 1, "floor", None), "LAC": (None, 7, "reachability", None),
+                          "PV": ("hundreds", 3, "adjustment", None)})
 
     def test_a_record_off_the_rule_leaves_its_scores_unread(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -328,7 +366,7 @@ class TestTheMeasures(unittest.TestCase):
         vec = r.vector(LAC=lac[0])
         rec = r.record("after", sid, replicate, {A: r.rating(vec)}, scenario=True,
                        answers={A: r.factors(vec, LAC=lac[1:])})
-        return with_reach(rec, reach)
+        return with_reach(rec, reach) if reach else rec
 
     def test_cannot_tell_and_agreement_per_question(self):
         got = kpi.cannot_tell([self.demo_run("cannot_tell", 1), self.demo_run("reachable", 2)])
@@ -355,6 +393,24 @@ class TestTheMeasures(unittest.TestCase):
         got = diagnostics.consistency(cellmod.group(recs))
         self.assertEqual((got["answers"][(MODEL, "R")], got["answers"][(MODEL, "LAC")]), ((0.0, 1), (1.0, 1)))
 
+    def test_the_b7c0435_rules_certify_no_run_that_asks_r(self):
+        # families: a row read on runs that ask R is marked, its verdict not certified
+        checks = [c for c in verdicts.CHECKS if c.family == "reachability" and c.quantity == "O"]
+        for reach, historical in ((None, True), ("reachable", False)):
+            recs = [self.scen_run(sid, reach, (5, "a5", "answer")) for sid in ("reach_no", "reach_yes")]
+            rows = families.evaluate(cellmod.group(recs), {}, checks)
+            self.assertEqual([x["historical"] for x in rows], [historical], reach)
+            text = "\n".join(report_scen.families_section({"rows": rows, "moves": {}}))
+            self.assertEqual(("not certified, asks R" in text, "certify none of them" in text), (not historical,) * 2)
+        # verdicts: a run whose calls ask R is refused
+        second = (s.SYSTEM, human(contract.ANSWER_IDS["M"]), s.reply([A]))
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, first in (("historical", human(contract.ANSWER_IDS["O"])), ("asks-r", r_prompt([A]))):
+                s.write_calls(os.path.join(tmp, name, "calls", "run-1"), [(s.SYSTEM, first, s.reply([A])), second])
+            self.assertEqual(sorted(verdicts.after_prompts(os.path.join(tmp, "historical"))), ["M", "O"])
+            with self.assertRaisesRegex(RuntimeError, r"asks reachability \(R\): chain.verdicts holds b7c0435's"):
+                verdicts.after_prompts(os.path.join(tmp, "asks-r"))
+
     def test_the_fallback_holds_reachability_at_cannot_tell(self):
         every = {f: ("cannot_tell", "answer") for f in cdx.FACTORS}
         rec = r.record("after", "internal", 1, {A: r.rating(s.VECTOR)}, answers={A: r.factors(s.VECTOR, **every)})
@@ -371,20 +427,22 @@ def level_of(opts, answer):
 
 
 class TestReachOnTheMock(unittest.TestCase):
-    """Every scenario on the mock of vens 0421679, as answered and with every answer cannot_tell, a strict run stopped
+    """Every scenario on the mock of vens 5f797bf, as answered and with every answer cannot_tell, a strict run stopped
     on reachability's cannot_tell, and a flagged copy of a scenario not reachable: chain.contract's rules under R and
     the reader against what vens wrote."""
 
     STRICT = "comp_gdpr"
-    # Not reachable on the mock and asked Privacy violation; a dispute in its description flags it.
+    # Not reachable on the mock and asked Privacy violation; a dispute in its description flags it, and its copy's
+    # vector floors integrity and availability. The mock answers not_affected to this wording.
     FLAGGED = "crit_critical"
-    DISPUTE = " The maintainer disputes this report."
+    DISPUTE = " Fixed in 2.0. The maintainer disputes this report."
+    VECTORS = ("C:H/I:H/A:H", "C:H/I:N/A:N")
 
     @classmethod
     def setUpClass(cls):
         cls.binary = s.env("VB_VENS_REACH")
         if cls.binary is None:
-            raise unittest.SkipTest("set VB_VENS_REACH to a vens binary built from 310-step3b 0421679 to run "
+            raise unittest.SkipTest("set VB_VENS_REACH to a vens binary built from 310-step3b 5f797bf to run "
                                     "reachability on the mock")
         cls.tmp = tempfile.TemporaryDirectory()
         cls.scen = verdicts.load(SCENARIOS)
@@ -398,11 +456,13 @@ class TestReachOnTheMock(unittest.TestCase):
                 rec = runvens.generate(cls.binary, os.path.join(d, "config.yaml"), os.path.join(d, "report.json"),
                                        folder, record={"arm": "after"}, strict=strict, env_extra=extra)
                 cls.runs[(tag, sid)] = (folder, rec["generate"]["exit_status"])
-        report = os.path.join(cls.tmp.name, "flagged-report.json")
+        cls.flagged_report = os.path.join(cls.tmp.name, "flagged-report.json")
         with open(os.path.join(SCENARIOS, cls.FLAGGED, "report.json"), encoding="utf-8") as fh:
             text = fh.read()
         description = contract.finding(os.path.join(SCENARIOS, cls.FLAGGED, "report.json"))["Description"]
-        s.write(report, text.replace(json.dumps(description), json.dumps(description + cls.DISPUTE), 1))
+        s.write(cls.flagged_report, text.replace(json.dumps(description), json.dumps(description + cls.DISPUTE), 1)
+                .replace(*cls.VECTORS, 1))
+        report = cls.flagged_report
         folder = os.path.join(cls.tmp.name, "flagged", cls.FLAGGED)
         rec = runvens.generate(cls.binary, os.path.join(SCENARIOS, cls.FLAGGED, "config.yaml"), report, folder,
                                record={"arm": "after"})
@@ -464,21 +524,25 @@ class TestReachOnTheMock(unittest.TestCase):
     def test_a_flagged_cve_not_reachable_keeps_its_adjustment_on_confidentiality(self):
         folder, code = self.runs[("flagged", self.FLAGGED)]
         sc, e = self.scen[self.FLAGGED], self.entry("flagged", self.FLAGGED)
-        self.assertEqual((code, e["reachability"]["answer"], e["adjustment"]), (0, "not_reachable", "answered"))
+        floors = contract.floors(contract.vectors(contract.finding(self.flagged_report)))
+        self.assertEqual((code, e["reachability"]["answer"], e["adjustment"], floors),
+                         (0, "not_reachable", "answered", frozenset({"I", "A"})))
         archived = calls.load(verdicts.run_dir(folder))
         self.assertEqual([contract.question_of(c.text("human")) for c in archived[:-1]],
-                         contract.questions(sc["dep"], sc["floors"], sc["described"], reach="not_reachable"))
-        lines = archived[-1].text("human").split("\n")
-        self.assertEqual((lines[0], json.loads(lines[1])["answers"]), ("FLAGGED VULNERABILITY",
-                                                                       {"reachability": "not_reachable"}))
-        block = lines[lines.index("QUESTIONS") + 1:]
-        self.assertEqual([ln.partition(":")[0] for ln in block[:block.index("")]], ["confidentiality"])
+                         contract.questions(sc["dep"], floors, sc["described"], reach="not_reachable"))
+        shown, template, fields = request_parts(archived[-1].text("human"))
+        self.assertEqual((shown["answers"], template, fields),
+                         ({"reachability": "not_reachable"}, ADJ_PROMPT, ["confidentiality"]))
         fs = {x["factor"]: x for x in e["factors"]}
         self.assertEqual([(f, x["adjusted"]) for f, x in fs.items() if "adjusted" in x], [("LC", "not_affected")])
         self.assertEqual({f: (fs[f]["level"], fs[f]["source"]) for f in contract.REACHED_ONLY + ("PV",)},
                          {"O": (0, "reachability"), "EE": (1, "reachability"), "LC": (2, "reachability"),
-                          "LI": (1, "reachability"), "LAV": (1, "reachability"), "LAC": (7, "reachability"),
+                          "LI": (1, "floor"), "LAV": (1, "floor"), "LAC": (7, "reachability"),
                           "PV": (3, "adjustment")})
+        for x in e["factors"]:
+            if x["factor"] != "PV":
+                opts = contract.options(x["factor"], sc["dep"], floors, sc["described"], reach="not_reachable")
+                self.assertEqual(x["level"], level_of(opts, x.get("answer")) if "answer" in x else opts.get(None), x)
         rec = attempt.read_attempt(folder)
         self.assertEqual((rec["scores_usable"], rec["problems"], rec["answers"]["problems"]), (True, [], []))
         self.assertEqual((rec["calls"]["kinds"][-1], rec["summary"]["calls"].get("adjustment")), ("adjustment", 1))

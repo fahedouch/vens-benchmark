@@ -10,9 +10,11 @@ factor and has no level; read as reachable unless it is not_reachable, it otherw
 exploit to their lowest levels, the three impacts to their floors where the vector does not floor them already, and
 Loss of accountability to no accountability loss's cell of its traceability column, each with source reachability and
 none of the six asked. Since 219aad9 the three impacts also answer no_impact, at their floors. From 0421679 a flagged
-CVE not reachable whose Privacy violation was asked gets an adjustment call on confidentiality alone, which can lower
-Privacy violation (source adjustment), never the six. tests/test_reach.py checks these rules against the mock of a
-binary built at 0421679. reach=None is b7c0435's contract, which asks no R.
+CVE not reachable whose Privacy violation was asked gets an adjustment call on confidentiality alone, its request
+showing R's answer (reworded at 5f797bf: the answer stands, confidentiality judged as if exploitation were possible),
+which can lower Privacy violation (source adjustment), never the six. tests/test_reach.py checks these rules against
+the mock of a binary built at 5f797bf. reach=None is b7c0435's contract, which asks no R; chain/verdicts.py keeps it,
+for historical runs alone.
 """
 import json
 

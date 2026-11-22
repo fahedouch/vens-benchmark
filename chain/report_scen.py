@@ -84,8 +84,10 @@ def _check_rows(rows):
     for r in rows:
         c, row = r["check"], r["row"]
         item = " / ".join(row["item"]) if c.pairs() else row["item"]
-        out.append([c.label, r["arm"], r["kind"], r["model"], item, _diffs(row, c), _medians(row, c),
-                    _verdict(row, r["kind"]), cellmod.replicates(row["missing"]) if row["missing"] else "none",
+        verdict = _verdict(row, r["kind"])
+        verdict = verdict if r.get("historical", True) else f"not certified, asks R: {verdict}"
+        out.append([c.label, r["arm"], r["kind"], r["model"], item, _diffs(row, c), _medians(row, c), verdict,
+                    cellmod.replicates(row["missing"]) if row["missing"] else "none",
                     _sources(row) if c.pairs() else _levels(row), _moves(row)])
     return out
 
@@ -99,6 +101,10 @@ def families_section(sc):
            "The move, in the after: none, Go's (levels Go set, or one answer Go crossed with a declared field), the "
            "model's (both runs answered, the answers differ), or mixed (any other mix, a level Go set in one run "
            "and answered in the other among them).", ""]
+    uncertified = sum(1 for r in sc["rows"] if not r.get("historical", True))
+    if uncertified:
+        out += [f"{uncertified} row(s) read runs that ask reachability (R): their kinds come from chain/verdicts.py's "
+                f"b7c0435 rules, which have no R, and certify none of them (\"not certified\" below).", ""]
     by_family = collections.OrderedDict()
     for r in sc["rows"]:
         by_family.setdefault(r["check"].family, []).append(r)

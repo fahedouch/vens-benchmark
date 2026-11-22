@@ -4,8 +4,9 @@ Per CVE, each factor's answer as the reply wrote it, its reading, its level and 
 lists, marked `unrated`, the CVEs of its failing batch already answered, with their answers and readings only. From
 310-step3b 19b333a, each entry also holds its reachability answer and reading, `reachability`, outside the 16
 factors: a CVE of a failing batch answered reachability alone has no factor list, which Go writes null. From 0421679
-a flagged CVE not reachable keeps its adjustment, confidentiality alone: its Loss of confidentiality record carries the
-adjusted answer at source reachability, and Privacy violation may take source adjustment.
+(its request as at 5f797bf) a flagged CVE not reachable keeps its adjustment, confidentiality alone: its Loss of
+confidentiality record carries the adjusted answer at source reachability, and Privacy violation may take source
+adjustment.
 """
 import collections
 
