@@ -38,7 +38,7 @@ tests/test_c1c2_mock.py against the C2' commit's mock and its Go counts on the d
 The marker commit (MARKER_COMMIT, on the C2' commit; agreed.md items 2 and 5) pins C1 + C2' too, its levels C2''s, and
 writes on each VEX vulnerability one property vens:impact-provenance: missing-cvss-v3-fallback where no usable v3
 vector gave the three impacts, cvss-v3 otherwise. chain/conform.py requires it of that commit's runs, keyed on the
-run's commit, and fails it on any other's. Until the commit exists MARKER_COMMIT is None: no run may carry the marker.
+run's commit, and fails it on any other's; set to None, no run may carry the marker.
 """
 import collections
 import json
@@ -290,8 +290,8 @@ B7C0435, REACH_RULES, C1C2, C1C2P = "b7c0435", "5f797bf", "c1c2", "c1c2p"
 N_COMMIT = "33a5dbf2ae8d7a6522874058de659e1b58f422aa"
 # The C2' commit, N plus C2' (plan Z0d section 2), S2's after: re-pinned here alone if it is amended.
 C2P_COMMIT = "861017143dec63e24097c8979ffd02bc9efff27b"
-# The marker commit, the C2' commit plus the vens:impact-provenance VEX property, S2's after: None until it exists.
-MARKER_COMMIT = None
+# The marker commit, the C2' commit plus the vens:impact-provenance VEX property, S2's after: re-pinned here alone.
+MARKER_COMMIT = "7ce0211bb3abef311bc3dd29be23b9ecdb4a861c"
 # The contract each pinned after commit follows; any other commit pins none. 2de5d34 relays declared reachability,
 # which C1 no longer allows: S1's frozen reader reads it, this chain pins it to nothing.
 CONTRACTS = {"b7c0435835447027b04d54d4e6befaaee6b0626b": B7C0435,

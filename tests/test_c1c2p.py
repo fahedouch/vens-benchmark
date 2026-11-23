@@ -2,7 +2,7 @@
 C2' commit (contract.C2P_COMMIT), on synthetic inputs: Loss of availability crossed with availability_requirement, unset
 reading primary with its counter; answers.json against the pinned contract, both ways; the families, the checks and
 the gate under c1c2p; the counter totals and the reading against the commit's own contract (the mirror review's M1, M1+
-and M2); the impact-provenance marker its commit alone writes (M3, M3+), its SHA not yet known. No vens is run:
+and M2); the impact-provenance marker its commit alone writes (M3, M3+). No vens is run:
 tests/test_c1c2_mock.py runs these rules against the C2' commit's mock."""
 import contextlib
 import os
@@ -385,7 +385,7 @@ def marker_at(sha):
 class TestTheMarker(unittest.TestCase):
     """M3 and M3+: the vens:impact-provenance property, required of the marker commit's runs alone, one per CVE,
     missing-cvss-v3-fallback exactly where the report gives no usable v3 vector and the entry counts cvss_v3_missing;
-    any other commit's runs carry none. Until the marker commit's SHA is set, no run may carry one."""
+    any other commit's runs carry none. Most cases run on a stand-in SHA, MARK, set as the marker commit."""
 
     @classmethod
     def setUpClass(cls):
@@ -395,17 +395,18 @@ class TestTheMarker(unittest.TestCase):
         sc = self.scen[sid]
         return conform.run_problems(rec, sc["config"], {sc["vuln_id"]: sc["findings"]}, rules)
 
-    def test_the_placeholder(self):
+    def test_the_marker_commits_pin(self):
         mark = contract.MARKER_COMMIT
-        self.assertTrue(mark is None or contract.CONTRACTS[mark] == contract.C1C2P)
-        self.assertFalse(contract.marker_commit(None))
-        if mark is None:
-            self.assertNotIn(None, contract.CONTRACTS)
-            # a run claiming the marker is refused until the marker commit is known
-            for commit in (MARK, contract.C2P_COMMIT):
-                self.assertEqual(self.problems(published("reach_yes", self.scen, commit=commit,
-                                                         provenance=[CVSS_V3]), "reach_yes"),
-                                 [f"{A}: {PROVENANCE} published, vens {commit[:12]} writes no marker"], commit)
+        self.assertEqual((len(mark), contract.CONTRACTS[mark]), (40, contract.C1C2P))
+        self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": mark}), contract.C1C2P)
+        self.assertEqual([contract.marker_commit(x) for x in (mark, contract.C2P_COMMIT, None)], [True, False, False])
+        # a run of any other commit, pinned or not, carrying the marker is refused
+        for commit in (MARK, contract.C2P_COMMIT):
+            self.assertEqual(self.problems(published("reach_yes", self.scen, commit=commit, provenance=[CVSS_V3]),
+                                           "reach_yes"),
+                             [f"{A}: {PROVENANCE} published, vens {commit[:12]} writes no marker"], commit)
+        self.assertEqual(self.problems(published("reach_yes", self.scen, commit=mark, provenance=[CVSS_V3]),
+                                       "reach_yes"), [])
 
     def test_the_vex_property(self):
         vex = s.vex([(A, s.VECTOR, s.SEVERITY, s.SCORE), (B, s.VECTOR, s.SEVERITY, s.SCORE),

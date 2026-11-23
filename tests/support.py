@@ -4,7 +4,9 @@
     VB_VENS_REACH                   a vens binary built from 310-step3b 5f797bf, which asks reachability first
     VB_VENS_C1C2                    a vens binary built from 310-c1c2 at N, the no-relay commit (C1 + C2)
     VB_VENS_C1C2P                   a vens binary built from 310-c1c2 at the C2' commit, N plus C2' (C1 + C2')
-    VB_VENS_C1C2P_SRC               vens's source tree at the C2' commit, whose Go tests freeze the demo scan's C2
+    VB_VENS_MARKER                  a vens binary built from 310-c1c2 at the marker commit, the C2' commit plus the
+                                    vens:impact-provenance property (C1 + C2'), S2's after
+    VB_VENS_MARKER_SRC              vens's source tree at the marker commit, whose Go tests freeze the demo scan's C2
                                     counts
     VB_DEMO                         a vens-demo tree at 7ab1570 (runs/2026-09-23/scan/scan.json, contexts/)
     VB_QUICKSTART                   vens's examples/quickstart at b7c0435

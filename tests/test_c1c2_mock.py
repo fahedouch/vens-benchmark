@@ -1,22 +1,24 @@
-"""C1 + C2' and C1 + C2 without a reachability relay against vens's own mock LLM, no model and no API key: the C2'
-commit, S2's after (VB_VENS_C1C2P, contract.C2P_COMMIT), and N beside it (VB_VENS_C1C2, contract.N_COMMIT).
+"""C1 + C2' and C1 + C2 without a reachability relay against vens's own mock LLM, no model and no API key: the marker
+commit, S2's after (VB_VENS_MARKER, contract.MARKER_COMMIT), with the C2' commit (VB_VENS_C1C2P, contract.C2P_COMMIT)
+and N (VB_VENS_C1C2, contract.N_COMMIT) beside it, its pinned ancestors and controls.
 
-- the demo scan: the chain's C2 counts equal what vens's Go tests freeze for it at the C2' commit (VB_VENS_C1C2P_SRC).
-  In its three contexts (availability_requirement critical, low, medium) and in internal's with the field high and
-  unset, per CVE the levels, sources, CVSS values, Privacy violation's floors, cvss_v3_missing and
-  availability_requirement_missing the C2' commit writes (VB_VENS_C1C2P, VB_DEMO), every run recomputed by
-  chain/conform.py under c1c2p. N's runs on the same inputs equal them but on Loss of availability where C2''s table
+- the demo scan: the chain's C2 counts equal what vens's Go tests freeze for it at the marker commit
+  (VB_VENS_MARKER_SRC). In its three contexts (availability_requirement critical, low, medium) and in internal's with
+  the field high and unset, per CVE the levels, sources, CVSS values, Privacy violation's floors, cvss_v3_missing,
+  availability_requirement_missing and the vens:impact-provenance marker the marker commit writes (VB_DEMO), every run
+  recomputed by chain/conform.py under c1c2p. The C2' commit's runs equal them but carry no marker: each passes under
+  its own commit and fails under the other's. N's runs equal them but on Loss of availability where C2''s table
   differs from C2's and on the counter; they pass under c1c2, and fail under c1c2p where the record or the config
-  tells the two apart, as the C2' commit's fail under c1c2;
-- every scenario on the C2' commit: each call's question, every level, source and counter, a system prompt byte for
-  byte N's and b7c0435's (VB_VENS_C1C2, VB_VENS_AFTER), every level N's (step 5's corpus reads the primary column); no
-  VEX status and no declared block, every run as conform recomputes it under c1c2p; a flagged copy, described and not,
-  through the adjustment;
+  tells the two apart, as the marker commit's fail under c1c2;
+- every scenario on the marker commit: each call's question, every level, source, counter and marker, a system prompt
+  byte for byte the C2' commit's, N's and b7c0435's (VB_VENS_AFTER), every level N's (step 5's corpus reads the
+  primary column); no VEX status and no declared block, every run as conform recomputes it under c1c2p; a flagged
+  copy, described and not, through the adjustment;
 - a scenario campaign through ctx_runner.py on the eight showcase and reachability scenarios, both arms
-  (VB_VENS_BEFORE), the after at the C2' commit, read by ctx_analyze.py under c1c2p, pinned by --rules or by the
-  commit: the implementation gate binding on every after cell, the checks the notes alone may move as diagnostics,
-  showcase_med_to_high carried under read5's eligibility rule; read under c1c2, every after answers.json refused. N's
-  campaign on the same scenarios passes under c1c2 and fails the gate under c1c2p, on the counter.
+  (VB_VENS_BEFORE), the after at the marker commit, read by ctx_analyze.py with --commit after= the marker commit, as
+  S2 reads its after, and with --rules c1c2p: the implementation gate binding on every after cell, the checks the
+  notes alone may move as diagnostics, showcase_med_to_high carried under read5's eligibility rule; read under c1c2,
+  every after answers.json refused. N's campaign on the same scenarios passes under c1c2 and is refused under c1c2p.
 """
 import collections
 import contextlib
@@ -56,6 +58,7 @@ GO_KEYS = ("vectorless", "rejected", "disagree", "disagree_axes", "v4")
 SCENARIO_COUNTS = {"cves": 46, "vectorless": 10, "rejected": 0, "disagree": 0, "disagree_axes": 0, "v4": 0,
                    "pv_floor": 11}
 AR, VM = contract.AVAILABILITY_MISSING, contract.VECTOR_MISSING
+CVSS_V3, FALLBACK = contract.FROM_CVSS_V3, contract.FALLBACK
 # Each demo state: its context, availability_requirement (the context's own where it is the file's), Loss of
 # availability's moves from N to the C2' commit, {(worst A, N's level, C2''s): CVEs}, and the CVEs counted
 # availability_requirement_missing. Z8 printed the moves: internal and internal-api alone, 38 of 74 each.
@@ -93,6 +96,22 @@ def c2_counters(e):
     return [c for c in e.get("counters", []) if c in (VM, AR)]
 
 
+def vex_ratings(folder):
+    ratings, problems = cdx.ratings(os.path.join(folder, "vex.cdx.json"))
+    if problems:
+        raise AssertionError(f"{folder}: {problems}")
+    return ratings
+
+
+def unmarked(ratings):
+    """The ratings without their marker, for two commits that differ by it alone."""
+    return {vid: {k: v for k, v in x.items() if k != "provenance"} for vid, x in ratings.items()}
+
+
+def marker_of(imp):
+    return [FALLBACK if imp.usable == 0 else CVSS_V3]
+
+
 def demo_tree(demo, root):
     """A vens-demo tree under root for the five states: the scan linked, each state's context written, its
     availability_requirement set, replaced or removed, every other byte the context's own."""
@@ -111,7 +130,8 @@ def demo_tree(demo, root):
 
 
 class TestTheDemoScan(unittest.TestCase):
-    """The chain's C2 counts and per-CVE reading of the demo scan against the C2' commit's, N's beside."""
+    """The chain's C2 counts and per-CVE reading of the demo scan against the marker commit's, the C2' commit's and
+    N's beside."""
 
     @classmethod
     def setUpClass(cls):
@@ -123,7 +143,7 @@ class TestTheDemoScan(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.tree = demo_tree(demo, os.path.join(cls.tmp.name, "demo"))
         cls.runs = {}
-        for tag, var in (("c2p", "VB_VENS_C1C2P"), ("n", "VB_VENS_C1C2")):
+        for tag, var in (("marker", "VB_VENS_MARKER"), ("c2p", "VB_VENS_C1C2P"), ("n", "VB_VENS_C1C2")):
             binary = s.env(var)
             for state in STATES if binary else ():
                 config = runvens.add_marker(os.path.join(cls.tree, "contexts", f"{state}.yaml"),
@@ -139,7 +159,7 @@ class TestTheDemoScan(unittest.TestCase):
         cls.tmp.cleanup()
 
     def need_runs(self, *tags):
-        names = {"c2p": "VB_VENS_C1C2P", "n": "VB_VENS_C1C2"}
+        names = {"marker": "VB_VENS_MARKER", "c2p": "VB_VENS_C1C2P", "n": "VB_VENS_C1C2"}
         s.need(self, *(names[t] for t in tags))
 
     def test_the_counts(self):
@@ -151,7 +171,7 @@ class TestTheDemoScan(unittest.TestCase):
                                                        contract.counts_line("scenarios", SCENARIO_COUNTS)])
 
     def test_the_counts_vens_go_tests_freeze(self):
-        (src,) = s.need(self, "VB_VENS_C1C2P_SRC")
+        (src,) = s.need(self, "VB_VENS_MARKER_SRC")
         with open(os.path.join(src, "pkg", "scanner", "reports_test.go"), encoding="utf-8") as fh:
             m = GO_COUNTS.search(fh.read())
         self.assertIsNotNone(m)
@@ -162,18 +182,20 @@ class TestTheDemoScan(unittest.TestCase):
         self.assertEqual({k: int(m[k]) for k in GO_KEYS}, {k: got[k] for k in GO_KEYS})
 
     def test_the_states(self):
-        self.need_runs("c2p")
+        self.need_runs("marker")
         self.assertEqual({state: dep["availability_requirement"] for (tag, state), (_, _, dep) in self.runs.items()
-                          if tag == "c2p"}, {state: x[1] for state, x in STATES.items()})
+                          if tag == "marker"}, {state: x[1] for state, x in STATES.items()})
 
-    def test_per_cve_against_what_the_c2p_commit_writes(self):
-        self.need_runs("c2p")
+    def test_per_cve_against_what_the_marker_commit_writes(self):
+        self.need_runs("marker")
+        fallbacks = {}
         for state, (_, requirement, _, counted) in STATES.items():
-            folder, code, dep = self.runs[("c2p", state)]
+            folder, code, dep = self.runs[("marker", state)]
             self.assertEqual(code, 0, state)
             entries = answers_entries(folder)
             self.assertEqual(sorted(entries), sorted(self.cves), state)
             floors, vectorless, missing = set(), set(), set()
+            ratings = vex_ratings(folder)
             for vid, e in entries.items():
                 imp, fs = contract.cve_impact(self.cves[vid]), {x["factor"]: x for x in e["factors"]}
                 described = any((f.get("Description") or "").strip() for f in self.cves[vid])
@@ -185,6 +207,7 @@ class TestTheDemoScan(unittest.TestCase):
                 vectorless |= {vid} if VM in e.get("counters", []) else set()
                 missing |= {vid} if AR in e.get("counters", []) else set()
                 self.assertEqual(c2_counters(e), contract.c1c2_counters(dep, imp, contract.C1C2P), (state, vid))
+                self.assertEqual(ratings[vid]["provenance"], marker_of(imp), (state, vid))
                 answered, adjusted = given(e)
                 self.assertEqual(sorted(answered), sorted(contract.c1c2_questions(dep, imp, described)), (state, vid))
                 self.assertEqual(written(e), contract.c1c2_levels(dep, imp, described, answered, adjusted,
@@ -197,18 +220,37 @@ class TestTheDemoScan(unittest.TestCase):
             self.assertEqual((len(floors), len(vectorless), len(missing)), (28, 10, counted), state)
             totals = answers_doc(folder)["counters"]
             self.assertEqual((totals.get(VM), totals.get(AR)), (10, counted or None), state)
+            fallbacks[state] = sum(x["provenance"] == [FALLBACK] for x in ratings.values())
+            self.assertEqual(sum(x["provenance"] == [CVSS_V3] for x in ratings.values()), 64, state)
             for rules in (None, contract.C1C2P):
                 got = attempt.read_attempt(folder, rules=rules)
                 self.assertEqual((got["scores_usable"], got["problems"], got["answers"]["problems"]), (True, [], []),
                                  (state, rules))
-            self.check_recomputed(got, state, contract.C1C2P, contract.C2P_COMMIT)
+            self.check_recomputed(got, state, contract.C1C2P, contract.MARKER_COMMIT)
+        self.assertEqual(fallbacks, dict.fromkeys(STATES, 10))
+        self.assertEqual(sum(fallbacks[ctx] for ctx in ("internet-facing", "internal", "internal-api")), 30)
 
-    def test_n_beside_the_c2p_commit(self):
-        self.need_runs("c2p", "n")
-        for state, (_, requirement, moves, _) in STATES.items():
-            (c2p, _, dep), (n, code, _) = self.runs[("c2p", state)], self.runs[("n", state)]
+    def test_the_c2p_commit_beside_the_marker_commit(self):
+        self.need_runs("marker", "c2p")
+        for state in STATES:
+            (marker, _, _), (c2p, code, _) = self.runs[("marker", state)], self.runs[("c2p", state)]
             self.assertEqual(code, 0, state)
-            ours, theirs = answers_entries(c2p), answers_entries(n)
+            self.assertEqual(answers_doc(c2p), answers_doc(marker), state)
+            ours, theirs = vex_ratings(marker), vex_ratings(c2p)
+            self.assertEqual(unmarked(ours), unmarked(theirs), state)
+            self.assertEqual({x["provenance"] == [] for x in theirs.values()}, {True}, state)
+            # each commit's runs pass under their own commit and fail under the other's: the marker keys on it
+            rec, rec_c2p = attempt.read_attempt(marker), attempt.read_attempt(c2p)
+            self.check_recomputed(rec_c2p, state, contract.C1C2P, contract.C2P_COMMIT)
+            self.check_recomputed(rec_c2p, state, contract.C1C2P, contract.MARKER_COMMIT, passes=False)
+            self.check_recomputed(rec, state, contract.C1C2P, contract.C2P_COMMIT, passes=False)
+
+    def test_n_beside_the_marker_commit(self):
+        self.need_runs("marker", "n")
+        for state, (_, requirement, moves, _) in STATES.items():
+            (marker, _, dep), (n, code, _) = self.runs[("marker", state)], self.runs[("n", state)]
+            self.assertEqual(code, 0, state)
+            ours, theirs = answers_entries(marker), answers_entries(n)
             got = collections.Counter()
             for vid, e in ours.items():
                 was, now = written(theirs[vid]), written(e)
@@ -224,7 +266,7 @@ class TestTheDemoScan(unittest.TestCase):
             self.check_recomputed(rec_n, state, contract.C1C2, contract.N_COMMIT)
             differ = bool(moves) or requirement is None
             self.check_recomputed(rec_n, state, contract.C1C2P, contract.N_COMMIT, passes=not differ)
-            rec = attempt.read_attempt(c2p, rules=contract.C1C2)
+            rec = attempt.read_attempt(marker, rules=contract.C1C2)
             self.assertEqual(rec["answers"]["problems"],
                              ["answers.json follows c1c2p, not the pinned c1c2"] if differ else [], state)
 
@@ -251,8 +293,8 @@ class TestTheDemoScan(unittest.TestCase):
 
 
 class TestTheScenariosOnTheMock(unittest.TestCase):
-    """Every scenario on the C2' commit's mock, as answered and with every answer cannot_tell, N and b7c0435 beside it,
-    and two flagged copies."""
+    """Every scenario on the marker commit's mock, as answered and with every answer cannot_tell, the C2' commit, N and
+    b7c0435 beside it, and two flagged copies."""
 
     FLAGGED = "crit_critical"
     DISPUTE = " Fixed in 2.0. The maintainer disputes this report."
@@ -261,14 +303,15 @@ class TestTheScenariosOnTheMock(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.binary = s.env("VB_VENS_C1C2P")
+        cls.binary = s.env("VB_VENS_MARKER")
         if cls.binary is None:
-            raise unittest.SkipTest("set VB_VENS_C1C2P to a vens binary built from 310-c1c2 at the C2' commit")
+            raise unittest.SkipTest("set VB_VENS_MARKER to a vens binary built from 310-c1c2 at the marker commit")
         cls.tmp = tempfile.TemporaryDirectory()
         cls.scen = verdicts.load(SCENARIOS, contract.C1C2P)
         cls.runs = {}
         for tag, binary, extra in (("after", cls.binary, None),
                                    ("cannot_tell", cls.binary, {"VENS_MOCK_LLM_CANNOT_TELL": "cannot_tell"}),
+                                   ("c2p", s.env("VB_VENS_C1C2P"), None),
                                    ("n", s.env("VB_VENS_C1C2"), None),
                                    ("b7c0435", s.env("VB_VENS_AFTER"), None)):
             for sid in IDS if binary else ():
@@ -309,7 +352,8 @@ class TestTheScenariosOnTheMock(unittest.TestCase):
 
     def beside(self, tag):
         if (tag, IDS[0]) not in self.runs:
-            self.skipTest(f"set {'VB_VENS_C1C2' if tag == 'n' else 'VB_VENS_AFTER'} to run {tag} beside")
+            names = {"n": "VB_VENS_C1C2", "c2p": "VB_VENS_C1C2P", "b7c0435": "VB_VENS_AFTER"}
+            self.skipTest(f"set {names[tag]} to run {tag} beside")
 
     def test_every_run_completes_and_reads(self):
         for (tag, sid), (folder, code) in self.runs.items():
@@ -347,7 +391,18 @@ class TestTheScenariosOnTheMock(unittest.TestCase):
                 totals = answers_doc(self.runs[(tag, sid)][0])["counters"]
                 self.assertEqual(totals.get(AR, 0), c2_counters(e).count(AR), sid)
                 counted[tag] += AR in c2_counters(e)
-        self.assertEqual(counted, {"after": 31, "cannot_tell": 31})
+                self.assertEqual(self.vex(tag, sid)["provenance"], marker_of(sc["impact"]), (tag, sid))
+                counted[(tag, self.vex(tag, sid)["provenance"][0])] += 1
+        self.assertEqual(counted, {"after": 31, "cannot_tell": 31, ("after", FALLBACK): 10, ("after", CVSS_V3): 36,
+                                   ("cannot_tell", FALLBACK): 10, ("cannot_tell", CVSS_V3): 36})
+
+    def test_the_c2p_commit_differs_by_the_marker_alone(self):
+        self.beside("c2p")
+        for sid in IDS:
+            ours, theirs = self.runs[("after", sid)][0], self.runs[("c2p", sid)][0]
+            self.assertEqual(answers_doc(theirs), answers_doc(ours), sid)
+            self.assertEqual(unmarked(vex_ratings(theirs)), unmarked(vex_ratings(ours)), sid)
+            self.assertEqual(self.vex("c2p", sid)["provenance"], [], sid)
 
     def test_n_writes_the_same_levels(self):
         self.beside("n")
@@ -356,8 +411,8 @@ class TestTheScenariosOnTheMock(unittest.TestCase):
             self.assertEqual(written(ours), written(theirs), sid)
             self.assertEqual([c for c in ours.get("counters", []) if c != AR], theirs.get("counters", []), sid)
 
-    def test_the_system_prompt_is_ns_and_b7c0435s(self):
-        for tag in ("n", "b7c0435"):
+    def test_the_system_prompt_is_the_c2p_commits_ns_and_b7c0435s(self):
+        for tag in ("c2p", "n", "b7c0435"):
             self.beside(tag)
             for sid in IDS:
                 then = {c.system for c in calls.load(verdicts.run_dir(self.runs[(tag, sid)][0]))}
@@ -371,7 +426,8 @@ class TestTheScenariosOnTheMock(unittest.TestCase):
                 self.assertIsNone(self.vex(tag, sid)["analysis"], (tag, sid))
                 self.assertNotIn("declared", self.entry(tag, sid), (tag, sid))
                 rec = attempt.read_attempt(self.runs[(tag, sid)][0], rules=contract.C1C2P)
-                recs.append({**rec, "what": {**rec["what"], "scenario": sid, "replicate": 1}})
+                recs.append({**rec, "what": {**rec["what"], "scenario": sid, "replicate": 1,
+                                             "vens_commit": contract.MARKER_COMMIT}})
             got = conform.read(cellmod.group(recs), self.scen, None, contract.C1C2P)
             self.assertEqual({c["verdict"] for c in got.values()}, {"pass"}, tag)
             self.assertEqual(len(got), len(IDS))
@@ -419,17 +475,17 @@ def analyze(camp, *argv):
 
 class TestTheCampaignOnTheMock(unittest.TestCase):
     """The eight showcase and reachability scenarios through ctx_runner.py, the before at main and the after at the
-    C2' commit, two replicates, read by the chain under c1c2p; N's campaign beside it."""
+    marker commit, two replicates, read by the chain under c1c2p as S2 reads its after; N's campaign beside it."""
 
     @classmethod
     def setUpClass(cls):
-        cls.after, cls.n = s.env("VB_VENS_C1C2P"), s.env("VB_VENS_C1C2")
+        cls.after, cls.n = s.env("VB_VENS_MARKER"), s.env("VB_VENS_C1C2")
         if cls.after is None or s.env("VB_VENS_BEFORE") is None:
-            raise unittest.SkipTest("set VB_VENS_C1C2P and VB_VENS_BEFORE to run a C1 + C2' campaign on the mock")
+            raise unittest.SkipTest("set VB_VENS_MARKER and VB_VENS_BEFORE to run a C1 + C2' campaign on the mock")
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.camp = campaign(cls.tmp.name, "c1c2p", cls.after, contract.C2P_COMMIT)
+        cls.camp = campaign(cls.tmp.name, "c1c2p", cls.after, contract.MARKER_COMMIT)
         cls.n_camp = campaign(cls.tmp.name, "c1c2", cls.n, contract.N_COMMIT) if cls.n else None
-        cls.code, cls.text, cls.err = analyze(cls.camp, "--rules", "c1c2p")
+        cls.code, cls.text, cls.err = analyze(cls.camp, "--commit", f"after={contract.MARKER_COMMIT}")
         cls.records = list(read.read_any(cls.camp, rules=contract.C1C2P))
         cls.rows = families.evaluate(cellmod.group(cls.records), verdicts.load(os.path.join(cls.camp, "scenarios")),
                                      rules=contract.C1C2P)
@@ -439,9 +495,13 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_the_pinned_contract(self):
-        # the C2' commit pins c1c2p: the same report as --rules c1c2p
-        code, text, err = analyze(self.camp, "--commit", f"after={contract.C2P_COMMIT}")
+        # the marker commit pins c1c2p: the same report as --rules c1c2p; --commit after= takes no other commit
+        code, text, err = analyze(self.camp, "--rules", "c1c2p")
         self.assertEqual((code, err, text), (0, "", self.text))
+        for other in (contract.C2P_COMMIT, contract.N_COMMIT):
+            code, _, err = analyze(self.camp, "--commit", f"after={other}")
+            self.assertEqual(code, 1, other)
+            self.assertIn(f"not the after's {other}", err)
         code, _, err = analyze(self.camp, "--rules", "c1c2p", "--commit", f"after={contract.N_COMMIT}")
         self.assertEqual(code, 1)
         self.assertIn("--rules c1c2p, but --commit after= pins c1c2", err)
@@ -450,7 +510,7 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
             after = [r for r in read.read_any(self.camp, rules=rules) if r["what"]["arm"] == "after"]
             self.assertEqual({(r["scores_usable"], tuple(r["answers"]["problems"])) for r in after},
                              {(False, (f"answers.json follows c1c2p, not the pinned {rules}",
-                                       f"the reading pins {rules}, vens {contract.C2P_COMMIT} pins c1c2p"))})
+                                       f"the reading pins {rules}, vens {contract.MARKER_COMMIT} pins c1c2p"))})
         code, _, err = analyze(self.camp, "--rules", "c1c2")
         self.assertEqual(code, 1)
         self.assertIn("C1 + C2's implementation gate: 8 failure(s), no go:", err)
@@ -497,8 +557,7 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
             self.assertEqual({vid: c2_counters(e) for vid, e in rec["answers"]["per_cve"].items()},
                              {vid: [AR] for vid in rec["ratings"]}, rec["folder"])
             self.assertEqual(rec["answers"]["counters"].get(AR), 1, rec["folder"])
-            # the C2' commit writes no marker
-            self.assertEqual([x["provenance"] for x in rec["ratings"].values()], [[]], rec["folder"])
+            self.assertEqual([x["provenance"] for x in rec["ratings"].values()], [[CVSS_V3]], rec["folder"])
         self.assertTrue(glob.glob(os.path.join(self.camp, "**", "after-a1"), recursive=True))
 
     def test_ns_campaign_under_each_contract(self):
