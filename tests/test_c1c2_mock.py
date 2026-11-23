@@ -449,7 +449,8 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
         for rules in (contract.C1C2, contract.B7C0435):
             after = [r for r in read.read_any(self.camp, rules=rules) if r["what"]["arm"] == "after"]
             self.assertEqual({(r["scores_usable"], tuple(r["answers"]["problems"])) for r in after},
-                             {(False, (f"answers.json follows c1c2p, not the pinned {rules}",))})
+                             {(False, (f"answers.json follows c1c2p, not the pinned {rules}",
+                                       f"the reading pins {rules}, vens {contract.C2P_COMMIT} pins c1c2p"))})
         code, _, err = analyze(self.camp, "--rules", "c1c2")
         self.assertEqual(code, 1)
         self.assertIn("C1 + C2's implementation gate: 8 failure(s), no go:", err)
@@ -496,6 +497,8 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
             self.assertEqual({vid: c2_counters(e) for vid, e in rec["answers"]["per_cve"].items()},
                              {vid: [AR] for vid in rec["ratings"]}, rec["folder"])
             self.assertEqual(rec["answers"]["counters"].get(AR), 1, rec["folder"])
+            # the C2' commit writes no marker
+            self.assertEqual([x["provenance"] for x in rec["ratings"].values()], [[]], rec["folder"])
         self.assertTrue(glob.glob(os.path.join(self.camp, "**", "after-a1"), recursive=True))
 
     def test_ns_campaign_under_each_contract(self):
@@ -505,11 +508,12 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertIn("C1 + C2's implementation gate: pass.", text)
         self.assertIn("Implementation checks (plan Z0, every replicate; binding): 8 pass, 0 fail, 0 inconclusive", text)
-        # read under c1c2p, N's records are ones C1 + C2' could give, but not on these configs: the counter is missing
+        # read under c1c2p, N's records are refused: N pins c1c2 (the review's M2)
         code, _, err = analyze(self.n_camp, "--rules", "c1c2p")
         self.assertEqual(code, 1)
         self.assertIn("C1 + C2''s implementation gate: 8 failure(s), no go:", err)
-        self.assertEqual(err.count(f"{AR} counted 0 times, not 1"), 16)
+        refused = f"refused by the reader: the reading pins c1c2p, vens {contract.N_COMMIT} pins c1c2"
+        self.assertEqual(err.count(refused), 16)
 
 
 if __name__ == "__main__":

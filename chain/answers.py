@@ -19,7 +19,10 @@ C2's on every entry.
 At the C2' commit (C1 + C2') Loss of availability is read in availability_requirement's column, the CVE counting
 availability_requirement_missing where the field is unset: an entry counting it, or whose Loss of availability takes
 the secondary column's level where C2's differs, shows C1 + C2'; any other C1 + C2 entry is one C1 + C2' also writes,
-where the field is high or critical. Which column applies is the config's: chain/conform.py recomputes it.
+where the field is high or critical. Which column applies is the config's: chain/conform.py recomputes it. Under
+either, no unrated entry counts cvss_v3_missing or availability_requirement_missing, each counter's total in the
+document is the sum of its entries' occurrences, an omitted total read as zero, and under C1 + C2
+availability_requirement_missing is nowhere, entry or total.
 """
 import collections
 
@@ -254,10 +257,25 @@ def validate(doc, pinned):
     return relayed + (c1c2(doc, rules) if rules else [])
 
 
+def _total_problems(doc, rules):
+    """Each C2 counter's total against its occurrences over every entry, rated and unrated, an omitted total zero;
+    under C1 + C2, availability_requirement_missing in the totals at all."""
+    problems = []
+    for name in (contract.VECTOR_MISSING, contract.AVAILABILITY_MISSING):
+        total = doc["counters"].get(name, 0)
+        counted = sum((e.get("counters") or []).count(name) for e in doc["vulnerabilities"])
+        if total != counted:
+            problems.append(f"{name} totals {total}, its entries count {counted}")
+    if rules != contract.C1C2P and doc["counters"].get(contract.AVAILABILITY_MISSING, 0):
+        problems.append(f"{contract.AVAILABILITY_MISSING} in the totals, C2 reads no availability_requirement")
+    return problems
+
+
 def c1c2(doc, rules=contract.C1C2):
     """The problems of a document's entries against C1 + C2 (rules C1C2P: C1 + C2'): no reachability record, the three
     technical impacts, their counters and Privacy violation's floor as _impact_problems says on every rated entry, an
-    unrated entry answering no technical impact. A declared block is validate()'s, under any contract."""
+    unrated entry answering no technical impact and counting no C2 counter, which Go adds only to a rated CVE, and the
+    totals as _total_problems says. A declared block is validate()'s, under any contract."""
     rated, unrated = entries(doc)
     problems = [f"{vid}: a reachability record under C1 + C2" for vid, e in sorted({**rated, **unrated}.items())
                 if e.get("reachability") is not None]
@@ -267,4 +285,6 @@ def c1c2(doc, rules=contract.C1C2):
     for vid, e in sorted(unrated.items()):
         if any(f["factor"] in contract.AXIS for f in e["factors"]):
             problems.append(f"{vid}: an unrated entry answering a technical impact")
-    return problems
+        problems += [f"{vid}: an unrated entry counting {name}" for name in (contract.VECTOR_MISSING,
+                     contract.AVAILABILITY_MISSING) if name in (e.get("counters") or [])]
+    return problems + _total_problems(doc, rules)

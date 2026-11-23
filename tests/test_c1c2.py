@@ -3,6 +3,7 @@ inputs: the usable v3 vector rule, C2's table, the nine questions, Privacy viola
 answers.json's C1 + C2 record against the pinned contract, no declared block and no VEX status, the families under the
 no-relay checks with read5's eligibility rule, and step 5's corpus. No vens is run: tests/test_c1c2_mock.py runs the
 rules against N's mock, tests/test_c1c2_gate.py the implementation gate, tests/test_c1c2p.py C1 + C2'."""
+import collections
 import os
 import tempfile
 import unittest
@@ -221,8 +222,11 @@ def load(d):
         return answers.load(s.write(os.path.join(tmp, "answers.json"), d))
 
 
-def doc(*vulns):
-    return load({"vulnerabilities": list(vulns), "counters": {}, "defects": {}})
+def doc(*vulns, counters=None):
+    """answers.json holding vulns, its counter totals their entries' unless given."""
+    totals = collections.Counter(c for e in vulns for c in e.get("counters") or [])
+    return load({"vulnerabilities": list(vulns), "counters": dict(totals) if counters is None else counters,
+                 "defects": {}})
 
 
 STATUS = {"state": "not_affected", "justification": "code_not_reachable", "detail": "compiled out"}

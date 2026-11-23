@@ -13,6 +13,10 @@ every after run). failures() lists every fail and inconclusive: any of them stop
 Under C1 + C2' (rules c1c2p) the rules are C2''s, Loss of availability in the column its config's
 availability_requirement gives. Under either, each CVE also counts cvss_v3_missing and availability_requirement_missing
 as Go does (contract.c1c2_counters), the latter never under C1 + C2.
+
+A run of the marker commit (contract.MARKER_COMMIT; the mirror review's M3 and M3+), keyed on the run's own commit,
+carries on each CVE exactly one vens:impact-provenance property, missing-cvss-v3-fallback where its report gives no
+usable v3 vector and where its entry counts cvss_v3_missing, cvss-v3 otherwise; a run of any other commit carries none.
 """
 import os
 from fractions import Fraction
@@ -43,10 +47,25 @@ def _counter_problems(vid, entry, dep, imp, rules):
             for name in (contract.VECTOR_MISSING, contract.AVAILABILITY_MISSING) if got.count(name) != want.count(name)]
 
 
-def cve_problems(vid, entry, published, dep, findings, rules=contract.C1C2):
+def _marker_problems(vid, entry, published, imp, commit):
+    """The vens:impact-provenance values published for a CVE against the run's commit, its report and its entry."""
+    values = published.get("provenance") or []
+    if not contract.marker_commit(commit):
+        return [f"{vid}: {contract.PROVENANCE} published, vens {str(commit)[:12]} writes no marker"] if values else []
+    if len(values) != 1:
+        return [f"{vid}: {len(values)} {contract.PROVENANCE} properties, not one"]
+    value, want = values[0], contract.FALLBACK if imp.usable == 0 else contract.FROM_CVSS_V3
+    counted = (entry.get("counters") or []).count(contract.VECTOR_MISSING)
+    out = [f"{vid}: {contract.PROVENANCE} {value!r}, its report gives {want!r}"] if value != want else []
+    if (value == contract.FALLBACK) != bool(counted):
+        out.append(f"{vid}: {contract.PROVENANCE} {value!r} against {contract.VECTOR_MISSING} counted {counted} times")
+    return out
+
+
+def cve_problems(vid, entry, published, dep, findings, rules=contract.C1C2, commit=None):
     """What differs, for one CVE of a run, from the pinned rules (C1 + C2, or C1 + C2' with rules C1C2P) on its own
     answers: entry, its answers.json entry as answers.per_cve reads it; published, its VEX rating; findings, the
-    report's rows of the CVE."""
+    report's rows of the CVE; commit, the run's vens commit, which decides the marker."""
     if entry is None or entry["unrated"]:
         return [f"{vid}: no rated answers.json entry"]
     problems = [f"{vid}: the VEX publishes a status, {published['analysis'].get('state')}"] \
@@ -62,7 +81,8 @@ def cve_problems(vid, entry, published, dep, findings, rules=contract.C1C2):
     vector, severity, score = rating(levels)
     off += [f"{name} {published.get(name)!r} not {want!r}" for name, want in (
         ("vector", vector), ("severity", severity), ("score", score)) if published.get(name) != want]
-    return problems + ([f"{vid}: " + ", ".join(off)] if off else []) + _counter_problems(vid, entry, dep, imp, rules)
+    return problems + ([f"{vid}: " + ", ".join(off)] if off else []) + _counter_problems(vid, entry, dep, imp, rules) \
+        + _marker_problems(vid, entry, published, imp, commit)
 
 
 def run_problems(rec, config, cves, rules=contract.C1C2):
@@ -73,7 +93,7 @@ def run_problems(rec, config, cves, rules=contract.C1C2):
         if vid not in cves:
             out.append(f"{vid}: rated, not in the report")
             continue
-        out += cve_problems(vid, per.get(vid), published, dep, cves[vid], rules)
+        out += cve_problems(vid, per.get(vid), published, dep, cves[vid], rules, rec["what"].get("vens_commit"))
     return out
 
 

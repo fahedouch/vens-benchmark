@@ -34,6 +34,11 @@ medium are secondary, high and critical primary; unset reads primary and the CVE
 availability_requirement_missing once. The field is read as vens loads it: absent or null unset, any other value
 trimmed and lowercased as Go does, refused off the four. tests/test_c1c2p.py checks these rules,
 tests/test_c1c2_mock.py against the C2' commit's mock and its Go counts on the demo scan.
+
+The marker commit (MARKER_COMMIT, on the C2' commit; agreed.md items 2 and 5) pins C1 + C2' too, its levels C2''s, and
+writes on each VEX vulnerability one property vens:impact-provenance: missing-cvss-v3-fallback where no usable v3
+vector gave the three impacts, cvss-v3 otherwise. chain/conform.py requires it of that commit's runs, keyed on the
+run's commit, and fails it on any other's. Until the commit exists MARKER_COMMIT is None: no run may carry the marker.
 """
 import collections
 import json
@@ -285,10 +290,13 @@ B7C0435, REACH_RULES, C1C2, C1C2P = "b7c0435", "5f797bf", "c1c2", "c1c2p"
 N_COMMIT = "33a5dbf2ae8d7a6522874058de659e1b58f422aa"
 # The C2' commit, N plus C2' (plan Z0d section 2), S2's after: re-pinned here alone if it is amended.
 C2P_COMMIT = "861017143dec63e24097c8979ffd02bc9efff27b"
+# The marker commit, the C2' commit plus the vens:impact-provenance VEX property, S2's after: None until it exists.
+MARKER_COMMIT = None
 # The contract each pinned after commit follows; any other commit pins none. 2de5d34 relays declared reachability,
 # which C1 no longer allows: S1's frozen reader reads it, this chain pins it to nothing.
 CONTRACTS = {"b7c0435835447027b04d54d4e6befaaee6b0626b": B7C0435,
-             "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES, N_COMMIT: C1C2, C2P_COMMIT: C1C2P}
+             "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES, N_COMMIT: C1C2, C2P_COMMIT: C1C2P,
+             **({MARKER_COMMIT: C1C2P} if MARKER_COMMIT else {})}
 # The no-relay contracts, whose technical impacts are Go's, from the CVSS v3 vectors.
 C1C2_RULES = (C1C2, C1C2P)
 NAMES = {C1C2: "C1 + C2", C1C2P: "C1 + C2'"}
@@ -305,6 +313,8 @@ VECTORLESS_LEVEL = 9
 C2P_LAV = {"N": (1, 1), "L": (1, 5), "H": (5, 7)}
 PRIMARY_SERVICES = {"low": False, "medium": False, "high": True, "critical": True}
 AVAILABILITY_MISSING = "availability_requirement_missing"
+# The marker commit's VEX property and its two values.
+PROVENANCE, FROM_CVSS_V3, FALLBACK = "vens:impact-provenance", "cvss-v3", "missing-cvss-v3-fallback"
 # H over L over N.
 WORSE = {"N": 0, "L": 1, "H": 2}
 # The adjustment's fields.
@@ -471,6 +481,11 @@ def c2p_shown(lav, counters):
     secondary = lav.get("source") == CVSS_SOURCE and value in C2P_LAV and C2P_LAV[value][0] != C2_LAV[value] \
         and lav.get("level") == C2P_LAV[value][0]
     return AVAILABILITY_MISSING in (counters or ()) or secondary
+
+
+def marker_commit(commit):
+    """Whether a run's vens commit is the marker commit, which alone writes vens:impact-provenance."""
+    return MARKER_COMMIT is not None and commit == MARKER_COMMIT
 
 
 def accepted(pinned):

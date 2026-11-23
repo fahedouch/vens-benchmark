@@ -121,11 +121,23 @@ def analysis(vuln):
     return {k: a.get(k) for k in ANALYSIS_FIELDS}
 
 
+def provenance(vuln):
+    """The values of a vulnerability's vens:impact-provenance properties, in order, [] without one. ValueError for
+    properties that are not a list of objects."""
+    props = vuln.get("properties")
+    if props is None:
+        return []
+    if not isinstance(props, list) or not all(isinstance(p, dict) for p in props):
+        raise ValueError(f"properties {props!r} is not a list of objects")
+    return [p.get("value") for p in props if p.get("name") == "vens:impact-provenance"]
+
+
 def ratings(path):
     """{vulnId: rating} for each CVE listed and rated once whose vector reads, with its published vector, severity
-    and score, a score missing or not a number kept as None, the sub-scores its vector gives and its VEX status
-    (analysis(), None without one); and the problems: a CVE listed twice, listed without an OWASP rating, rated twice,
-    a vector missing, null or not 16 levels, a score missing, null or not a number, or a status that is not an object.
+    and score, a score missing or not a number kept as None, the sub-scores its vector gives, its VEX status
+    (analysis(), None without one) and its vens:impact-provenance values (provenance()); and the problems: a CVE
+    listed twice, listed without an OWASP rating, rated twice, a vector missing, null or not 16 levels, a score
+    missing, null or not a number, a status that is not an object, or properties that are not a list of objects.
     Refused when the file is no VEX."""
     out, problems = {}, []
     vulns = _vulns(path)
@@ -151,8 +163,13 @@ def ratings(path):
         except ValueError as e:
             problems.append(f"{vid}: {e}")
             status = None
+        try:
+            marked = provenance(v)
+        except ValueError as e:
+            problems.append(f"{vid}: {e}")
+            marked = []
         out[vid] = {"vector": r["vector"], "severity": r.get("severity"), "score": score_of(r), "levels": lv,
-                    **subscores(lv), "analysis": status}
+                    **subscores(lv), "analysis": status, "provenance": marked}
     return out, problems
 
 

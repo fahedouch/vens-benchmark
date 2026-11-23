@@ -1,10 +1,14 @@
 """C1 + C2', the candidate C2''s one-shot screen kept (plan Z0d section 2), as the chain mirrors vens 310-c1c2 at the
 C2' commit (contract.C2P_COMMIT), on synthetic inputs: Loss of availability crossed with availability_requirement, unset
 reading primary with its counter; answers.json against the pinned contract, both ways; the families, the checks and
-the gate under c1c2p. No vens is run: tests/test_c1c2_mock.py runs these rules against the C2' commit's mock."""
+the gate under c1c2p; the counter totals and the reading against the commit's own contract (the mirror review's M1, M1+
+and M2); the impact-provenance marker its commit alone writes (M3, M3+), its SHA not yet known. No vens is run:
+tests/test_c1c2_mock.py runs these rules against the C2' commit's mock."""
+import contextlib
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import ctx_analyze
 from chain import answers, attempt, cdx, conform, contract, families, report_scen, verdicts
@@ -15,7 +19,8 @@ from tests.test_c1c2 import DEP, SCENARIOS, c1c2_entry, doc, impact_of, load, sc
 from tests.test_c1c2_gate import GIVEN, corpus_copy
 
 A, B, C = "CVE-2099-0001", "CVE-2099-0002", "CVE-2099-0003"
-AR = "availability_requirement_missing"
+AR, VM = "availability_requirement_missing", "cvss_v3_missing"
+PROVENANCE, CVSS_V3, FALLBACK = "vens:impact-provenance", "cvss-v3", "missing-cvss-v3-fallback"
 # z8_replay.py's C2P_LAV and PRIMARY (step5c-screens, frozen by freeze-z8.sha256): (secondary, primary) per worst A.
 Z8_LAV = {"N": (1, 1), "L": (1, 5), "H": (5, 7)}
 Z8_PRIMARY = {"low": False, "medium": False, "high": True, "critical": True}
@@ -135,7 +140,8 @@ class TestTheRecord(unittest.TestCase):
             self.assertEqual(len(got), 1, (why, got))
             self.assertIn(why, got[0])
         self.assertEqual(answers.c1c2(doc(c1c2_entry(A, "H", counters=[AR])), contract.C1C2),
-                         [f"{A}: {AR} counted, C2 reads no availability_requirement"])
+                         [f"{A}: {AR} counted, C2 reads no availability_requirement",
+                          f"{AR} in the totals, C2 reads no availability_requirement"])
         self.assertEqual(answers.c1c2(doc(c2p_entry(A, "H")), contract.C1C2), [f"{A}: LAV at 5 from cvss 'H'"])
 
 
@@ -222,14 +228,16 @@ class TestTheFamilies(unittest.TestCase):
         self.assertEqual(text.count("Withdrawn, not met (plan Z0d): #333's expected low"), 2)
 
 
-def published(sid, scen, counters=None, replicate=1):
-    """One after run of a scenario as the C2' commit publishes it on GIVEN's answers."""
+def published(sid, scen, counters=None, replicate=1, commit=contract.C2P_COMMIT, provenance=()):
+    """One after run of a scenario as the C2' commit publishes it on GIVEN's answers, at commit, its VEX carrying the
+    provenance values given."""
     sc = scen[sid]
     got = contract.c1c2_levels(sc["dep"], sc["impact"], sc["described"], GIVEN, rules=contract.C1C2P)
     vec = "/".join(f"{f}:{got[f][0]}" for f in cdx.FACTORS)
     given = {f: (GIVEN.get(f), "answer") for f in cdx.FACTORS}
-    rec = r.record("after", sid, replicate, {sc["vuln_id"]: r.rating(vec)}, scenario=True,
-                   answers={sc["vuln_id"]: r.factors(vec, **given)}, commit=contract.C2P_COMMIT)
+    rating = dict(r.rating(vec), provenance=list(provenance))
+    rec = r.record("after", sid, replicate, {sc["vuln_id"]: rating}, scenario=True,
+                   answers={sc["vuln_id"]: r.factors(vec, **given)}, commit=commit)
     entry = rec["answers"]["per_cve"][sc["vuln_id"]]
     entry["counters"] = contract.c1c2_counters(sc["dep"], sc["impact"], contract.C1C2P) if counters is None \
         else counters
@@ -292,6 +300,160 @@ class TestTheGate(unittest.TestCase):
         self.assertIn("## C1 + C2' recomputed on every after run", text)
         self.assertIn("The after's contract pinned: c1c2p, no reachability relay.", text)
         self.assertIn("C1 + C2''s implementation gate: 1 failure(s), no go.", text)
+
+
+def unrated(vid=B, counters=()):
+    return {"vulnId": vid, "unrated": True, "adjustment": "not_asked",
+            "factors": [{"factor": "M", "answer": "a", "reading": "answered"}], "counters": list(counters)}
+
+
+class TestTheCounterTotals(unittest.TestCase):
+    """M1 and M1+: availability_requirement_missing nowhere under c1c2, no C2 counter on an unrated entry, and each
+    C2 counter's total its entries' sum, omission read as zero."""
+
+    def test_the_counter_only_in_the_totals(self):
+        bypass = doc(c1c2_entry(A, "H"), counters={AR: 1})
+        for pinned in (contract.C1C2, None):
+            self.assertEqual(sorted(answers.validate(bypass, pinned)),
+                             [f"{AR} in the totals, C2 reads no availability_requirement",
+                              f"{AR} totals 1, its entries count 0"], pinned)
+        self.assertEqual(answers.validate(bypass, contract.C1C2P), [f"{AR} totals 1, its entries count 0"])
+
+    def test_a_c2_counter_on_an_unrated_entry(self):
+        for name in (AR, VM):
+            for pinned in contract.C1C2_RULES:
+                totals = [f"{AR} in the totals, C2 reads no availability_requirement"] \
+                    if (name, pinned) == (AR, contract.C1C2) else []
+                self.assertEqual(answers.validate(doc(c1c2_entry(A, "H"), unrated(counters=[name])), pinned),
+                                 [f"{B}: an unrated entry counting {name}"] + totals, (name, pinned))
+        # the counters an unrated entry does keep: cannot_tell's and reasoning_missing
+        kept = unrated(counters=["motive_cannot_tell", "reasoning_missing"])
+        self.assertEqual(answers.validate(doc(c1c2_entry(A, "H"), kept), contract.C1C2), [])
+
+    def test_each_total_against_its_entries(self):
+        vectorless, counted = c1c2_entry(A, None, counters=[VM]), c1c2_entry(B, "H", counters=[AR])
+        for pinned in contract.C1C2_RULES:
+            self.assertEqual(answers.validate(doc(vectorless), pinned), [])
+            self.assertEqual(answers.validate(doc(vectorless, counters={}), pinned),
+                             [f"{VM} totals 0, its entries count 1"])
+            self.assertEqual(answers.validate(doc(vectorless, counters={VM: 2, AR: 0}), pinned),
+                             [f"{VM} totals 2, its entries count 1"])
+        self.assertEqual(answers.validate(doc(vectorless, counted), contract.C1C2P), [])
+        self.assertEqual(answers.validate(doc(vectorless, counted, counters={VM: 1}), contract.C1C2P),
+                         [f"{AR} totals 0, its entries count 1"])
+
+
+def baseline_run(root, commit, entry):
+    """A baseline.yml download at commit whose answers.json holds entry, its VEX the entry's levels."""
+    vec = "/".join(f"{x['factor']}:{x['level']}" for x in entry["factors"])
+    folder = s.baseline_folder(root, 1000, "internal", 1, 1, record=s.COMPLETE_RECORD, commit=commit)
+    s.write(os.path.join(folder, "vex-internal.cdx.json"), s.vex([(A, vec, "high", 30.0)]))
+    s.write(os.path.join(folder, "calls", "run-1", "answers.json"),
+            {"vulnerabilities": [entry], "counters": {}, "defects": {}})
+    return folder
+
+
+class TestTheReadingAgainstTheCommit(unittest.TestCase):
+    """M2: a reading whose pinned contract is not the one the run's own commit pins refuses the run."""
+
+    def test_n_read_under_c1c2p(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = baseline_run(tmp, contract.N_COMMIT, c1c2_entry(A, "H"))
+            plain, own, other = (attempt.read_attempt(folder, rules=x) for x in (None, contract.C1C2, contract.C1C2P))
+        self.assertEqual([x["answers"]["problems"] for x in (plain, own)], [[], []])
+        self.assertEqual(other["answers"]["problems"],
+                         [f"the reading pins c1c2p, vens {contract.N_COMMIT} pins c1c2"])
+        self.assertEqual([x["scores_usable"] for x in (plain, own, other)], [True, True, False])
+
+    def test_a_commit_that_pins_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = baseline_run(tmp, s.RELAY_SHA, c1c2_entry(A, "H"))
+            got = attempt.read_attempt(folder, rules=contract.C1C2P)
+        self.assertEqual((got["answers"]["problems"], got["scores_usable"]), ([], True))
+
+
+MARK = "f" * 40
+
+
+@contextlib.contextmanager
+def marker_at(sha):
+    """The marker commit set to sha for a test, CONTRACTS pinning it to c1c2p."""
+    with mock.patch.object(contract, "MARKER_COMMIT", sha), mock.patch.dict(contract.CONTRACTS, {sha: contract.C1C2P}):
+        yield
+
+
+class TestTheMarker(unittest.TestCase):
+    """M3 and M3+: the vens:impact-provenance property, required of the marker commit's runs alone, one per CVE,
+    missing-cvss-v3-fallback exactly where the report gives no usable v3 vector and the entry counts cvss_v3_missing;
+    any other commit's runs carry none. Until the marker commit's SHA is set, no run may carry one."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.scen = verdicts.load(SCENARIOS, contract.C1C2P)
+
+    def problems(self, rec, sid, rules=contract.C1C2P):
+        sc = self.scen[sid]
+        return conform.run_problems(rec, sc["config"], {sc["vuln_id"]: sc["findings"]}, rules)
+
+    def test_the_placeholder(self):
+        mark = contract.MARKER_COMMIT
+        self.assertTrue(mark is None or contract.CONTRACTS[mark] == contract.C1C2P)
+        self.assertFalse(contract.marker_commit(None))
+        if mark is None:
+            self.assertNotIn(None, contract.CONTRACTS)
+            # a run claiming the marker is refused until the marker commit is known
+            for commit in (MARK, contract.C2P_COMMIT):
+                self.assertEqual(self.problems(published("reach_yes", self.scen, commit=commit,
+                                                         provenance=[CVSS_V3]), "reach_yes"),
+                                 [f"{A}: {PROVENANCE} published, vens {commit[:12]} writes no marker"], commit)
+
+    def test_the_vex_property(self):
+        vex = s.vex([(A, s.VECTOR, s.SEVERITY, s.SCORE), (B, s.VECTOR, s.SEVERITY, s.SCORE),
+                     (C, s.VECTOR, s.SEVERITY, s.SCORE)])
+        vex["vulnerabilities"][0]["properties"] = [{"name": PROVENANCE, "value": CVSS_V3}, {"name": "x", "value": "y"}]
+        vex["vulnerabilities"][2]["properties"] = "cvss-v3"
+        with tempfile.TemporaryDirectory() as tmp:
+            got, problems = cdx.ratings(s.write(os.path.join(tmp, "vex.json"), vex))
+        self.assertEqual({vid: x["provenance"] for vid, x in got.items()}, {A: [CVSS_V3], B: [], C: []})
+        self.assertEqual(problems, [f"{C}: properties 'cvss-v3' is not a list of objects"])
+
+    def test_other_commits_carry_none(self):
+        # disc_dos declares availability_requirement high: the same record under either contract
+        vid = self.scen["disc_dos"]["vuln_id"]
+        for commit, rules in ((contract.C2P_COMMIT, contract.C1C2P), (contract.N_COMMIT, contract.C1C2)):
+            with self.subTest(commit=commit):
+                with marker_at(MARK):
+                    plain = published("disc_dos", self.scen, commit=commit)
+                    self.assertEqual(self.problems(plain, "disc_dos", rules), [])
+                    marked = published("disc_dos", self.scen, commit=commit, provenance=[CVSS_V3])
+                    self.assertEqual(self.problems(marked, "disc_dos", rules),
+                                     [f"{vid}: {PROVENANCE} published, vens {commit[:12]} writes no marker"])
+
+    def test_the_marker_commits_runs(self):
+        novec = self.scen["disc_dos_novec"]["vuln_id"]
+        with marker_at(MARK):
+            self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": MARK}), contract.C1C2P)
+            self.assertTrue(contract.marker_commit(MARK))
+            for sid, value in (("reach_yes", CVSS_V3), ("disc_dos_novec", FALLBACK)):
+                ok = published(sid, self.scen, commit=MARK, provenance=[value])
+                self.assertEqual(self.problems(ok, sid), [], sid)
+            cases = (("reach_yes", [], None, f"{A}: 0 {PROVENANCE} properties, not one"),
+                     ("reach_yes", [CVSS_V3, CVSS_V3], None, f"{A}: 2 {PROVENANCE} properties, not one"),
+                     ("reach_yes", [FALLBACK], None, f"{A}: {PROVENANCE} '{FALLBACK}', its report gives '{CVSS_V3}'; "
+                                                     f"{A}: {PROVENANCE} '{FALLBACK}' against {VM} counted 0 times"),
+                     ("disc_dos_novec", [CVSS_V3], None,
+                      f"{novec}: {PROVENANCE} '{CVSS_V3}', its report gives '{FALLBACK}'; "
+                      f"{novec}: {PROVENANCE} '{CVSS_V3}' against {VM} counted 1 times"),
+                     ("disc_dos_novec", [FALLBACK], [],
+                      f"{novec}: {VM} counted 0 times, not 1; {novec}: {PROVENANCE} '{FALLBACK}' against {VM} counted "
+                      f"0 times"))
+            for sid, values, counters, want in cases:
+                rec = published(sid, self.scen, commit=MARK, provenance=values, counters=counters)
+                self.assertEqual("; ".join(self.problems(rec, sid)), want, (sid, values))
+            # the marker keys on the run's commit, whatever the reading pins
+            rec = published("reach_yes", self.scen, commit=MARK)
+            got = conform.read(cellmod.group([rec]), self.scen, None, contract.C1C2P)
+            self.assertEqual([c["problems"] for c in got.values()], [[f"r1 {A}: 0 {PROVENANCE} properties, not one"]])
 
 
 if __name__ == "__main__":
