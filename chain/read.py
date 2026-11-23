@@ -1,7 +1,7 @@
 """Read attempts and print one JSON object per attempt, complete or failed.
 
     python3 -m chain.read [--dispatch-log LOG] [--commit before=SHA --commit after=SHA] [--arm before|after]
-                          [--failures FILE] [--freeze-sha256 SHA] DIR...
+                          [--failures FILE] [--freeze-sha256 SHA] [--rules RULES] DIR...
 
 DIR is an attempt folder (it holds attempt.json or provenance.json), one workflow run's download (it holds
 baseline-* folders), a campaign's downloads (one numeric folder per run) or a scenario campaign (it holds
@@ -9,7 +9,8 @@ campaign.json, chain/campaign.py). With --dispatch-log, every artefact is mapped
 own included; without it, a download's campaign replicate is its artefacts' r<n>. A scenario campaign's records name
 their arm and replicate: no dispatch log, --arm or --failures applies to it, and one whose corpus is not the frozen
 one (chain/campaign.py, FROZEN) is refused unless --freeze-sha256 names its freeze. --commit refuses an attempt whose
-vens commit is not its arm's.
+vens commit is not its arm's. --rules pins the after's contract (b7c0435, 5f797bf or c1c2), which its answers.json
+must follow; without it, the one its commit pins (chain/contract.py, CONTRACTS), if any.
 """
 import argparse
 import glob
@@ -17,21 +18,22 @@ import json
 import os
 import sys
 
-from chain import attempt, campaign, dispatch, downloads
+from chain import attempt, campaign, contract, dispatch, downloads
 from chain.errors import Refused
 
 
-def read_any(path, lines=None, arm=None, failures=(), commits=None, freeze=None):
+def read_any(path, lines=None, arm=None, failures=(), commits=None, freeze=None, rules=None):
     """An attempt folder, a workflow run's download (its artefact folders, or its run.json or jobs.json from the API
-    even with no artefact), a campaign's downloads, or a scenario campaign; never nothing."""
+    even with no artefact), a campaign's downloads, or a scenario campaign; never nothing. rules: the after's pinned
+    contract, which its answers.json must follow."""
     if os.path.exists(os.path.join(path, campaign.CAMPAIGN)):
         if lines is not None or arm is not None or failures:
             raise Refused(f"{path}: a scenario campaign, whose records name their arm and replicate: no dispatch "
                           f"log, --arm or --failures applies to it")
-        return campaign.read_campaign(path, commits=commits, freeze=freeze or campaign.FROZEN)
+        return campaign.read_campaign(path, commits=commits, freeze=freeze or campaign.FROZEN, rules=rules)
     if freeze is not None:
         raise Refused(f"{path}: not a scenario campaign, which --freeze-sha256 alone applies to")
-    kw = {"lines": lines, "arm": arm, "failures": failures, "commits": commits}
+    kw = {"lines": lines, "arm": arm, "failures": failures, "commits": commits, "rules": rules}
     if any(os.path.exists(os.path.join(path, f)) for f in ("attempt.json", "provenance.json")) or \
             attempt.parse_name(os.path.basename(os.path.normpath(path))):
         return [downloads.read_folder(path, **kw)]
@@ -58,6 +60,8 @@ def main(argv=None):
     ap.add_argument("--arm", choices=dispatch.ARMS)
     ap.add_argument("--failures", action="append", default=[])
     ap.add_argument("--freeze-sha256", help="read a scenario campaign whose corpus has this freeze, not the frozen one")
+    ap.add_argument("--rules", choices=(contract.B7C0435, contract.REACH_RULES, contract.C1C2),
+                    help="the after's preregistered contract, which its answers.json must follow")
     ap.add_argument("dirs", nargs="+")
     a = ap.parse_args(argv)
     commits = dict(a.commit) or None
@@ -65,7 +69,7 @@ def main(argv=None):
         failures = [f for path in a.failures for f in downloads.load_failures(path)]
         lines = dispatch.load(a.dispatch_log) if a.dispatch_log else None
         for path in a.dirs:
-            for rec in read_any(path, lines, a.arm, failures, commits, a.freeze_sha256):
+            for rec in read_any(path, lines, a.arm, failures, commits, a.freeze_sha256, a.rules):
                 print(json.dumps(rec, sort_keys=True))
     except (Refused, dispatch.DispatchError) as e:
         print(f"refused: {e}", file=sys.stderr)

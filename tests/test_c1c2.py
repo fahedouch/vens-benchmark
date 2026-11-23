@@ -1,15 +1,15 @@
-"""C1 + C2 (venslabs/vens#310 plan Z0, vens 310-c1c2 2de5d34) as the chain mirrors them, on synthetic inputs: the usable
-v3 vector rule, C2's table, the nine questions, Privacy violation's floor and the adjustment, the config's
-reachability declarations and the status they publish, answers.json's C1 + C2 record, the families' status and rating
-checks with read5's eligibility rule, and the corpus re-authored for C1. No vens is run: tests/test_c1c2_mock.py runs
-the rules against vens 2de5d34's mock and its Go counts."""
+"""C1 + C2 without a reachability relay (venslabs/vens#310 plans Z0 and Z0d) as the chain mirrors them, on synthetic
+inputs: the usable v3 vector rule, C2's table, the nine questions, Privacy violation's floor and the adjustment,
+answers.json's C1 + C2 record against the pinned contract, no declared block and no VEX status, the families under the
+no-relay checks with read5's eligibility rule, and step 5's corpus. No vens is run: tests/test_c1c2_mock.py runs the
+rules against vens 2de5d34's mock and its Go counts, tests/test_c1c2_gate.py the implementation gate."""
 import os
 import tempfile
 import unittest
 
 import yaml
 
-from chain import answers, attempt, cdx, conform, contract, families, report_scen, verdicts
+from chain import answers, attempt, campaign, cdx, contract, families, report_scen, verdicts
 from chain import cells as cellmod
 from tests import records as r
 from tests import support as s
@@ -18,7 +18,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCENARIOS = os.path.join(ROOT, "scenarios")
 IDS = sorted(d for d in os.listdir(SCENARIOS) if os.path.isdir(os.path.join(SCENARIOS, d)))
 A, B = "CVE-2099-0001", "CVE-2099-0002"
-NO_FIXTURES = ("reach_no", "reach2_no", "reach3_no", "showcase_high_to_low")
 DEP = {"exposure": "internet", "data_sensitivity": "high", "frameworks": ("gdpr",),
        "detection": {"network": "logged", "host": "not_logged", "application": "active_in_application"},
        "traceability": "per_individual", "data_subjects": "millions"}
@@ -200,67 +199,7 @@ class TestTheRules(unittest.TestCase):
         self.assertEqual(contract.adjustment_fields(DEP, floored, False), [])
 
 
-ENTRY = {"cve": A, "reachable": False, "provenance": "compiled out"}
-
-
-class TestTheDeclarations(unittest.TestCase):
-    """riskconfig.CheckReachability and generator.declared: which entries load, which hit a CVE, what they publish."""
-
-    def test_the_entries_kept_trimmed(self):
-        config = {"reachability": [{"cve": f" {A} ", "reachable": False, "provenance": " compiled out\n"},
-                                   {"component": "libwidget", "reachable": True},
-                                   {"component": "x", "reachable": True, "provenance": None}]}
-        self.assertEqual(contract.declarations(config),
-                         [{"cve": A, "component": "", "reachable": False, "provenance": "compiled out"},
-                          {"cve": "", "component": "libwidget", "reachable": True, "provenance": ""},
-                          {"cve": "", "component": "x", "reachable": True, "provenance": ""}])
-        self.assertEqual((contract.declarations({}), contract.declarations({"reachability": []})), ([], []))
-
-    def test_every_entry_vens_refuses(self):
-        refused = ({"reachability": None}, {"reachability": {"cve": A}}, {"reachability": ["x"]},
-                   {"reachability": [dict(ENTRY, why="x")]}, {"reachability": [dict(ENTRY, component="p")]},
-                   {"reachability": [{"reachable": False, "provenance": "p"}]},
-                   {"reachability": [dict(ENTRY, cve=2024)]}, {"reachability": [dict(ENTRY, cve="  ")]},
-                   {"reachability": [{"cve": A, "provenance": "p"}]}, {"reachability": [dict(ENTRY, reachable="no")]},
-                   {"reachability": [{"cve": A, "reachable": False}]},
-                   {"reachability": [dict(ENTRY, provenance=" ")]},
-                   {"reachability": [{"cve": A, "reachable": True, "provenance": 7}]})
-        for config in refused:
-            with self.assertRaises(ValueError, msg=config):
-                contract.declarations(config)
-
-    def test_which_entries_hit(self):
-        unreachable = lambda pkg: {"cve": "", "component": pkg, "reachable": False, "provenance": "p"}
-        reachable = lambda pkg: dict(unreachable(pkg), reachable=True)
-        self.assertTrue(contract.hits(dict(ENTRY, cve=A.lower(), component=""), A, ["x"]))
-        self.assertTrue(contract.hits(unreachable("LibWidget"), A, ["libwidget", "libwidget"]))
-        self.assertFalse(contract.hits(unreachable("libwidget"), A, ["libwidget", "other"]))
-        self.assertFalse(contract.hits(unreachable("libwidget"), A, ["libwidget", ""]))
-        self.assertFalse(contract.hits(unreachable("libwidget"), A, []))
-        self.assertTrue(contract.hits(reachable("libwidget"), A, ["other", "libwidget"]))
-        self.assertFalse(contract.hits(reachable("libwidget"), A, ["", "other"]))
-        self.assertTrue(contract.fold_equal("ſtrict", "STRICT"))
-
-    def test_the_status_and_its_vetoes(self):
-        entries = contract.declarations({"reachability": [
-            {"cve": A, "reachable": False, "provenance": "compiled out"},
-            {"component": "libwidget", "reachable": False, "provenance": "flag off"},
-            {"component": "other", "reachable": True}]})
-        got = contract.status(entries, A, ["libwidget"])
-        self.assertEqual(got, {"state": "not_affected", "justification": "code_not_reachable", "detail":
-                               f"Declared not reachable by config.yaml reachability[0] (cve: {A}). Provenance: "
-                               f"compiled out\nDeclared not reachable by config.yaml reachability[1] (component: "
-                               f"libwidget). Provenance: flag off"})
-        self.assertEqual(contract.declared(entries, A, ["libwidget", "other"]),
-                         {"unreachable": [0], "reachable": [2], "unresolved": [2]})
-        self.assertIsNone(contract.status(entries, A, ["libwidget", "other"]))
-        self.assertIsNone(contract.status(entries, A, ["libwidget"], witnesses=({"cve": A},)))
-        self.assertIsNone(contract.status(entries, B, ["x"]))
-        cves = {A: ["libwidget"], B: ["libwidget", "other"], "C": ["libwidget", "libwidget"], "D": ["z"]}
-        self.assertEqual(contract.entry_hits(entries, cves), [1, 2, 1])
-
-
-def c1c2_entry(vid=A, cvss="H", counters=(), declared=None, pv=None):
+def c1c2_entry(vid=A, cvss="H", counters=(), pv=None):
     """A rated answers.json entry under C1 + C2, every impact from cvss (None: no usable vector)."""
     levels = {"LC": contract.C2_LC.get(cvss, (9, 9))[1], "LI": contract.C2_LI.get(cvss, 9),
               "LAV": contract.C2_LAV.get(cvss, 9)}
@@ -274,8 +213,7 @@ def c1c2_entry(vid=A, cvss="H", counters=(), declared=None, pv=None):
                                    "source": "answer"}))
         else:
             factors.append({"factor": f, "level": 5, "source": "constant"})
-    e = {"vulnId": vid, "adjustment": "not_asked", "factors": factors, "counters": list(counters)}
-    return {**e, "declared": declared} if declared is not None else e
+    return {"vulnId": vid, "adjustment": "not_asked", "factors": factors, "counters": list(counters)}
 
 
 def load(d):
@@ -287,12 +225,11 @@ def doc(*vulns):
     return load({"vulnerabilities": list(vulns), "counters": {}, "defects": {}})
 
 
-STATUS = {"state": "not_affected", "justification": "code_not_reachable",
-          "detail": f"Declared not reachable by config.yaml reachability[0] (cve: {A}). Provenance: p"}
+STATUS = {"state": "not_affected", "justification": "code_not_reachable", "detail": "compiled out"}
 
 
 class TestTheRecord(unittest.TestCase):
-    """answers.json under C1 + C2 as the reader checks it, and the VEX status against its declared block."""
+    """answers.json under C1 + C2 as the reader checks it: no relay, so no declared block and no VEX status."""
 
     def test_the_contract_shown_and_the_one_pinned(self):
         raw = s.answers_doc([(A, s.VECTOR)])
@@ -318,21 +255,23 @@ class TestTheRecord(unittest.TestCase):
         self.assertEqual(answers.c1c2(reach)[:4], [f"{A}: a reachability record under C1 + C2"] + [
             f"{A}: {f} not from cvss alone" for f in ("LC", "LI", "LAV")])
 
-    def test_the_contract_a_commit_pins(self):
+    def test_the_contract_a_commit_or_the_reading_pins(self):
         self.assertEqual([attempt.pinned_contract({"arm": "after", "vens_commit": sha}) for sha in (
-            s.C1C2_SHA, s.AFTER_SHA, s.REACH_SHA, "e" * 40)], [contract.C1C2, contract.B7C0435, contract.REACH_RULES,
-                                                               None])
-        self.assertIsNone(attempt.pinned_contract({"arm": "before", "vens_commit": s.C1C2_SHA}))
+            s.AFTER_SHA, s.REACH_SHA, s.C1C2_SHA, "e" * 40)], [contract.B7C0435, contract.REACH_RULES, None, None])
+        self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": s.C1C2_SHA}, contract.C1C2),
+                         contract.C1C2)
+        self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": s.AFTER_SHA}, contract.C1C2),
+                         contract.C1C2)
+        self.assertIsNone(attempt.pinned_contract({"arm": "before", "vens_commit": s.AFTER_SHA}, contract.C1C2))
+        # N, the no-relay commit, is not known yet: no commit pins C1 + C2
+        self.assertIsNone(contract.N_COMMIT)
+        self.assertNotIn(contract.C1C2, contract.CONTRACTS.values())
 
     def test_a_record_that_follows_c1_c2(self):
         good = doc(c1c2_entry(A, "H"), c1c2_entry(B, None, counters=["cvss_v3_missing"]),
-                   c1c2_entry("CVE-2099-0003", "N"),
-                   c1c2_entry("CVE-2099-0004", "L", declared={"unreachable": [0], "analysis": STATUS}),
-                   c1c2_entry("CVE-2099-0005", "L", declared={"unreachable": [0], "reachable": [1],
-                                                              "unresolved": [1]}))
-        self.assertEqual(answers.c1c2(good), [])
-        got = answers.per_cve(good["vulnerabilities"][3])
-        self.assertEqual((got["declared"]["analysis"], got["factors"]["LC"]["cvss"]), (STATUS, "L"))
+                   c1c2_entry("CVE-2099-0003", "N"))
+        self.assertEqual(answers.validate(good, contract.C1C2), [])
+        self.assertEqual(answers.per_cve(good["vulnerabilities"][0])["factors"]["LC"]["cvss"], "H")
 
     def test_the_impacts_off_c2(self):
         lc_answered = c1c2_entry()
@@ -355,28 +294,22 @@ class TestTheRecord(unittest.TestCase):
             self.assertEqual(len(got), 1, (why, got))
             self.assertIn(why, got[0])
 
-    def test_the_declared_blocks_off_their_shape(self):
-        cases = (({"unreachable": [0]}, "a declared status missing"),
-                 ({"unreachable": [0], "reachable": [1], "analysis": STATUS}, "a declared status published"),
-                 ({"unreachable": [0], "analysis": {**STATUS, "detail": "compiled out"}}, "citing each entry"),
-                 ({"unreachable": [1], "analysis": STATUS}, "citing each entry"),
-                 ({"unreachable": [0, 1], "analysis": STATUS}, "citing each entry"),
-                 ({"unreachable": [0], "analysis": {**STATUS, "state": "affected"}}, "citing each entry"),
-                 ({"unreachable": [0], "analysis": "not_affected"}, "citing each entry"),
-                 ({"reachable": [1], "unresolved": [0]}, "unresolved entries that do not assert reachability"),
-                 ({}, "a declared block no entry hits"), ({"unreachable": [1, 0]}, "off its shape"),
-                 ({"unreachable": [0], "why": 1}, "off its shape"))
-        for declared, why in cases:
-            got = answers.c1c2(doc(c1c2_entry(declared=declared)))
-            self.assertTrue(got and why in got[0], (declared, got))
+    def test_a_declared_block_fails_under_any_contract(self):
+        relayed = dict(c1c2_entry(), declared={"unreachable": [0], "analysis": STATUS})
+        want = f"{A}: a declared block, no contract relaying reachability"
+        for pinned in (contract.C1C2, contract.B7C0435, None):
+            self.assertIn(want, answers.validate(doc(relayed), pinned), pinned)
+        old = s.answers_doc([(A, s.VECTOR)])
+        old["vulnerabilities"][0]["declared"] = {}
+        self.assertEqual(answers.validate(load(old), None), [want])
 
     def test_an_unrated_entry_answers_no_impact(self):
         unrated = {"vulnId": B, "unrated": True, "adjustment": "not_asked",
                    "factors": [{"factor": "LC", "answer": "a", "reading": "answered"}]}
         self.assertEqual(answers.c1c2(doc(c1c2_entry(), unrated)),
-                         [f"{B}: an unrated entry answering a technical impact or holding a declared block"])
+                         [f"{B}: an unrated entry answering a technical impact"])
 
-    def test_the_vex_status_against_answers_json(self):
+    def test_a_vex_status_fails_the_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             vex = s.vex([(A, s.VECTOR, s.SEVERITY, s.SCORE)])
             plain, _ = cdx.ratings(s.write(os.path.join(tmp, "plain.json"), vex))
@@ -387,11 +320,8 @@ class TestTheRecord(unittest.TestCase):
         self.assertEqual((plain[A]["analysis"], published[A]["analysis"], problems), (None, STATUS, []))
         self.assertEqual(bad, [f"{A}: analysis 'not_affected' is not an object"])
         rated = load(s.answers_doc([(A, s.VECTOR)]))
-        with_block = load(s.answers_doc([(A, s.VECTOR)]))
-        with_block["vulnerabilities"][0]["declared"] = {"unreachable": [0], "analysis": STATUS}
-        differs = [f"{A}: the VEX's status differs from the one answers.json declares"]
-        self.assertEqual((answers.check(rated, plain), answers.check(with_block, published)), ([], []))
-        self.assertEqual((answers.check(rated, published), answers.check(with_block, plain)), (differs, differs))
+        self.assertEqual(answers.check(rated, plain), [])
+        self.assertEqual(answers.check(rated, published), [f"{A}: the VEX publishes a status, not_affected"])
 
 
 MODEL = f"c1 · openai/{s.MODEL}"
@@ -399,123 +329,79 @@ MODEL = f"c1 · openai/{s.MODEL}"
 VEC = "SL:9/M:4/O:7/S:9/ED:9/EE:3/A:9/ID:9/LC:7/LI:7/LAV:7/LAC:9/FD:9/RD:1/NC:2/PV:5"
 GIVEN = {"M": "possible_reward", "O": "some_access_or_resources_required", "EE": "difficult", "LAC": "unidentified",
          "FD": "bankruptcy", "RD": "minimal_damage", "PV": "hundreds"}
+NOTES = verdicts.NOTES
 
 
-def scen_run(arm, sid, replicate, status=None, vec=VEC, c1c2=True):
-    """A run of one scenario: its VEX status and, for the after, answers.json under C1 + C2 (impacts from cvss) or
-    b7c0435."""
-    rating = dict(r.rating(vec, arm), analysis=status)
+def scen_run(arm, sid, replicate, vec=VEC, c1c2=True):
+    """A run of one scenario and, for the after, answers.json under C1 + C2 (impacts from cvss) or b7c0435."""
     answers_ = None
     if arm == "after":
         given = {f: (GIVEN[f], "answer") for f in GIVEN}
         if c1c2:
             given.update({f: (None, "cvss") for f in contract.AXIS})
         answers_ = {A: r.factors(vec, **given)}
-    return r.record(arm, sid, replicate, {A: rating}, scenario=True, answers=answers_)
+    return r.record(arm, sid, replicate, {A: r.rating(vec, arm)}, scenario=True, answers=answers_)
 
 
 class TestTheFamilies(unittest.TestCase):
-    """The status and rating checks read on runs, the rules each model's rows are read under, plan Z0's every
-    replicate and read5's eligibility rule."""
+    """The checks under the pinned contract: what the notes alone may move as diagnostics, showcase_med_to_high's
+    high or critical carried under read5's eligibility rule, the rows certified against the pinned contract."""
+
+    SIDS = ("reach_no", "reach_yes", "showcase_high_to_low", "showcase_med_to_high")
 
     @classmethod
     def setUpClass(cls):
         cls.scen = verdicts.load(SCENARIOS)
-        cls.declared = {sid: cls.scen[sid]["status"] for sid in NO_FIXTURES}
 
-    def status(self, sid):
-        return dict(zip(("state", "justification", "detail"), self.declared[sid]))
-
-    def runs(self, after_status=True, replicates=(1, 2), c1c2=True):
-        recs = []
-        for rep in replicates:
-            for sid in ("reach_no", "reach_yes", "showcase_high_to_low", "showcase_med_to_high"):
-                recs.append(scen_run("before", sid, rep))
-                st = self.status(sid) if after_status and sid in self.declared else None
-                recs.append(scen_run("after", sid, rep, st, c1c2=c1c2))
-        return recs
+    def runs(self, c1c2=True, replicates=(1, 2)):
+        return [scen_run(arm, sid, rep, c1c2=c1c2) for rep in replicates for sid in self.SIDS
+                for arm in ("before", "after")]
 
     def rows(self, recs, rules=contract.C1C2):
         return families.evaluate(cellmod.group(recs), self.scen, rules=rules)
 
-    def test_the_statuses_and_the_rating(self):
+    def test_the_notes_alone_and_the_carried_showcase(self):
         rows = self.rows(self.runs())
         self.assertEqual({x["rules"] for x in rows}, {contract.C1C2})
         self.assertTrue(all(x["certified"] for x in rows))
-        got = {(x["check"].label, x["arm"]): [p["ok"] for p in x["row"]["per"]] for x in rows
-               if x["check"].quantity in ("status", "rating") and x["row"]["item"] in (
-                   ("reach_no", "reach_yes"), "showcase_high_to_low", "showcase_med_to_high")}
-        self.assertEqual(got, {
-            (verdicts.REACH_STATUS, "before"): [False, False], (verdicts.REACH_STATUS, "after"): [True, True],
-            (verdicts.SHOWCASE_STATUS[0].label, "before"): [False, False],
-            (verdicts.SHOWCASE_STATUS[0].label, "after"): [True, True],
-            (verdicts.SHOWCASE_STATUS[1].label, "after"): [False, False],
-            ("showcase_med_to_high publishes no not_affected", "before"): [True, True],
-            ("showcase_med_to_high publishes no not_affected", "after"): [True, True]})
+        kinds = {(x["check"].label, x["arm"]): x["kind"] for x in rows if x["check"].family in ("showcases",
+                                                                                                "reachability")}
+        self.assertEqual(kinds[("showcase_high_to_low low" + NOTES, "after")], verdicts.DIAGNOSTIC)
+        self.assertEqual(kinds[("the score above the unreachable one's by more than 0.5" + NOTES, "after")],
+                         verdicts.DIAGNOSTIC)
+        self.assertEqual((kinds[("showcase_med_to_high high or critical", "before")],
+                          kinds[("showcase_med_to_high high or critical", "after")]), (verdicts.CARRIED,) * 2)
         self.assertNotIn("showcase_high_to_low low", {x["check"].label for x in rows})
 
-    def test_the_rating_its_answers_give(self):
-        # showcase_high_to_low: internal, data low, controls; C:H/I:H/A:H gives LC 6, LI 7, LAV 7
-        sc = self.scen["showcase_high_to_low"]
-        given = {f: x for f, x in GIVEN.items()}
-        levels = contract.c1c2_levels(sc["dep"], sc["impact"], sc["described"], given)
-        vec = "/".join(f"{f}:{levels[f][0]}" for f in cdx.FACTORS)
-        rows = self.rows([scen_run("after", "showcase_high_to_low", 1, self.status("showcase_high_to_low"), vec),
-                          scen_run("after", "showcase_high_to_low", 2, None, vec.replace("LC:6", "LC:2"))])
-        (row,) = [x for x in rows if x["check"].quantity == "rating"]
-        self.assertEqual([p["value"] for p in row["row"]["per"]], [True, False])
-        self.assertEqual(families.every_replicate(row["row"]), "fail")
-
-    def test_a_status_missing_or_off_its_entry_fails(self):
-        rows = [x for x in self.rows(self.runs(after_status=False))
-                if x["check"].quantity == "status" and x["arm"] == "after"]
-        verdict = {x["row"]["item"]: families.every_replicate(x["row"]) for x in rows}
-        self.assertEqual((verdict[("reach_no", "reach_yes")], verdict["showcase_high_to_low"],
-                          verdict["showcase_med_to_high"]), ("fail", "fail", "pass"))
-        # a not_affected with a detail citing no declared entry, or published where none is declared
-        wrong = dict(self.status("reach_no"), detail="Declared not reachable by config.yaml reachability[0] "
-                                                     "(cve: CVE-2099-0001). Provenance: elsewhere")
-        stray = [scen_run("after", "reach_no", 1, wrong), scen_run("after", "reach_yes", 1, self.status("reach_no")),
-                 scen_run("after", "showcase_med_to_high", 1, self.status("reach_no"))]
-        rows = [x for x in self.rows(stray) if x["check"].quantity == "status"]
-        self.assertEqual({x["row"]["item"]: [p["ok"] for p in x["row"]["per"]] for x in rows},
-                         {("reach_no", "reach_yes"): [False], "showcase_med_to_high": [False]})
-
-    def test_read5s_rule_prints_not_gated(self):
+    def test_read5s_rule_reads_the_carried_showcase(self):
         rows = self.rows(self.runs())
         g = families.gates(rows)
-        self.assertEqual(g[("reachability", verdicts.REACH_STATUS, ("reach_no", "reach_yes"), MODEL)],
-                         (0.0, 0.0, "not gated"))
-        self.assertEqual(g[("showcases", "showcase_med_to_high publishes no not_affected", "showcase_med_to_high",
-                            MODEL)], (1.0, 0.0, "pass"))
-        text = "\n".join(report_scen.families_section({"rows": rows, "moves": {}}))
-        self.assertIn(f"- {verdicts.REACH_STATUS} · reach_no / reach_yes · {MODEL}: the before passes 0.00, the "
-                      f"after fails 0.00: not gated; read5's eligibility, printed beside; the every-replicate reading "
-                      f"binds: pass.", text)
-        self.assertIn("every replicate: pass (pass 2 of 2)", text)
-        self.assertIn("not_affected/code_not_reachable / none x2", text)
-        self.assertEqual((families.family_item([True] * 8 + [False] * 2, [False] * 8 + [True] * 2)[2],
-                          families.family_item([True] * 10, [False] * 3 + [True] * 7)[2],
-                          families.family_item([True] * 7 + [False] * 3, [False] * 10)[2]),
-                         ("fail", "weakened", "not gated"))
+        self.assertEqual(g[("showcases", "showcase_med_to_high high or critical", "showcase_med_to_high", MODEL)],
+                         (1.0, 0.0, "pass"))
+        self.assertFalse([k for k in g if k[0] == "reachability"])
+        text = "\n".join(report_scen.families_section({"rows": rows, "moves": {}, "rules": contract.C1C2,
+                                                        "implementation": {}}))
+        self.assertIn("- showcase_med_to_high high or critical · showcase_med_to_high · " + MODEL
+                      + ": the before passes 1.00, the after fails 0.00: pass.", text)
+        self.assertEqual(text.count("Withdrawn, not met (plan Z0d): #333's expected low for showcase_high_to_low; "
+                                    "step 1's reachability contract"), 2)
+        self.assertIn("Implementation checks (plan Z0, every replicate; binding): 0 pass, 0 fail, 0 inconclusive",
+                      text)
 
     def test_historical_runs_keep_their_rules(self):
-        rows = self.rows(self.runs(after_status=False, c1c2=False), contract.B7C0435)
+        rows = self.rows(self.runs(c1c2=False), contract.B7C0435)
         self.assertEqual({x["rules"] for x in rows}, {contract.B7C0435})
         self.assertTrue(all(x["certified"] for x in rows))
         self.assertIn("showcase_high_to_low low", {x["check"].label for x in rows})
-        self.assertNotIn(verdicts.REACH_STATUS, {x["check"].label for x in rows})
+        self.assertNotIn("Withdrawn, not met", "\n".join(report_scen.families_section({"rows": rows, "moves": {}})))
 
     def test_the_pinned_rules_choose_the_checks_never_the_runs(self):
-        # b7c0435's runs read under C1 + C2 pinned: its checks, every after row not certified
-        rows = self.rows(self.runs(after_status=False, c1c2=False))
-        self.assertIn(verdicts.REACH_STATUS, {x["check"].label for x in rows})
+        rows = self.rows(self.runs(c1c2=False))
+        self.assertIn("showcase_high_to_low low" + NOTES, {x["check"].label for x in rows})
         self.assertEqual({x["certified"] for x in rows if x["arm"] == "after"}, {False})
-        # C1 + C2's runs read under b7c0435 pinned: not certified either
         rows = self.rows(self.runs(), contract.B7C0435)
         self.assertEqual({x["certified"] for x in rows if x["arm"] == "after"}, {False})
-        # no after run read at all: the pinned checks still, not b7c0435's
-        before = [r for r in self.runs() if r["what"]["arm"] == "before"]
+        before = [x for x in self.runs() if x["what"]["arm"] == "before"]
         self.assertNotIn("showcase_high_to_low low", {x["check"].label for x in self.rows(before)})
 
     def test_a_vectorless_scenario_is_tagged(self):
@@ -528,46 +414,23 @@ class TestTheFamilies(unittest.TestCase):
 
 
 class TestTheChecks(unittest.TestCase):
-    """CHECKS_C1C2 and its static analysis: a status is Go's, an implementation check pass only on the corpus."""
+    """CHECKS_C1C2 under no relay."""
 
     def test_the_c1c2_check_set(self):
         quantities = {c.quantity for c in verdicts.CHECKS_C1C2}
-        self.assertFalse(quantities & {"LC", "LI", "LAV", "answer LC", "answer LI", "answer LAV"})
-        self.assertNotIn(("showcases", "showcase_high_to_low low"),
-                         {(c.family, c.label) for c in verdicts.CHECKS_C1C2})
-        implementation = [c for c in verdicts.CHECKS_C1C2 if c.kind("after") == verdicts.IMPLEMENTATION]
-        self.assertEqual(sorted(c.label for c in implementation),
-                         sorted([verdicts.REACH_STATUS, "showcase_med_to_high publishes no not_affected"]
-                                + [c.label for c in verdicts.SHOWCASE_STATUS]))
-        self.assertEqual({c.kind("after") for c in verdicts.CHECKS_C1C2 if c.family == "reachability"},
-                         {verdicts.IMPLEMENTATION, verdicts.DIAGNOSTIC})
+        self.assertFalse(quantities & {"LC", "LI", "LAV", "answer LC", "answer LI", "answer LAV", "status", "rating"})
+        changed = {(c.family, c.label, c.kinds) for c in verdicts.CHECKS_C1C2 if c not in verdicts.CHECKS}
+        self.assertEqual(changed, {
+            ("showcases", "showcase_high_to_low low" + NOTES, verdicts.BOTH(verdicts.DIAGNOSTIC)),
+            ("reachability", "the score above the unreachable one's by more than 0.5" + NOTES,
+             verdicts.BOTH(verdicts.DIAGNOSTIC)),
+            ("reachability", "O, unreachable at most reachable" + NOTES, verdicts.AFTER(verdicts.DIAGNOSTIC)),
+            ("reachability", "EE, unreachable at most reachable" + NOTES, verdicts.AFTER(verdicts.DIAGNOSTIC))})
+        (med,) = [c for c in verdicts.CHECKS_C1C2 if c.label == "showcase_med_to_high high or critical"]
+        self.assertIn(med, verdicts.CHECKS)
+        self.assertEqual(med.kinds, verdicts.BOTH(verdicts.CARRIED))
         self.assertEqual(verdicts.checks_for(contract.C1C2), verdicts.CHECKS_C1C2)
         self.assertEqual(verdicts.checks_for(contract.REACH_RULES), verdicts.CHECKS)
-
-    def test_the_statuses_are_pass_only_on_the_corpus(self):
-        scen = verdicts.load(SCENARIOS, contract.C1C2)
-        checks = [c for c in verdicts.CHECKS_C1C2 if c.quantity in ("status", "rating")]
-        rows, problems = verdicts.check(scen, {}, {}, checks)
-        self.assertEqual(problems, [])
-        self.assertEqual({(arm, res) for c, arm, _, _, res in rows if c.label == verdicts.REACH_STATUS},
-                         {("after", (True, False)), ("before", (False, True))})
-
-    def test_the_report_lists_each_entrys_hits(self):
-        lines, _ = verdicts.report(verdicts.load(SCENARIOS, contract.C1C2), {}, {}, checks=())
-        start = lines.index("each scenario's config reachability entries and the CVEs each hits, zeros included:")
-        self.assertEqual(lines[start + 1:start + 5], [
-            "  reach2_no: reachability[0] (cve: CVE-2099-0012) 1",
-            "  reach3_no: reachability[0] (cve: CVE-2099-0013) 1",
-            "  reach_no: reachability[0] (cve: CVE-2099-0001) 1",
-            "  showcase_high_to_low: reachability[0] (component: org.apache.logging.log4j:log4j-core) 1"])
-        self.assertIn("  reach_no: answer M O EE LAC FD RD PV; config S ID NC; constant SL ED A; cvss LC LI LAV", lines)
-
-    def test_a_no_fixture_without_its_entry_is_a_problem(self):
-        scen = verdicts.load(SCENARIOS, contract.C1C2)
-        scen["reach2_no"] = dict(scen["reach2_no"], status=())
-        _, problems = verdicts.check(scen, {}, {}, [c for c in verdicts.CHECKS_C1C2 if c.quantity == "status"])
-        self.assertEqual(problems, [f"reachability, {verdicts.REACH_STATUS}, after, reach2_no / reach2_yes: labelled "
-                                    f"implementation, fail only, not pass only"])
 
 
 def config(sid):
@@ -576,37 +439,11 @@ def config(sid):
 
 
 class TestTheCorpus(unittest.TestCase):
-    """The four no-fixtures re-authored with scoped entries, every other byte as step 5 ran it."""
+    """Step 5's corpus, which declares no reachability (plan Z0d): no config holds a reachability key."""
 
-    def test_the_four_entries(self):
-        for sid in NO_FIXTURES:
-            cfg, report = config(sid), os.path.join(SCENARIOS, sid, "report.json")
-            (entry,) = contract.declarations(cfg)
-            cves = {vid: [f.get("PkgName") or "" for f in fs] for vid, fs in contract.report_cves(report).items()}
-            ((vid, packages),) = cves.items()
-            self.assertEqual((entry["reachable"], entry["provenance"]), (False, cfg["context"]["notes"]), sid)
-            self.assertTrue(entry["provenance"], sid)
-            self.assertTrue(entry["cve"] == vid or {entry["component"]} == set(packages), sid)
-            self.assertEqual(contract.entry_hits([entry], cves), [1], sid)
-            self.assertTrue(contract.status([entry], vid, packages), sid)
-        self.assertEqual({sid: bool(contract.declarations(config(sid))[0]["component"]) for sid in NO_FIXTURES},
-                         {"reach_no": False, "reach2_no": False, "reach3_no": False, "showcase_high_to_low": True})
-
-    def test_no_other_config_declares_reachability(self):
-        self.assertEqual(sorted(sid for sid in IDS if "reachability" in config(sid)), sorted(NO_FIXTURES))
-
-    def test_every_other_byte_as_step_5_ran_it(self):
-        step5 = s.step5_scenarios()
-        for sid in IDS:
-            for name in ("config.yaml", "report.json"):
-                with open(os.path.join(SCENARIOS, sid, name), encoding="utf-8") as fh:
-                    now = fh.read()
-                with open(os.path.join(step5, sid, name), encoding="utf-8") as fh:
-                    then = fh.read()
-                if sid in NO_FIXTURES and name == "config.yaml":
-                    self.assertTrue(now.startswith(then) and now[len(then):].startswith("reachability:\n"), sid)
-                else:
-                    self.assertEqual(now, then, (sid, name))
+    def test_step_5s_corpus(self):
+        self.assertEqual([sid for sid in IDS if "reachability" in config(sid)], [])
+        self.assertEqual(campaign.FROZEN, "4f4b86ade2e1c464142728d5c68a3c86ede2db21c47a4a5b64aadf19c44232a1")
 
 
 if __name__ == "__main__":

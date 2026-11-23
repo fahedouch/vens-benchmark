@@ -22,14 +22,11 @@ its vector, with no source: its moves are not attributed. "answer R" reads the r
 before 19b333a gives. A row read on a run that asks reachability is marked certified False: the checks' kinds come
 from chain/verdicts.py's b7c0435 rules, which certify none of it.
 
-With the after's contract pinned to C1 + C2 (310-c1c2 2de5d34; ctx_analyze --rules c1c2), every model is read on
+With the after's contract pinned to C1 + C2 (no relay, plan Z0d; ctx_analyze --rules c1c2), every model is read on
 CHECKS_C1C2, each row marked rules c1c2 and certified where every after run it reads follows C1 + C2; Go's moves then
-include source cvss. "status" reads the VEX
-status of the run's CVE, () for none, which an implementation check compares with the one the scenario's config
-declares (chain.contract.status); "rating" whether the published levels are those C1 + C2's rules give the run's
-answers, which no reachability input reaches. every_replicate() reads plan Z0's showcase contract on a row, every
-replicate; gates() keeps read5's eligibility rule, an item the before does not pass in FAMILY_ROBUST of its replicates
-printing not gated. A row whose scenarios hold a CVE without a usable v3 vector, LC, LI and LAV at 9 under C2, is
+include source cvss. gates() keeps read5's eligibility rule on every carried or new check, an item the before does not
+pass in FAMILY_ROBUST of its replicates printing not gated; the binding implementation reading of every after run is
+chain/conform.py's. A row whose scenarios hold a CVE without a usable v3 vector, LC, LI and LAV at 9 under C2, is
 tagged vectorless, so that a regression there is reported apart.
 """
 import collections
@@ -94,30 +91,14 @@ def norm(answer):
     return tuple(sorted(answer)) if isinstance(answer, list) else answer
 
 
-def rerated(rec, scenario):
-    """Whether the run's published levels are the ones C1 + C2's rules give its answers on its scenario, with no
-    reachability input; None without answers.json."""
-    fs = factors(rec)
-    if fs is None:
-        return None
-    answers = {f: x["answer"] for f, x in fs.items()}
-    adjusted = {f: (fs.get(f) or {}).get("adjusted") for f in ("O", "PV")}
-    got = contract.c1c2_levels(scenario["dep"], scenario["impact"], scenario["described"], answers, adjusted)
-    return all(rec["ratings"][_cve(rec)]["levels"][f] == got[f][0] for f in cdx.FACTORS)
-
-
-def value(rec, quantity, scenario=None):
-    """The quantity in one run, None where the run does not give it; "rating" reads the run's scenario."""
+def value(rec, quantity):
+    """The quantity in one run, None where the run does not give it."""
     vid = _cve(rec)
     if vid is None:
         return None
     r = rec["ratings"][vid]
     if quantity in ("score", "severity", "L", "TA", "VU", "T", "B"):
         return r[quantity]
-    if quantity == "status":
-        return verdicts.status_tuple(r.get("analysis"))
-    if quantity == "rating":
-        return None if scenario is None else rerated(rec, scenario)
     fs = factors(rec)
     if quantity == f"answer {contract.R}":
         reach = reachability(rec)
@@ -196,11 +177,9 @@ def _numeric(v):
     return isinstance(v, (int, float, Fraction)) and not isinstance(v, bool)
 
 
-def _ok_pair(check, va, vb, sa=None):
+def _ok_pair(check, va, vb):
     if va is None or vb is None:
         return None
-    if check.quantity == "status":
-        return verdicts.status_pair_ok(va, vb, (sa or {}).get("status", ()))
     if check.quantity.startswith("answer ") or check.quantity == "severity":
         return va == vb
     return verdicts.PAIR_TESTS[check.test](Fraction(vb) - Fraction(va))
@@ -220,18 +199,17 @@ def _summary(values):
 EMPTY = {"runs": {}, "replicates": set()}
 
 
-def pair(check, arm, a, b, model, runs, scen=None):
+def pair(check, arm, a, b, model, runs):
     """One pair of one check in one arm for one model; None when neither scenario was run."""
     ra, rb = runs.get((model, a, arm)), runs.get((model, b, arm))
     if ra is None and rb is None:
         return None
     ra, rb = ra or EMPTY, rb or EMPTY
-    sa = (scen or {}).get(a)
     per, missing = [], []
     for rep in sorted(ra["replicates"] | rb["replicates"]):
         x, y = ra["runs"].get(rep), rb["runs"].get(rep)
         va, vb = (value(x, check.quantity), value(y, check.quantity)) if x and y else (None, None)
-        ok = _ok_pair(check, va, vb, sa)
+        ok = _ok_pair(check, va, vb)
         if ok is None:
             missing.append(rep)
             continue
@@ -241,7 +219,7 @@ def pair(check, arm, a, b, model, runs, scen=None):
                     "sources": sources(x, y, check.quantity) if arm == "after" else None})
     ma = _summary([value(r, check.quantity) for r in ra["runs"].values()])
     mb = _summary([value(r, check.quantity) for r in rb["runs"].values()])
-    return {"item": (a, b), "per": per, "missing": missing, "median": (ma, mb, _ok_pair(check, ma, mb, sa))}
+    return {"item": (a, b), "per": per, "missing": missing, "median": (ma, mb, _ok_pair(check, ma, mb))}
 
 
 def _ok_single(check, arm, sid, v, scen):
@@ -249,10 +227,6 @@ def _ok_single(check, arm, sid, v, scen):
         return None
     if check.test == "any":
         return True
-    if check.quantity == "status":
-        return verdicts.status_ok(check.test, v, scen[sid]["status"])
-    if check.quantity == "rating":
-        return v is True
     if check.test in ("below_null", "above_null"):
         null = Fraction(scen[sid]["null"][NULL_FIELD[check.quantity]])
         return Fraction(v) < null if check.test == "below_null" else Fraction(v) > null
@@ -268,7 +242,7 @@ def single(check, arm, sid, model, runs, scen):
     per, missing = [], []
     for rep in sorted(r["replicates"]):
         x = r["runs"].get(rep)
-        v = None if x is None else value(x, check.quantity, scen.get(sid))
+        v = None if x is None else value(x, check.quantity)
         ok = _ok_single(check, arm, sid, v, scen)
         if ok is None:
             missing.append(rep)
@@ -281,15 +255,14 @@ def single(check, arm, sid, model, runs, scen):
 
 def run_rules(rec):
     """The contract an after run's answers.json shows, read off the record to certify a row against the pinned one,
-    never to choose the checks: 5f797bf's (reachability asked), C1 + C2's (a declared block or a level from source
-    cvss), b7c0435's; None without one."""
+    never to choose the checks: 5f797bf's (reachability asked), C1 + C2's (a level from source cvss), b7c0435's;
+    None without one."""
     per = (rec.get("answers") or {}).get("per_cve")
     if not per:
         return None
     if verdicts.asks_reachability(rec):
         return contract.REACH_RULES
-    if any(e.get("declared") is not None or any((x or {}).get("source") == contract.CVSS_SOURCE
-                                                for x in e["factors"].values()) for e in per.values()):
+    if any((x or {}).get("source") == contract.CVSS_SOURCE for e in per.values() for x in e["factors"].values()):
         return contract.C1C2
     return contract.B7C0435
 
@@ -322,21 +295,12 @@ def evaluate(cells, scen, checks=None, rules=contract.B7C0435):
         for arm, kind in c.kinds:
             for model in models:
                 for item in c.scenarios:
-                    row = pair(c, arm, *item, model, runs, scen) if c.pairs() else \
-                        single(c, arm, item, model, runs, scen)
+                    row = pair(c, arm, *item, model, runs) if c.pairs() else single(c, arm, item, model, runs, scen)
                     if row is not None:
                         out.append({"check": c, "arm": arm, "kind": kind, "model": model, "row": row,
                                     "rules": rules, "certified": _certified(runs, model, item, arm, rules),
                                     "vectorless": _vectorless(item, scen)})
     return out
-
-
-def every_replicate(row):
-    """Plan Z0's reading of an implementation check: fail when a replicate fails, pass when every replicate passes
-    and none is missing, inconclusive otherwise."""
-    if any(not p["ok"] for p in row["per"]):
-        return "fail"
-    return "pass" if row["per"] and not row["missing"] else "inconclusive"
 
 
 def family_item(before_ok, after_ok, robust=FAMILY_ROBUST):
@@ -355,13 +319,13 @@ def family_item(before_ok, after_ok, robust=FAMILY_ROBUST):
     return pb, fa, "weakened" if fa > 1 - robust + 1e-12 else "pass"
 
 
-GATED = (verdicts.CARRIED, verdicts.NEW, verdicts.IMPLEMENTATION)
+GATED = (verdicts.CARRIED, verdicts.NEW)
 
 
 def gates(rows):
     """{(family, label, item, model): (the before's pass share, the after's fail share, verdict)} by read5's rule,
-    for every check whose after is carried, new or implementation and whose before is read beside it; inconclusive
-    where a row misses a replicate."""
+    for every check whose after is carried or new and whose before is read beside it; inconclusive where a row misses
+    a replicate."""
     by = collections.defaultdict(dict)
     for r in rows:
         by[(r["check"].family, r["check"].label, r["row"]["item"], r["model"])][r["arm"]] = r

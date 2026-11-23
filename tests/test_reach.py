@@ -18,8 +18,7 @@ from tests import records as r
 from tests import support as s
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# The corpus as the binaries before 310-c1c2 read it, which refuse a reachability key.
-SCENARIOS = s.step5_scenarios()
+SCENARIOS = os.path.join(ROOT, "scenarios")
 IDS = sorted(d for d in os.listdir(SCENARIOS) if os.path.isdir(os.path.join(SCENARIOS, d)))
 A, B = "CVE-2099-0001", "CVE-2099-0002"
 MODEL = f"c1 · openai/{s.MODEL}"

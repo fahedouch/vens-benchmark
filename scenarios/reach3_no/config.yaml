@@ -15,8 +15,3 @@ context:
   traceability: none
   notes: Templates are never user-supplied in this build; the injection path is not
     reachable.
-reachability:
-- cve: CVE-2099-0013
-  reachable: false
-  provenance: Templates are never user-supplied in this build; the injection path
-    is not reachable.

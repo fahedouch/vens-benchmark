@@ -15,8 +15,3 @@ context:
   traceability: none
   notes: 'The deserialization call site is unreachable: the feature is disabled and
     no untrusted input reaches it.'
-reachability:
-- cve: CVE-2099-0012
-  reachable: false
-  provenance: 'The deserialization call site is unreachable: the feature is disabled
-    and no untrusted input reaches it.'

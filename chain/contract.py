@@ -16,21 +16,20 @@ which can lower Privacy violation (source adjustment), never the six. tests/test
 the mock of a binary built at 5f797bf. reach=None is b7c0435's contract, which asks no R; chain/verdicts.py keeps it,
 for historical runs alone.
 
-C1 + C2, the candidate of venslabs/vens#310's plan Z0 as 310-c1c2 2de5d34 builds it, take the c1c2_ functions. No R
-and no reachability source: a CVE gets at most nine questions, M, O, EE, ID, LAC, FD, RD, NC and PV, under b7c0435's
-rules. Loss of confidentiality, integrity and availability are Go's, source cvss: the worst value each axis takes over
-the CVE's usable CVSS v3 vectors (impact(), pkg/cvss/impact.go) through C2's table, confidentiality crossed with
-data_sensitivity; with none usable, each at 9 and the CVE counted cvss_v3_missing. Privacy violation keeps a floor, 3
-from source floor and not asked, where usable vectors exist and their worst C is N; a flagged CVE's adjustment asks
-opportunity when it is described and confidentiality when Privacy violation was asked, and lowers Privacy violation
-alone. The system prompt is b7c0435's byte for byte. Reachability is declared in the config alone (declarations(),
-status()): an entry asserting unreachability that covers the CVE publishes not_affected, code_not_reachable, its
-detail citing the entry, unless one asserting reachability vetoes it, and it moves no level. tests/test_c1c2.py checks
-these against the mock of a binary built at 2de5d34 and against its Go counts on the demo scan.
+C1 + C2, the candidate of venslabs/vens#310's plans Z0 and Z0d (no reachability relay), as vens 310-c1c2 builds it at
+N (N_COMMIT; 2de5d34 before the relay was removed), take the c1c2_ functions. No R and no reachability input at all: a
+CVE gets at most nine questions, M, O, EE, ID, LAC, FD, RD, NC and PV, under b7c0435's rules. Loss of confidentiality,
+integrity and availability are Go's, source cvss: the worst value each axis takes over the CVE's usable CVSS v3
+vectors (impact(), pkg/cvss/impact.go) through C2's table, confidentiality crossed with data_sensitivity; with none
+usable, each at 9 and the CVE counted cvss_v3_missing. Privacy violation keeps a floor, 3 from source floor and not
+asked, where usable vectors exist and their worst C is N; a flagged CVE's adjustment asks opportunity when it is
+described and confidentiality when Privacy violation was asked, and lowers Privacy violation alone. The system prompt
+is b7c0435's byte for byte. vens publishes no VEX status: chain/conform.py fails any run holding one, or a declared
+block. tests/test_c1c2.py checks these rules, tests/test_c1c2_mock.py against the mock of a binary built at 2de5d34 on
+step 5's corpus, which declares no reachability, and against its Go counts on the demo scan, until N's binary exists.
 """
 import collections
 import json
-import os
 
 from chain.cdx import FACTORS
 
@@ -271,13 +270,16 @@ def question_of(human_prompt):
     return next(iter(found)) if len(found) == 1 else None
 
 
-# ---- C1 + C2, vens 310-c1c2 2de5d34 ----
+# ---- C1 + C2, no reachability relay: vens 310-c1c2 at N ----
 
 B7C0435, REACH_RULES, C1C2 = "b7c0435", "5f797bf", "c1c2"
-# The contract each pinned after commit follows; any other commit pins none.
+# N, the commit on 310-c1c2 over 2de5d34 that removes the reachability relay (plan Z0d section 1), whose sha is not
+# known yet: once it is, it goes here. Until then a reading pins N's contract itself (ctx_analyze.py --rules c1c2).
+N_COMMIT = None
+# The contract each pinned after commit follows; any other commit pins none. 2de5d34 relays declared reachability,
+# which C1 no longer allows: S1's frozen reader reads it, this chain pins it to nothing.
 CONTRACTS = {"b7c0435835447027b04d54d4e6befaaee6b0626b": B7C0435,
-             "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES,
-             "2de5d341befb05fb96a648c2bea29132e175a5ce": C1C2}
+             "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES, **({N_COMMIT: C1C2} if N_COMMIT else {})}
 C1C2_QUESTIONS = ("M", "O", "EE", "ID", "LAC", "FD", "RD", "NC", "PV")
 CVSS_SOURCE, FLOOR_SOURCE, ADJUSTMENT_SOURCE = "cvss", "floor", "adjustment"
 VECTOR_MISSING = "cvss_v3_missing"
@@ -288,10 +290,10 @@ C2_LAV = {"N": 1, "L": 5, "H": 7}
 VECTORLESS_LEVEL = 9
 # H over L over N.
 WORSE = {"N": 0, "L": 1, "H": 2}
-# The adjustment's fields and the answers besides Opportunity's own.
+# The adjustment's fields.
 OPPORTUNITY, CONFIDENTIALITY = "opportunity", "confidentiality"
-NOT_AFFECTED, CODE_NOT_REACHABLE = "not_affected", "code_not_reachable"
-REACHABILITY_KEYS = ("cve", "component", "reachable", "provenance")
+# The confidentiality answer that lowers Privacy violation to its floor.
+NOT_AFFECTED = "not_affected"
 # strings.TrimSpace's set, Unicode White_Space: str.strip() also takes \x1c to \x1f, which Go keeps.
 GO_SPACE = "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a" \
            "\u2028\u2029\u202f\u205f\u3000"
@@ -472,139 +474,9 @@ def c1c2_levels(dep, imp, described, answers, adjusted=None):
     return out
 
 
-# ---- C1: reachability declared in the config ----
-
-def declarations(config):
-    """The config's reachability entries as vens 2de5d34 keeps them, values trimmed (riskconfig.CheckReachability),
-    each {cve, component, reachable, provenance}; ValueError for one it refuses: not a mapping of the four keys, no
-    selector or two, a selector that is not a string or is blank, reachable not a boolean, an entry asserting
-    unreachability without a provenance, a provenance that is not a string."""
-    if "reachability" not in config:
-        return []
-    entries = config["reachability"]
-    if not isinstance(entries, list):
-        raise ValueError("reachability must be a list of entries")
-    out = []
-    for i, e in enumerate(entries):
-        where = f"reachability[{i}]"
-        if not isinstance(e, dict) or set(e) - set(REACHABILITY_KEYS):
-            raise ValueError(f"{where} must be a mapping of cve or component, reachable and provenance")
-        selectors = [k for k in ("cve", "component") if k in e]
-        if len(selectors) != 1:
-            raise ValueError(f"{where} gives {len(selectors)} selectors, one expected")
-        text = e[selectors[0]]
-        if not isinstance(text, str) or not go_trim(text):
-            raise ValueError(f"{where}.{selectors[0]} must be a string that is not blank")
-        if not isinstance(e.get("reachable"), bool):
-            raise ValueError(f"{where}.reachable must be true or false")
-        provenance = e.get("provenance")
-        if provenance is not None and not isinstance(provenance, str):
-            raise ValueError(f"{where}.provenance must be a string")
-        if not e["reachable"] and not go_trim(provenance or ""):
-            raise ValueError(f"{where}.provenance is required: say where the assertion comes from")
-        out.append({"cve": go_trim(e.get("cve") or ""), "component": go_trim(e.get("component") or ""),
-                    "reachable": e["reachable"], "provenance": go_trim(provenance or "")})
-    return out
-
-
-def _go_orbits():
-    """{rune: its unicode.SimpleFold orbit's index}, from chain/gofold.txt, which go/gofold.go writes from the Go
-    toolchain vens 2de5d34 builds with."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gofold.txt")
-    out = {}
-    with open(path, encoding="ascii") as fh:
-        for n, line in enumerate(ln for ln in fh if not ln.startswith("#")):
-            out.update((chr(int(x, 16)), n) for x in line.split())
-    return out
-
-
-GO_ORBITS = _go_orbits()
-
-
-def fold_equal(a, b):
-    """strings.EqualFold: rune by rune, two runes equal when one is the other or both lie on one orbit of Go's
-    unicode.SimpleFold ("I" and "ı" do not)."""
-    return len(a) == len(b) and all(x == y or GO_ORBITS.get(x, x) == GO_ORBITS.get(y, y) for x, y in zip(a, b))
-
-
-def hits(entry, vuln_id, packages):
-    """Whether an entry hits a CVE whose rows name packages (the scanner's package names, '' for a row without one):
-    its CVE id; or a component, which, asserting unreachability, every row names, and asserting reachability, any row
-    names. Without regard to case; a row with no name is covered by no component."""
-    if entry.get("cve"):
-        return fold_equal(entry["cve"], vuln_id)
-    named = [bool(p) and fold_equal(entry["component"], p) for p in packages]
-    return any(named) if entry.get("reachable", True) else bool(named) and all(named)
-
-
-def declared(entries, vuln_id, packages):
-    """{unreachable, reachable, unresolved}: the index of each entry that hits the CVE, those asserting unreachability
-    and reachability apart, those of the second without a provenance, which veto all the same."""
-    out = {"unreachable": [], "reachable": [], "unresolved": []}
-    for i, e in enumerate(entries):
-        if not hits(e, vuln_id, packages):
-            continue
-        out["reachable" if e["reachable"] else "unreachable"].append(i)
-        if e["reachable"] and not e["provenance"]:
-            out["unresolved"].append(i)
-    return out
-
-
-def selector(entry):
-    return f"cve: {entry['cve']}" if entry["cve"] else f"component: {entry['component']}"
-
-
-def cite(entries, i):
-    return (f"Declared not reachable by config.yaml reachability[{i}] ({selector(entries[i])}). Provenance: "
-            f"{entries[i]['provenance']}")
-
-
-def status(entries, vuln_id, packages, witnesses=()):
-    """The VEX status the entries publish for a CVE, {state, justification, detail}: not_affected, code_not_reachable,
-    a detail line citing each entry asserting unreachability, when one hits and nothing asserting reachability does,
-    an entry or an executable witness (witnesses: selectors {cve} or {component}, read as entries asserting
-    reachability); None otherwise. It leaves every level as the answers give it."""
-    d = declared(entries, vuln_id, packages)
-    vetoed = d["reachable"] or any(hits({**w, "reachable": True}, vuln_id, packages) for w in witnesses)
-    if not d["unreachable"] or vetoed:
-        return None
-    return {"state": NOT_AFFECTED, "justification": CODE_NOT_REACHABLE,
-            "detail": "\n".join(cite(entries, i) for i in d["unreachable"])}
-
-
-def witnesses(doc):
-    """The executable witnesses a frozen JSON list gives, each {where, cve | component}: the scenario id or demo context
-    it was run in and one selector, asserting reachability there; ValueError for any other shape. None by default."""
-    if not isinstance(doc, list):
-        raise ValueError("the witnesses are a JSON list")
-    out = []
-    for i, w in enumerate(doc):
-        selectors = [k for k in ("cve", "component") if k in (w if isinstance(w, dict) else {})]
-        if not isinstance(w, dict) or set(w) - {"where", "cve", "component"} or len(selectors) != 1 or not all(
-                isinstance(w.get(k), str) and go_trim(w[k]) for k in ("where", selectors[0])):
-            raise ValueError(f"witness {i}: a where and one selector, cve or component, each a string")
-        out.append({"where": w["where"], selectors[0]: go_trim(w[selectors[0]])})
-    return out
-
-
-def witnessed(found, where):
-    """The witnesses run where, a scenario id or a demo context."""
-    return [w for w in found if w["where"] == where]
-
-
-def packages(findings):
-    """The package name of each row of a CVE, '' for a row without one."""
-    return [f.get("PkgName") or "" for f in findings]
-
-
 def described(findings):
     """Whether a row of the CVE has a description."""
     return any((f.get("Description") or "").strip() for f in findings)
-
-
-def entry_hits(entries, cves):
-    """The CVEs each entry hits, zeros included, cves {vulnId: [package names]}."""
-    return [sum(hits(e, vid, pkgs) for vid, pkgs in cves.items()) for e in entries]
 
 
 # ---- what C2 reads of a report ----

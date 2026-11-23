@@ -20,10 +20,3 @@ context:
     and no untrusted/user-controlled input is ever passed to the logger. Internal-only
     tool with no outbound network to reach an attacker LDAP server; the RCE path is
     not reachable.
-reachability:
-- component: org.apache.logging.log4j:log4j-core
-  reachable: false
-  provenance: Log4j is present but message-lookup substitution is disabled (log4j2.formatMsgNoLookups=true)
-    and no untrusted/user-controlled input is ever passed to the logger. Internal-only
-    tool with no outbound network to reach an attacker LDAP server; the RCE path is
-    not reachable.

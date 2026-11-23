@@ -417,22 +417,26 @@ def check_commits(folder, rj, prov, arm, commits):
             raise Refused(f"{folder}: {src} gives vens {sha}, not the {arm}'s {commits[arm]}")
 
 
-def pinned_contract(what):
-    """The contract the after's vens commit pins (contract.CONTRACTS), None for the before or another commit."""
-    return contract.CONTRACTS.get(what.get("vens_commit")) if what.get("arm") == "after" else None
+def pinned_contract(what, rules=None):
+    """The after's pinned contract: rules, the reading's, else the one its vens commit pins (contract.CONTRACTS);
+    None for the before, or another commit read without rules."""
+    if what.get("arm") != "after":
+        return None
+    return rules or contract.CONTRACTS.get(what.get("vens_commit"))
 
 
-def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, meta=None, commits=None):
+def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, meta=None, commits=None, rules=None):
     """The record of one attempt. arm: 'before' or 'after' when the caller knows it (the dispatch log's line gives
     it otherwise); line: the dispatch log's line for this attempt; job: its jobs.json entry; failure_line: the
     failures.txt entry for its job (downloads made before the record); meta: its run's dispatch metadata
-    (run_meta), the last source of what was dispatched; commits: {arm: vens commit}, each arm's expected commit.
+    (run_meta), the last source of what was dispatched; commits: {arm: vens commit}, each arm's expected commit;
+    rules: the after's preregistered contract, which its answers.json must follow (pinned_contract).
 
     scores_usable is true only for a complete attempt whose arm is known, whose VEX reads with each CVE listed and
     rated once (vex_problems empty), whose archive check passes restated from its calls and attestation, whose record
     is not incomplete (the after with its answers.json), and whose answers.json, for the after, matches its VEX, the
     VEX status included, with no CVE listed twice and follows its contract: from 19b333a to 5f797bf the reachability
-    rule, from 310-c1c2 C1 + C2's, and always the one its vens commit pins (answers.validate; answers' problems
+    rule, from 310-c1c2 C1 + C2's, and always the one pinned for it (answers.validate; answers' problems
     empty). The other problems are reported beside the scores and leave them usable: logs, summaries, counters or
     defects that disagree, calls out of vens's order, a missing summary. A VEX, an attestation or an answers.json
     that does not read is a problem of the attempt, its content unknown. Arms that disagree, commits that disagree
@@ -503,7 +507,7 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
         rated, unrated = answersmod.entries(doc)
         found = (answersmod.duplicates(doc) + answersmod.unrated_shape(doc)
                  + (answersmod.check(doc, ratings) if ratings is not None else []) + answersmod.reachability(doc)
-                 + answersmod.validate(doc, pinned_contract(what)))
+                 + answersmod.validate(doc, pinned_contract(what, rules)))
         answers = {"rated": len(rated), "unrated": len(unrated), "counters": doc["counters"],
                    "defects": doc["defects"], "problems": found,
                    "per_cve": {vid: answersmod.per_cve(e) for vid, e in {**rated, **unrated}.items()}}

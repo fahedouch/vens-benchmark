@@ -110,7 +110,7 @@ def _sources(folder, name):
     return out
 
 
-def _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits):
+def _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits, rules=None):
     """One artefact folder of run run_id, mapped through the dispatch log index idx when there is one."""
     name = attemptmod.parse_name(os.path.basename(os.path.normpath(folder)))
     if name is None:
@@ -125,25 +125,25 @@ def _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits):
     failure = next((f for f in failures if f["attempt"] == name["attempt"] and f["job"] == job_name
                     and f["run_id"] in (None, run_id) and (job is None or f["job_id"] == job["id"])), None)
     rec = attemptmod.read_attempt(folder, arm=arm, line=line, job=job, failure_line=failure, meta=meta,
-                                  commits=commits)
+                                  commits=commits, rules=rules)
     return rec, (name["context"], name["replicate"], name["attempt"])
 
 
-def read_folder(folder, *, lines=None, arm=None, failures=(), commits=None):
+def read_folder(folder, *, lines=None, arm=None, failures=(), commits=None, rules=None):
     """One attempt folder read on its own. A baseline.yml artefact is matched as read_run matches it, with its
     parent's run.json, jobs.json and the failures, and through the dispatch log when there is one; a scenario run's
     folder is read alone, and no dispatch log maps it."""
     if attemptmod.parse_name(os.path.basename(os.path.normpath(folder))) is None:
         if lines is not None:
             raise Refused(f"{folder}: a dispatch log maps baseline.yml artefacts, and this is not one")
-        return attemptmod.read_attempt(folder, arm=arm, commits=commits)
+        return attemptmod.read_attempt(folder, arm=arm, commits=commits, rules=rules)
     parent = os.path.dirname(os.path.normpath(folder))
     run_id, meta = _run(parent, [folder]) if is_run_dir(parent) else _run(folder, [folder])
     jobs = load_jobs(os.path.join(parent, "jobs.json"))
     idx = dispatch.index(lines) if lines is not None else None
     if idx is not None:
         check_dispatch_id(folder, run_id, meta, idx)
-    rec, _ = _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits)
+    rec, _ = _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits, rules)
     return rec
 
 
@@ -180,7 +180,7 @@ def _pending_rerun(line, arm=None):
                                      arm, reason="a pending rerun")
 
 
-def read_run(run_dir, *, lines=None, arm=None, failures=(), commits=None):
+def read_run(run_dir, *, lines=None, arm=None, failures=(), commits=None, rules=None):
     """Every attempt of one workflow run. lines: the dispatch log, when the campaign has one: each folder is then
     mapped through it, and refused when no line names its run or attempt, or when its record gives another commit
     or model, or when the run's title does not carry its line's dispatch id. Without a log, the folders with
@@ -196,7 +196,7 @@ def read_run(run_dir, *, lines=None, arm=None, failures=(), commits=None):
         check_dispatch_id(run_dir, run_id, meta, idx)
     records, seen = [], set()
     for folder in folders:
-        rec, where = _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits)
+        rec, where = _artefact(folder, run_id, meta, jobs, idx, arm, failures, commits, rules)
         records.append(rec)
         seen.add(where)
     if idx is None:
@@ -227,12 +227,12 @@ def read_run(run_dir, *, lines=None, arm=None, failures=(), commits=None):
     return records
 
 
-def read_downloads(root, *, lines=None, arm=None, failures=(), commits=None):
+def read_downloads(root, *, lines=None, arm=None, failures=(), commits=None, rules=None):
     """Every workflow run under root, one numeric folder each; with a dispatch log, also every run it names that
     root does not hold, every pending rerun and every pending dispatch it never resolved, each flagged."""
     runs = sorted(d for d in os.listdir(root) if d.isdigit() and os.path.isdir(os.path.join(root, d)))
     records = [r for d in runs for r in read_run(os.path.join(root, d), lines=lines, arm=arm, failures=failures,
-                                                 commits=commits)]
+                                                 commits=commits, rules=rules)]
     if lines is None:
         return records
     held, reruns = {int(d) for d in runs}, dispatch.open_reruns(lines)

@@ -3,8 +3,7 @@ step 5 reads (venslabs/vens#310 step 4).
 
     python3 ctx_analyze.py [--dispatch-log LOG] [--commit before=SHA --commit after=SHA] [--arm ARM]
                            [--failures FILE] [--freeze-sha256 SHA] [--demo DIR] [--fallback CAMPAIGN]
-                           [--usage CSV] [--draw-list FILE] [--jar JAR] [--rules RULES] [--witnesses FILE]
-                           [--out FILE] DIR...
+                           [--usage CSV] [--draw-list FILE] [--jar JAR] [--rules RULES] [--out FILE] DIR...
 
 DIR is what `python3 -m chain.read` reads: baseline.yml's downloads on the demo scan (a workflow run's folder or a
 campaign's, failed jobs included), or a scenario campaign (ctx_runner.py). Every attempt is read by chain/read.py,
@@ -26,18 +25,18 @@ CVEs with no usable CVSS v3 vector, with one refused, whose usable vectors disag
 vector beside, and with Privacy violation at its floor.
 
 --rules pins the after's contract, which picks the scenario checks: b7c0435, 5f797bf or c1c2; by default the one
---commit after= pins (chain/contract.py, CONTRACTS), else b7c0435's. The runs never choose it: a run off it is marked
-not certified, and the reader refuses its answers.json where its commit pins another. Under c1c2 every after run is
-recomputed from its frozen inputs (chain/conform.py; --demo for the demo scan), the executable witnesses --witnesses
-names, a frozen JSON list, vetoing as declared entries asserting reachability do, and the report opens on the
-recomputation. Exit 0 once written, 1 when a reader refuses an input or an input is wrong, or, the report written
-all the same, when C1 + C2's implementation gate stops a go: an implementation check failing, inconclusive or
-missing, a run off its recomputation, a demo CVE holding a status. 2 on a usage error.
+--commit after= pins (chain/contract.py, CONTRACTS). The runs never choose it: a run off it is marked not certified,
+and the reader refuses its answers.json where the pinned contract, or its own commit's, is another. Nothing pinned,
+the scenarios are read on b7c0435's checks, the historical default, and each run against its commit's contract.
+Under c1c2 (no reachability relay, plan Z0d) every after cell is an implementation item recomputed from its frozen
+inputs (chain/conform.py; --demo for the demo scan), and the report opens on it. Exit 0 once written, 1 when a reader
+refuses an input or an input is wrong, or, the report written all the same, when C1 + C2's implementation gate stops
+a go: an after cell failing or inconclusive, a run off its recomputation, a VEX status or a declared block anywhere.
+2 on a usage error.
 """
 import argparse
 import collections
 import hashlib
-import json
 import os
 import sys
 
@@ -233,11 +232,10 @@ def scenario_corpus(inputs):
     return found[0] if found else None
 
 
-def scenario_info(inputs, witnesses=()):
-    """verdicts.load() of the scenario campaigns' one corpus copy, under the executable witnesses given; None without a
-    campaign."""
+def scenario_info(inputs):
+    """verdicts.load() of the scenario campaigns' one corpus copy, None without a campaign."""
     found = scenario_corpus(inputs)
-    return None if found is None else verdicts.load(os.path.join(found[0], campaign.SCENARIOS), witnesses=witnesses)
+    return None if found is None else verdicts.load(os.path.join(found[0], campaign.SCENARIOS))
 
 
 def c2_reads(records, reports, corpus):
@@ -264,12 +262,11 @@ def batches(cells):
     return sorted(got - {None}) + ([None] if None in got else [])
 
 
-def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, lines=None, rules=contract.B7C0435,
-            witnesses=None):
+def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, lines=None, rules=contract.B7C0435):
     """Every section's figures, from the records of inputs, [(path, records)]; fallback: (records, its name) of the
     after's fallback campaign; usage: the measured usage, {rows, name, sha256}; draws: {ids, name, sha256}; rules, the
-    after's pinned contract; witnesses: the executable witnesses, {entries, name, sha256}, none by default. Under
-    C1 + C2, gate lists what stops a go (chain/conform.py)."""
+    after's pinned contract. Under C1 + C2, implementation holds every after cell's binding reading and gate what
+    stops a go (chain/conform.py)."""
     campaign_of, per_input = campaigns(inputs, lines)
     records = [r for _, recs in inputs for r in recs]
     cells = cellmod.group(records, campaign_of=campaign_of)
@@ -284,19 +281,20 @@ def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, li
            "kpi": {"stability": kpi.stability(cells), "model": kpi.model_sensitivity(cells),
                    "context": kpi.context_sensitivity(cells), "discrimination": kpi.discrimination(cells),
                    "failures": kpi.failures(cells), "cost": kpi.cost(cells)}}
-    given = (witnesses or {}).get("entries") or []
-    scen, rows = scenario_info(inputs, given), []
-    out.update(rules=rules, witnesses=witnesses, implementation=None, gate=[])
+    scen = scenario_info(inputs)
+    out.update(rules=rules, implementation=None, gate=[])
+    if rules == contract.C1C2:
+        out["implementation"] = conform.read(cells, scen, reports.demo_root)
+        out["gate"] = conform.failures(out["implementation"])
     if scen is not None:
         rows = families.evaluate(cells, scen, rules=rules)
         fb = diagnostics.fallback_cells(fallback[0]) if fallback is not None else None
         out["scenarios"] = {"rows": rows, "moves": families.family_moves(rows),
                             "fallback": fallback[1] if fallback is not None else None, "headings": SHOWCASES,
                             "consistency": diagnostics.consistency(cells), "wrong_yaml": diagnostics.wrong_yaml(cells),
-                            "null": diagnostics.null_table(cells, scen, fb)}
-    if rules == contract.C1C2:
-        out["implementation"] = conform.read(cells, scen, reports.demo_root, given)
-        out["gate"] = conform.failures(rows, out["implementation"])
+                            "null": diagnostics.null_table(cells, scen, fb), "rules": rules,
+                            "implementation": {k: c for k, c in (out["implementation"] or {}).items()
+                                               if k.corpus == cellmod.SCENARIOS}}
     return out
 
 
@@ -323,49 +321,41 @@ def parse(argv):
     ap.add_argument("--jar", help="the OWASP calculator's 1.0.1 JAR, for target (i)")
     ap.add_argument("--rules", choices=(contract.B7C0435, contract.REACH_RULES, contract.C1C2),
                     help="the after's preregistered contract; by default the one --commit after= pins, else b7c0435")
-    ap.add_argument("--witnesses", help="the executable witnesses, a frozen JSON list (contract.witnesses)")
     ap.add_argument("--out")
     ap.add_argument("dirs", nargs="+")
     return ap.parse_args(argv)
 
 
-def read_input(path, a, lines, failures):
-    """One DIR's records: a scenario campaign with the commits and the freeze, downloads with the rest."""
+def read_input(path, a, lines, failures, rules=None):
+    """One DIR's records: a scenario campaign with the commits and the freeze, downloads with the rest; the after's
+    answers.json against the pinned rules."""
     commits = dict(a.commit) or None
     if os.path.exists(os.path.join(path, campaign.CAMPAIGN)):
-        return read.read_any(path, commits=commits, freeze=a.freeze_sha256)
-    return read.read_any(path, lines, a.arm, failures, commits)
+        return read.read_any(path, commits=commits, freeze=a.freeze_sha256, rules=rules)
+    return read.read_any(path, lines, a.arm, failures, commits, rules=rules)
 
 
 def pinned_rules(a):
-    """The after's contract: --rules, else the one --commit after= pins (contract.CONTRACTS), else b7c0435's, the
-    historical default; never read off the runs. Refused when --rules and the commit pin two."""
+    """The after's contract: --rules, else the one --commit after= pins (contract.CONTRACTS), else None, never read
+    off the runs. Refused when --rules and the commit pin two."""
     pinned = contract.CONTRACTS.get(dict(a.commit).get("after"))
     if a.rules and pinned and a.rules != pinned:
         raise InputError(f"--rules {a.rules}, but --commit after= pins {pinned}")
-    return a.rules or pinned or contract.B7C0435
+    return a.rules or pinned
 
 
 def run(a):
     """The report's text and what stops a go (compute's gate)."""
-    rules = pinned_rules(a)
+    pinned = pinned_rules(a)
     lines = dispatch.load(a.dispatch_log) if a.dispatch_log else None
     failures = [f for path in a.failures for f in downloads.load_failures(path)]
-    inputs = [(path, read_input(path, a, lines, failures)) for path in a.dirs]
+    inputs = [(path, read_input(path, a, lines, failures, pinned)) for path in a.dirs]
     reports = Reports(a.demo)
     for path, records in inputs:
         reports.note(path, records)
     named = lambda path: {"name": os.path.basename(path), "sha256": digest(path)}
     scen = scenario_corpus(inputs)
-    witnesses = None
-    if a.witnesses:
-        with open(a.witnesses, encoding="utf-8") as fh:
-            try:
-                entries = contract.witnesses(json.load(fh))
-            except ValueError as e:
-                raise InputError(f"{a.witnesses}: {e}") from e
-        witnesses = {"entries": entries, **named(a.witnesses)}
-    data = compute(inputs, reports, jar=a.jar, lines=lines, rules=rules, witnesses=witnesses,
+    data = compute(inputs, reports, jar=a.jar, lines=lines, rules=pinned or contract.B7C0435,
                    fallback=fallback(a.fallback, after_commit(a, inputs), a.freeze_sha256,
                                      scen and scen[1]) if a.fallback else None,
                    usage={"rows": usage.load(a.usage), **named(a.usage)} if a.usage else None,

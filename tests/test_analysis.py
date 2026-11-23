@@ -18,7 +18,6 @@ import re
 import shutil
 import tempfile
 import unittest
-from unittest import mock
 
 import ctx_analyze
 import ctx_runner
@@ -364,9 +363,6 @@ class TestEndToEndOnTheMock(unittest.TestCase):
         cls.after, cls.before = s.env("VB_VENS_AFTER"), s.env("VB_VENS_BEFORE")
         if cls.after is None or cls.before is None:
             raise unittest.SkipTest("set VB_VENS_AFTER and VB_VENS_BEFORE to run a mock campaign")
-        # b7c0435 refuses the corpus C1 re-authored: the campaign runs on step 5's, frozen as it was.
-        cls.frozen = mock.patch.object(campaign, "FROZEN", campaign.FROZEN_STEP5)
-        cls.frozen.start()
         cls.tmp = tempfile.TemporaryDirectory()
         cls.camp, cls.fb = os.path.join(cls.tmp.name, "c1"), os.path.join(cls.tmp.name, "fallback")
         cls.off = os.path.join(cls.tmp.name, "off")
@@ -383,8 +379,7 @@ class TestEndToEndOnTheMock(unittest.TestCase):
     def campaign(cls, out, replicates, extra, only, after_commit=s.AFTER_SHA):
         argv = ["--campaign", os.path.basename(out), "--out", out, "--before", cls.before, "--before-commit",
                 s.BEFORE_SHA, "--after", cls.after, "--after-commit", after_commit, "--model", "mock/mock",
-                "--replicates", str(replicates), "--retry-cap", "2", "--timeout", "120", "--parallel", "4",
-                "--root", s.step5_root(), *only]
+                "--replicates", str(replicates), "--retry-cap", "2", "--timeout", "120", "--parallel", "4", *only]
         env = {"PATH": os.environ.get("PATH", ""), "HOME": cls.tmp.name, **extra}
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             code = ctx_runner.main(argv, environ=env)
@@ -394,7 +389,6 @@ class TestEndToEndOnTheMock(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
-        cls.frozen.stop()
 
     def test_every_family(self):
         self.assertEqual((self.code, self.err), (0, ""))
