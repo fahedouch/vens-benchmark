@@ -5,6 +5,11 @@ maps each run id, and each of its run attempts, to the arm, model and campaign r
 replicate r of the before and replicate r of the after are dispatched together and run side by side; the next pair
 starts once both runs have ended, and a run is rerun only before it.
 
+Each dispatch declares its campaign's roster of arms; the log never sets it. By default the roster is both arms, as
+above. With --one-arm it is the dispatched arm alone: replicate r goes once that arm's earlier replicates have run and
+ended, no rerun of theirs pending, and the dispatch is refused while the campaign, under any provider or model, holds a
+line of another arm.
+
 dispatch-log.jsonl holds one JSON object per line, appended, never rewritten:
 
     {"campaign", "arm", "repo", "vens_ref", "vens_commit", "provider", "model", "batch_size", "archived_run",
@@ -39,7 +44,7 @@ commands never act on the same state. This script writes the log; whoever runs t
 with the campaign's archive.
 
     python3 -m chain.dispatch dispatch --log LOG --campaign NAME --arm after --vens-ref SHA --provider openai \
-        --model gpt-5.4-mini-2026-03-17 --replicate 1 --max-side-by-side 2
+        --model gpt-5.4-mini-2026-03-17 --replicate 1 --max-side-by-side 2 [--one-arm]
     python3 -m chain.dispatch rerun --log LOG --run-id ID --retry-cap 4 --max-side-by-side 2
     python3 -m chain.dispatch resolve --log LOG --campaign NAME --arm after --provider openai \
         --model gpt-5.4-mini-2026-03-17 --replicate 1 (--run-id ID | --no-run)
@@ -440,9 +445,23 @@ def _dispatched(lines, campaign, provider, model):
             | {(l["arm"], l["replicate"]) for l in open_pending(lines) if same(l)})
 
 
-def _check_pairing(lines, a, status):
-    """Replicate r of either arm goes once both arms' earlier replicates have run and ended, no rerun of theirs
-    pending, and never after a later replicate."""
+def roster(a):
+    """The arms of the dispatch's campaign, as the dispatch declares them: the arm it dispatches alone with
+    --one-arm, else both."""
+    return (a.arm,) if a.one_arm else ARMS
+
+
+def _check_roster(lines, campaign, arms):
+    """Refused when the campaign, under any provider or model, holds a line of an arm outside its roster."""
+    others = sorted({l["arm"] for l in lines if l["campaign"] == campaign and l["arm"] not in arms})
+    if others:
+        raise Refused(f"campaign {campaign} holds lines of the {' and the '.join(others)}, an arm outside its roster "
+                      f"{list(arms)}")
+
+
+def _check_pairing(lines, a, status, arms):
+    """Replicate r of an arm goes once the earlier replicates of every arm of the roster have run and ended, no rerun
+    of theirs pending, and never after a later replicate: in a two-arm campaign, both arms' earlier replicates."""
     if a.replicate < 1:
         raise Refused("replicates count from 1")
     later = sorted(r for _, r in _dispatched(lines, a.campaign, a.provider, a.model) if r > a.replicate)
@@ -450,11 +469,11 @@ def _check_pairing(lines, a, status):
         raise Refused(f"replicate {later[0]} of {a.campaign} is already dispatched")
     mine = [l for l in lines if (l["campaign"], l["provider"], l["model"]) == (a.campaign, a.provider, a.model)]
     starts = {(l["arm"], l["replicate"]): l["run_id"] for l in mine if l["action"] in STARTS}
-    earlier = [(arm, r) for r in range(1, a.replicate) for arm in ARMS]
+    earlier = [(arm, r) for r in range(1, a.replicate) for arm in arms]
+    turn = "the pair goes" if len(arms) > 1 else "it goes"
     for arm, r in earlier:
         if (arm, r) not in starts:
-            raise Refused(f"replicate {r} of the {arm} is not dispatched: the pair goes before replicate "
-                          f"{a.replicate}")
+            raise Refused(f"replicate {r} of the {arm} is not dispatched: {turn} before replicate {a.replicate}")
     reruns = open_reruns(lines)
     for arm, r in earlier:
         if starts[(arm, r)] in reruns:
@@ -479,7 +498,9 @@ def _dispatch(a, gh, now, sleep):
     started = [l for l in lines if key(l) == k and l["action"] in STARTS]
     if started:
         raise Refused(f"replicate {a.replicate} of the {a.arm} is already run {started[0]['run_id']}; rerun it instead")
-    _check_pairing(lines, a, status)
+    arms = roster(a)
+    _check_roster(lines, a.campaign, arms)
+    _check_pairing(lines, a, status, arms)
     _check_cap(lines, status, a.max_side_by_side)
     _check_late_runs(gh, lines)
     commit = _api(gh, f"repos/venslabs/vens/commits/{a.vens_ref}")["sha"]
@@ -691,6 +712,7 @@ def main(argv=None):
     d.add_argument("--archived-run", default="2026-09-23")
     d.add_argument("--repo", default="venslabs/vens-demo")
     d.add_argument("--workflow-ref", default="main")
+    d.add_argument("--one-arm", action="store_true")
     r = sub.add_parser("rerun")
     r.add_argument("--log", required=True)
     r.add_argument("--run-id", required=True, type=int)

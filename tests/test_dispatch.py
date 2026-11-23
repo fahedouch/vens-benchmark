@@ -121,7 +121,7 @@ class Base(unittest.TestCase):
         base = dict(log=self.log, campaign="c1", arm="after", vens_ref="b7c0435", provider="openai",
                     model=s.MODEL, replicate=1, batch_size=1, archived_run="2026-09-23", repo="venslabs/vens-demo",
                     workflow_ref="main", max_side_by_side=2, run_id=None, retry_cap=4, no_run=False, no_rerun=False,
-                    stray=False)
+                    stray=False, one_arm=False)
         return SimpleNamespace(**{**base, **kw})
 
     def go(self, **kw):
@@ -499,6 +499,117 @@ class TestPairingAndCap(Base):
                                "--vens-ref", "b7c0435", "--provider", "openai", "--model", s.MODEL, "--replicate",
                                "1", *bad])
         self.assertEqual(self.workflow_runs(), [])
+
+    def test_a_two_arm_campaign_holding_the_before_alone_still_waits_for_the_after(self):
+        before = self.go(arm="before", vens_ref="43ab10b")
+        self.finish(before["run_id"])
+        with self.assertRaisesRegex(Refused, "replicate 1 of the after is not dispatched: the pair goes before"):
+            self.go(replicate=2, arm="before", vens_ref="43ab10b")
+        self.assertEqual(len(self.workflow_runs()), 1)
+
+
+class TestOneArm(Base):
+    def one(self, **kw):
+        return self.go(**{"arm": "before", "vens_ref": "43ab10b", "one_arm": True, **kw})
+
+    def failed_one(self):
+        self.set(workflow_fails=True)
+        with self.assertRaises(dispatch.DispatchError):
+            self.one()
+        self.set(workflow_fails=False)
+
+    def test_replicate_2_goes_once_replicate_1_has_ended(self):
+        first = self.one()
+        with self.assertRaisesRegex(Refused, f"replicate 1 of the before, run {first['run_id']}, has not ended"):
+            self.one(replicate=2)
+        self.finish(first["run_id"])
+        line = self.one(replicate=2)
+        self.assertEqual((line["arm"], line["replicate"], line["action"]), ("before", 2, "dispatch"))
+        with self.assertRaisesRegex(Refused, f"run {line['run_id']}, has not ended"):
+            self.one(replicate=3)
+
+    def test_replicate_2_waits_for_replicate_1_dispatched(self):
+        with self.assertRaisesRegex(Refused, "replicate 1 of the before is not dispatched: it goes before replicate 2"):
+            self.one(replicate=2)
+        self.failed_one()
+        with self.assertRaisesRegex(Refused, "replicate 1 of the before is not dispatched"):
+            self.one(replicate=2)
+        self.assertEqual(len(self.workflow_runs()), 1)
+
+    def test_replicate_2_refused_while_replicate_1_has_a_pending_rerun(self):
+        first = self.one()
+        self.finish(first["run_id"], "failure")
+        self.set(rerun_lags=True)
+        with self.assertRaises(dispatch.DispatchError):
+            dispatch.rerun(self.args(run_id=first["run_id"]), self.gh, **NO_SLEEP)
+        with self.assertRaisesRegex(Refused, f"replicate 1 of the before, run {first['run_id']}, has a pending rerun"):
+            self.one(replicate=2)
+        state = self.load()
+        state["runs"][str(first["run_id"])].update(run_attempt=2, status="in_progress", conclusion=None)
+        self.save(state)
+        dispatch.resolve_rerun(self.args(run_id=first["run_id"]), self.gh)
+        with self.assertRaisesRegex(Refused, f"run {first['run_id']}, has not ended"):
+            self.one(replicate=2)
+        self.finish(first["run_id"])
+        self.assertEqual(self.one(replicate=2)["replicate"], 2)
+        self.assertEqual(len(self.workflow_runs()), 2)
+
+    def test_refused_in_a_campaign_holding_the_other_arm(self):
+        self.go(provider="anthropic", model="claude-sonnet-4-6")
+        with self.assertRaisesRegex(Refused, r"campaign c1 holds lines of the after, an arm outside its roster "
+                                             r"\['before'\]"):
+            self.one()
+        with self.assertRaisesRegex(Refused, "outside its roster"):
+            self.one(provider="anthropic", model="claude-sonnet-4-6")
+        self.assertEqual(len(self.workflow_runs()), 1)
+
+    def test_a_pending_line_of_the_other_arm_counts(self):
+        self.failed_dispatch()
+        with self.assertRaisesRegex(Refused, "campaign c1 holds lines of the after"):
+            self.one()
+        self.assertEqual(len(self.workflow_runs()), 1)
+
+    def test_the_other_arm_refused_in_a_one_arm_campaign(self):
+        first = self.one()
+        self.finish(first["run_id"])
+        with self.assertRaisesRegex(Refused, r"holds lines of the before, an arm outside its roster \['after'\]"):
+            self.go(one_arm=True, provider="anthropic", model="claude-sonnet-4-6")
+        with self.assertRaisesRegex(Refused, "outside its roster"):
+            self.go(one_arm=True)
+        self.assertEqual(len(self.workflow_runs()), 1)
+
+    def test_a_one_arm_campaign_beside_a_two_arm_one(self):
+        self.go(campaign="s2")
+        line = self.one(campaign="s2-comparator")
+        self.assertEqual((line["campaign"], line["arm"]), ("s2-comparator", "before"))
+
+    def test_a_two_arm_dispatch_still_pairs_a_campaign_run_one_arm(self):
+        first = self.one()
+        self.finish(first["run_id"])
+        with self.assertRaisesRegex(Refused, "replicate 1 of the after is not dispatched: the pair goes before"):
+            self.go(replicate=2, arm="before", vens_ref="43ab10b")
+
+    def test_the_lines_keep_the_log_format(self):
+        first = self.one()
+        self.finish(first["run_id"])
+        self.one(replicate=2)
+        with open(self.log, encoding="utf-8") as fh:
+            lines = [json.loads(x) for x in fh]
+        self.assertEqual([l["action"] for l in lines], ["pending", "dispatch"] * 2)
+        self.assertEqual({tuple(l) for l in lines}, {dispatch.FIELDS})
+
+    def test_the_command_line_flag(self):
+        base = ["--gh", self.gh, "dispatch", "--log", self.log, "--campaign", "s2-comparator", "--arm", "before",
+                "--vens-ref", "43ab10b", "--provider", "openai", "--model", s.MODEL, "--max-side-by-side", "2"]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(dispatch.main([*base, "--replicate", "1", "--one-arm"]), 0)
+        self.finish(json.loads(out.getvalue())["run_id"])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(dispatch.main([*base, "--replicate", "2"]), 2)
+        self.assertIn("replicate 1 of the after is not dispatched", err.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(dispatch.main([*base, "--replicate", "2", "--one-arm"]), 0)
+        self.assertEqual(json.loads(out.getvalue())["replicate"], 2)
 
 
 class TestRerun(Base):
