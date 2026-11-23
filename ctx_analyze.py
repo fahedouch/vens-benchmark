@@ -19,7 +19,10 @@ CVEs outside it are reported apart. --jar names the OWASP calculator's 1.0.1 JAR
 the JDK is $VB_JDK, $JAVA_HOME/bin or javac's folder.
 
 The report is Markdown, on stdout or in --out: each figure names the cell and the replicates it read, the records
-section names each replicate's attempt, and the measured cost never mixes with the estimates. Exit 0 once written,
+section names each replicate's attempt, and the measured cost never mixes with the estimates. It opens on what C2
+(venslabs/vens#310's candidate) reads of the reports scored, the demo scan's (with --demo) and the scenarios' apart:
+CVEs with no usable CVSS v3 vector, with one refused, whose usable vectors disagree and on how many axes, with a v4
+vector beside, and with Privacy violation at its floor. Exit 0 once written,
 1 when a reader refuses an input or an input is wrong, 2 on a usage error.
 """
 import argparse
@@ -28,7 +31,8 @@ import hashlib
 import os
 import sys
 
-from chain import campaign, cdx, demo, diagnostics, families, javacheck, kpi, ledger, legal, read, report, usage
+from chain import campaign, cdx, contract, demo, diagnostics, families, javacheck, kpi, ledger, legal, read, report
+from chain import usage
 from chain import cells as cellmod
 from chain import dispatch, downloads, verdicts
 from chain.errors import Refused
@@ -225,6 +229,23 @@ def scenario_info(inputs):
     return None if found is None else verdicts.load(os.path.join(found[0], campaign.SCENARIOS))
 
 
+def c2_reads(records, reports, corpus):
+    """What C2 reads of the reports the runs scored, the demo scan's and the scenarios' apart (contract.impact_counts):
+    {name: counts}, a report the reader cannot open left out, the scenarios read from the campaigns' corpus copy."""
+    out = {}
+    scans = sorted({p for r in records if cellmod.corpus(r) != cellmod.SCENARIOS
+                    for p in [reports.path(r)] if p and os.path.isfile(p)})
+    for p in scans:
+        name = "demo scan" if len(scans) == 1 else f"demo scan {os.path.relpath(p, reports.demo_root)}"
+        out[name] = contract.impact_counts(contract.report_cves(p))
+    if corpus is not None:
+        root = os.path.join(corpus[0], campaign.SCENARIOS)
+        cves = {sid: [f for fs in contract.report_cves(os.path.join(root, sid, "report.json")).values() for f in fs]
+                for sid in sorted(os.listdir(root)) if os.path.isfile(os.path.join(root, sid, "report.json"))}
+        out["scenarios"] = contract.impact_counts(cves)
+    return out
+
+
 def batches(cells):
     """The batch sizes of the runs read, each replicate's complete run with its scores read or not, None last for a
     run that does not record its own."""
@@ -241,7 +262,7 @@ def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, li
     java = java_targets(cells, reports, jar)
     out = {"inputs": [(p, len(recs)) for p, recs in inputs], "campaigns": per_input, "cells": cells,
            "conflicts": cellmod.conflicts(cells), "java": java is not None, "usage": usage, "draws": draws,
-           "batches": batches(cells),
+           "batches": batches(cells), "c2": c2_reads(records, reports, scenario_corpus(inputs)),
            "targets": demo.targets(cells, reports.ids, (lambda r: java.get(id(r))) if java is not None else None),
            "spreads": demo.spreads(cells), "cross": demo.cross_model(cells), "impacts": demo.impacts(cells),
            "floors": demo.floors(cells), "ledgers": ledger.ledgers(cells), "scenarios": None,

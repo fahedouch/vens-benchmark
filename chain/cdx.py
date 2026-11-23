@@ -107,11 +107,26 @@ def vex_rows(path):
     return out
 
 
+ANALYSIS_FIELDS = ("state", "justification", "detail")
+
+
+def analysis(vuln):
+    """A vulnerability's VEX status, {state, justification, detail}, absent fields None; None when it has none (vens
+    310-c1c2 2de5d34 publishes one for a CVE declared not reachable). ValueError for one that is not an object."""
+    a = vuln.get("analysis")
+    if a is None:
+        return None
+    if not isinstance(a, dict):
+        raise ValueError(f"analysis {a!r} is not an object")
+    return {k: a.get(k) for k in ANALYSIS_FIELDS}
+
+
 def ratings(path):
     """{vulnId: rating} for each CVE listed and rated once whose vector reads, with its published vector, severity
-    and score, a score missing or not a number kept as None, and the sub-scores its vector gives; and the problems: a
-    CVE listed twice, listed without an OWASP rating, rated twice, a vector missing, null or not 16 levels, or a score
-    missing, null or not a number. Refused when the file is no VEX."""
+    and score, a score missing or not a number kept as None, the sub-scores its vector gives and its VEX status
+    (analysis(), None without one); and the problems: a CVE listed twice, listed without an OWASP rating, rated twice,
+    a vector missing, null or not 16 levels, a score missing, null or not a number, or a status that is not an object.
+    Refused when the file is no VEX."""
     out, problems = {}, []
     vulns = _vulns(path)
     listed = collections.Counter(v["id"] for v in vulns)
@@ -131,8 +146,13 @@ def ratings(path):
             continue
         if score_of(r) is None:
             problems.append(f"{vid}: score {r.get('score')!r}, not a number")
+        try:
+            status = analysis(v)
+        except ValueError as e:
+            problems.append(f"{vid}: {e}")
+            status = None
         out[vid] = {"vector": r["vector"], "severity": r.get("severity"), "score": score_of(r), "levels": lv,
-                    **subscores(lv)}
+                    **subscores(lv), "analysis": status}
     return out, problems
 
 

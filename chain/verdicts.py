@@ -19,6 +19,16 @@ prints each contrast and check and exits 1 when a check labelled carried or new 
 The after's rules here are chain.contract's at 310-step3 b7c0435 (reach=None), which asks no reachability: they hold
 for historical runs alone and certify no run that asks R (310-step3b 19b333a on). after_prompts refuses such a run,
 and chain/families.py marks every row read on one.
+
+C1 + C2 (310-c1c2 2de5d34) take --rules c1c2 and CHECKS_C1C2: chain.contract's c1c2_ rules, the same families but the
+checks on Loss of confidentiality, integrity and availability, which C2 gives Go, and plan Z0's replaced showcase
+contract. showcase_high_to_low publishes, in every replicate, the status its config's reachability entry declares,
+its detail citing the entry, and is rated as its answers give with no reachability input; showcase_med_to_high and the
+three reach*_yes publish no not_affected; low is no longer expected. Each reachability item reads the two statuses: the
+unreachable scenario's declared, the reachable one's no not_affected. The score, O and EE gaps the notes alone may
+still open are printed as diagnostics. A status is Go's, from the config: such a check is labelled implementation and
+must be pass only on the corpus as written; the before reads it too, a diagnostic, so that a reader keeping read5's
+eligibility rule finds the before's outcome (main publishes no status: the reachability items print not gated).
 """
 import argparse
 import functools
@@ -34,7 +44,7 @@ import yaml
 from chain import calls, contract, runvens
 from chain.cdx import main_severity
 
-CARRIED, NEW, DIAGNOSTIC = "carried", "new", "diagnostic"
+CARRIED, NEW, DIAGNOSTIC, IMPLEMENTATION = "carried", "new", "diagnostic", "implementation"
 BOTH = lambda kind: (("before", kind), ("after", kind))
 AFTER = lambda kind: (("after", kind),)
 
@@ -45,9 +55,12 @@ class Check:
     label: str
     kinds: tuple  # ((arm, kind), ...), the arms the check reads
     scenarios: tuple  # (a, b) pairs, or scenario ids for a check on one scenario
-    quantity: str  # a group (L, TA, VU, T, B), "score", a factor's level, "answer F", or "severity"
-    # On a pair: le, lt, eq, or gap (b above a by more than 0.5). On one scenario: in or is (target), below_null or
-    # above_null (the null model's aggregate), or any (printed only).
+    # a group (L, TA, VU, T, B), "score", a factor's level, "answer F", "severity", "status" (the VEX status) or
+    # "rating" (whether the published levels are the ones the run's answers give with no reachability input)
+    quantity: str
+    # On a pair: le, lt, eq, gap (b above a by more than 0.5), or declared_none (a publishes its declared status, b no
+    # not_affected). On one scenario: in or is (target), below_null or above_null (the null model's aggregate), any
+    # (printed only), declared or none (status_ok), or unchanged (the rating).
     test: str
     target: tuple = field(default=())  # ((arm, values), ...)
 
@@ -158,6 +171,67 @@ CHECKS = (
     Check("reachability", "EE, unreachable at most reachable", AFTER(NEW), REACH, "EE", "le"),
 )
 
+# A status Go publishes from the config: implementation in the after; the before printed beside it, so that read5's
+# eligibility rule reads its outcome.
+STATUS_KINDS = (("before", DIAGNOSTIC), ("after", IMPLEMENTATION))
+REACH_STATUS = "the unreachable one publishes its declared status, its detail citing the entry; the reachable one no " \
+               "not_affected"
+SHOWCASE_STATUS = (
+    Check("showcases", "showcase_high_to_low publishes its declared status, its detail citing the entry", STATUS_KINDS,
+          ("showcase_high_to_low",), "status", "declared"),
+    Check("showcases", "showcase_high_to_low rated as its answers give with no reachability input",
+          AFTER(IMPLEMENTATION), ("showcase_high_to_low",), "rating", "unchanged"))
+REACH_C1C2 = (
+    Check("reachability", REACH_STATUS, STATUS_KINDS, REACH, "status", "declared_none"),
+    # The configs differ in their notes and in the entry, which moves no level: a gap is the notes' through O and EE.
+    Check("reachability", "the score above the unreachable one's by more than 0.5, the notes alone", BOTH(DIAGNOSTIC),
+          REACH, "score", "gap"),
+    Check("reachability", "O, unreachable at most reachable, the notes alone", AFTER(DIAGNOSTIC), REACH, "O", "le"),
+    Check("reachability", "EE, unreachable at most reachable, the notes alone", AFTER(DIAGNOSTIC), REACH, "EE", "le"))
+C2_FACTORS = ("LC", "LI", "LAV")
+
+
+def _c1c2_checks():
+    """CHECKS under C1 + C2: a check reading Loss of confidentiality, integrity or availability, or the model's answer
+    to one, dropped; showcase_high_to_low's low replaced by its status and its rating, showcase_med_to_high's status
+    added, and the reachability items replaced by REACH_C1C2."""
+    out = []
+    for c in CHECKS:
+        if c.quantity in C2_FACTORS or c.quantity in tuple(f"answer {f}" for f in C2_FACTORS):
+            continue
+        if c.family == "reachability":
+            out += [] if REACH_C1C2[0] in out else list(REACH_C1C2)
+            continue
+        if c.scenarios == ("showcase_high_to_low",) and c.quantity == "severity":
+            out += list(SHOWCASE_STATUS)
+            continue
+        out.append(c)
+        if c.scenarios == ("showcase_med_to_high",):
+            out.append(Check("showcases", "showcase_med_to_high publishes no not_affected", STATUS_KINDS,
+                             ("showcase_med_to_high",), "status", "none"))
+    return tuple(out)
+
+
+CHECKS_C1C2 = _c1c2_checks()
+# Every check either contract reads, CHECKS' order first.
+ALL_CHECKS = CHECKS + tuple(c for c in CHECKS_C1C2 if c not in CHECKS)
+
+
+def checks_for(rules):
+    return CHECKS_C1C2 if rules == contract.C1C2 else CHECKS
+
+
+def status_ok(test, value, expected=()):
+    """A status test on one run's VEX status, (state, justification, detail) or () for none: declared, the status the
+    scenario's entries publish, there being one; none, anything but not_affected."""
+    if test == "declared":
+        return bool(value) and value == expected
+    return not (value and value[0] == contract.NOT_AFFECTED)
+
+
+def status_pair_ok(value_a, value_b, expected_a):
+    return status_ok("declared", value_a, expected_a) and status_ok("none", value_b)
+
 
 @dataclass(frozen=True)
 class Named:
@@ -190,7 +264,15 @@ def band(x):
 
 def _levels(f, s, g=None):
     dep = dict(s["dep"], **(g or {}))
+    if s.get("rules") == contract.C1C2:
+        return contract.c1c2_options(f, dep, s["impact"], s["described"])
     return contract.options(f, dep, s["floors"], s["described"])
+
+
+def _source(f, s):
+    if s.get("rules") == contract.C1C2:
+        return contract.c1c2_source(f, s["dep"], s["impact"], described=s["described"])
+    return contract.source(f, s["dep"], s["floors"], described=s["described"])
 
 
 def _level_pairs(f, sa, sb, reached, g):
@@ -309,9 +391,25 @@ def before_diffs(q, differs):
 
 # ---- outcomes ----
 
+def _status_outcome(check, arm, item, scen):
+    """A status check: the after's status is the one its config's entries publish, the before's none."""
+    statuses = (lambda s: s["status"]) if arm == "after" else (lambda s: ())
+    if check.pairs():
+        a, b = item
+        ok = status_pair_ok(statuses(scen[a]), statuses(scen[b]), scen[a]["status"])
+    else:
+        ok = status_ok(check.test, statuses(scen[item]), scen[item]["status"])
+    return ok, not ok
+
+
 def outcome(check, arm, item, scen, reach, before_differs, g=None):
     """(pass attainable, fail attainable) of a check, in one arm, on one pair or one scenario."""
     q = check.quantity
+    if q == "status":
+        return _status_outcome(check, arm, item, scen)
+    if q == "rating":
+        # C1 + C2's levels come from the answers and the CVE alone: no reachability input reaches them.
+        return True, False
     if check.pairs():
         a, b = item
         if q.startswith("answer "):
@@ -357,6 +455,9 @@ def check(scen, reach, before_differs, checks=CHECKS):
                 rows.append((c, arm, kind, item, res))
                 if kind in (CARRIED, NEW) and res != (True, True):
                     problems.append(f"{c.family}, {c.label}, {arm}, {_name(item)}: labelled {kind}, {WORDS[res]}")
+                if kind == IMPLEMENTATION and res != (True, False):
+                    problems.append(f"{c.family}, {c.label}, {arm}, {_name(item)}: labelled {kind}, {WORDS[res]}, "
+                                    f"not pass only")
     return rows, problems
 
 
@@ -382,7 +483,7 @@ def corpus_wide(scen, reach, checks=CHECKS, unfloored=False):
     read as flooring nothing. The enumeration runs on chain.contract's Python rules: Go's levels are checked on four
     alternative assignments (three within the 45 and one outside), on six scenarios, in tests/test_verdicts.py."""
     if unfloored:
-        scen = {k: dict(s, floors=frozenset()) for k, s in scen.items()}
+        scen = {k: dict(s, floors=frozenset(), impact=contract.NO_IMPACT_READ) for k, s in scen.items()}
     changes = []
     for c in checks:
         if not c.pairs() or c.kind("after") is None:
@@ -405,9 +506,10 @@ def showcase_by_detection(scen):
 
 # ---- the corpus and the runs ----
 
-def load(scenarios):
-    """{id: scenario}: its config, deployment, floored axes, whether its CVE has a description, and the null model's
-    aggregates."""
+def load(scenarios, rules=contract.B7C0435):
+    """{id: scenario}: its config, deployment, floored axes (b7c0435), what its CVE's usable v3 vectors give the
+    technical impacts (C2), the VEX status its reachability entries publish (C1; () for none), its finding, whether
+    its CVE has a description, the null model's aggregates, and the rules the static checks read it under."""
     import baseline  # the frozen null model, at the repository's root
 
     out = {}
@@ -420,10 +522,18 @@ def load(scenarios):
         with open(os.path.join(d, "report.json"), encoding="utf-8") as fh:
             rep = json.load(fh)
         f = contract.finding(os.path.join(d, "report.json"))
+        declared = contract.status(contract.declarations(config), f["VulnerabilityID"], [f.get("PkgName") or ""])
         out[sid] = {"id": sid, "config": config, "dep": contract.deployment(config),
-                    "floors": contract.floors(contract.vectors(f)),
-                    "described": bool((f.get("Description") or "").strip()), "null": baseline.score(config, rep)}
+                    "floors": contract.floors(contract.vectors(f)), "impact": contract.cve_impact([f]),
+                    "status": status_tuple(declared), "finding": f,
+                    "described": bool((f.get("Description") or "").strip()),
+                    "null": baseline.score(config, rep), "rules": rules}
     return out
+
+
+def status_tuple(analysis):
+    """A VEX status as the checks compare it: (state, justification, detail), () for none."""
+    return () if analysis is None else tuple(analysis.get(k) for k in ("state", "justification", "detail"))
 
 
 def needed(checks=CHECKS):
@@ -509,7 +619,7 @@ def _go_set(q, item, scen):
     for sid in (item if isinstance(item, tuple) else (item,)):
         sc = scen[sid]
         for f in factors:
-            src = contract.source(f, sc["dep"], sc["floors"], described=sc["described"])
+            src = _source(f, sc)
             if src != "answer" and f"{f} ({src})" not in found:
                 found.append(f"{f} ({src})")
     return f"; Go sets {', '.join(found)}" if found else ""
@@ -533,11 +643,19 @@ def report(scen, reach, differs, checks=CHECKS):
     for d in NAMED:
         lines.append(f"  {d.name}: {d.reads}; {len(d.scenarios) or len(scen)} scenario(s), their levels' sources "
                      f"below")
+    lines.append("each scenario's config reachability entries and the CVEs each hits, zeros included:")
+    for sid, sc in scen.items():
+        entries = contract.declarations(sc["config"]) if "config" in sc else []
+        if entries:
+            f = sc["finding"]
+            hit = contract.entry_hits(entries, {f["VulnerabilityID"]: [f.get("PkgName") or ""]})
+            lines.append(f"  {sid}: " + "; ".join(f"reachability[{i}] ({contract.selector(e)}) {n}"
+                                                  for i, (e, n) in enumerate(zip(entries, hit))))
     lines.append("each scenario's levels in the after by source:")
     for sid, sc in scen.items():
         by = {}
         for f in FACTORS:
-            by.setdefault(contract.source(f, sc["dep"], sc["floors"], described=sc["described"]), []).append(f)
+            by.setdefault(_source(f, sc), []).append(f)
         lines.append(f"  {sid}: " + "; ".join(f"{k} {' '.join(v)}" for k, v in sorted(by.items())))
     for unfloored in (False, True):
         changes = corpus_wide(scen, reach, checks, unfloored)
@@ -553,16 +671,18 @@ def report(scen, reach, differs, checks=CHECKS):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--after", required=True, help="vens built from 310-step3")
+    ap.add_argument("--after", required=True, help="vens built from 310-step3, or from 310-c1c2 with --rules c1c2")
     ap.add_argument("--before", required=True, help="vens built from main")
+    ap.add_argument("--rules", choices=(contract.B7C0435, contract.C1C2), default=contract.B7C0435,
+                    help="the after's contract")
     ap.add_argument("--scenarios", default="scenarios")
     ap.add_argument("--work", required=True, help="an empty folder for the mock runs")
     a = ap.parse_args(argv)
-    scen = load(a.scenarios)
-    ids = needed()
+    scen, checks = load(a.scenarios, a.rules), checks_for(a.rules)
+    ids = needed(checks)
     reach, differs = contrasts(run_mock(a.after, a.scenarios, ids, a.work, "after"),
-                               run_mock(a.before, a.scenarios, ids, a.work, "before"))
-    lines, problems = report(scen, reach, differs)
+                               run_mock(a.before, a.scenarios, ids, a.work, "before"), checks)
+    lines, problems = report(scen, reach, differs, checks)
     print("\n".join(lines))
     return 1 if problems else 0
 

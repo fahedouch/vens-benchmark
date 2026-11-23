@@ -425,8 +425,9 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
 
     scores_usable is true only for a complete attempt whose arm is known, whose VEX reads with each CVE listed and
     rated once (vex_problems empty), whose archive check passes restated from its calls and attestation, whose record
-    is not incomplete (the after with its answers.json), and whose answers.json, for the after, matches its VEX with
-    no CVE listed twice and, from 19b333a, follows the reachability rule (answers' problems empty). The other problems
+    is not incomplete (the after with its answers.json), and whose answers.json, for the after, matches its VEX, the
+    VEX status included, with no CVE listed twice and follows its contract: from 19b333a to 5f797bf the reachability
+    rule, from 310-c1c2 C1 + C2's (answers' problems empty). The other problems
     are reported beside the scores and leave them usable: logs, summaries, counters or defects that disagree, calls
     out of vens's order, a missing summary. A VEX, an attestation or an answers.json that does not read is a problem
     of the attempt, its content unknown. Arms that disagree, commits that disagree and a record or provenance.json
@@ -496,7 +497,8 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     if doc is not None:
         rated, unrated = answersmod.entries(doc)
         found = (answersmod.duplicates(doc) + answersmod.unrated_shape(doc)
-                 + (answersmod.check(doc, ratings) if ratings is not None else []) + answersmod.reachability(doc))
+                 + (answersmod.check(doc, ratings) if ratings is not None else []) + answersmod.reachability(doc)
+                 + answersmod.c1c2(doc))
         answers = {"rated": len(rated), "unrated": len(unrated), "counters": doc["counters"],
                    "defects": doc["defects"], "problems": found,
                    "per_cve": {vid: answersmod.per_cve(e) for vid, e in {**rated, **unrated}.items()}}

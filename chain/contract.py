@@ -15,8 +15,23 @@ showing R's answer (reworded at 5f797bf: the answer stands, confidentiality judg
 which can lower Privacy violation (source adjustment), never the six. tests/test_reach.py checks these rules against
 the mock of a binary built at 5f797bf. reach=None is b7c0435's contract, which asks no R; chain/verdicts.py keeps it,
 for historical runs alone.
+
+C1 + C2, the candidate of venslabs/vens#310's plan Z0 as 310-c1c2 2de5d34 builds it, take the c1c2_ functions. No R
+and no reachability source: a CVE gets at most nine questions, M, O, EE, ID, LAC, FD, RD, NC and PV, under b7c0435's
+rules. Loss of confidentiality, integrity and availability are Go's, source cvss: the worst value each axis takes over
+the CVE's usable CVSS v3 vectors (impact(), pkg/cvss/impact.go) through C2's table, confidentiality crossed with
+data_sensitivity; with none usable, each at 9 and the CVE counted cvss_v3_missing. Privacy violation keeps a floor, 3
+from source floor and not asked, where usable vectors exist and their worst C is N; a flagged CVE's adjustment asks
+opportunity when it is described and confidentiality when Privacy violation was asked, and lowers Privacy violation
+alone. The system prompt is b7c0435's byte for byte. Reachability is declared in the config alone (declarations(),
+status()): an entry asserting unreachability that covers the CVE publishes not_affected, code_not_reachable, its
+detail citing the entry, unless one asserting reachability vetoes it, and it moves no level. tests/test_c1c2.py checks
+these against the mock of a binary built at 2de5d34 and against its Go counts on the demo scan.
 """
+import collections
 import json
+
+from chain.cdx import FACTORS
 
 # The model-answered factors in the order a batch's calls ask them.
 QUESTIONS = ("M", "O", "EE", "ID", "LC", "LI", "LAV", "LAC", "FD", "RD", "NC", "PV")
@@ -253,3 +268,358 @@ def question_of(human_prompt):
         ids.append(line[2:].partition(":")[0])
     found = {f for table in (ANSWER_IDS, REACH_ANSWER_IDS) for f, known in table.items() if tuple(ids) == known}
     return next(iter(found)) if len(found) == 1 else None
+
+
+# ---- C1 + C2, vens 310-c1c2 2de5d34 ----
+
+B7C0435, REACH_RULES, C1C2 = "b7c0435", "5f797bf", "c1c2"
+C1C2_QUESTIONS = ("M", "O", "EE", "ID", "LAC", "FD", "RD", "NC", "PV")
+CVSS_SOURCE, FLOOR_SOURCE, ADJUSTMENT_SOURCE = "cvss", "floor", "adjustment"
+VECTOR_MISSING = "cvss_v3_missing"
+# C2's table: the level each worst v3 value gives; confidentiality's non-sensitive then critical column.
+C2_LC = {"N": (2, 2), "L": (2, 6), "H": (6, 7)}
+C2_LI = {"N": 1, "L": 3, "H": 7}
+C2_LAV = {"N": 1, "L": 5, "H": 7}
+VECTORLESS_LEVEL = 9
+# H over L over N.
+WORSE = {"N": 0, "L": 1, "H": 2}
+# The adjustment's fields and the answers besides Opportunity's own.
+OPPORTUNITY, CONFIDENTIALITY = "opportunity", "confidentiality"
+NOT_AFFECTED, CODE_NOT_REACHABLE = "not_affected", "code_not_reachable"
+REACHABILITY_KEYS = ("cve", "component", "reachable", "provenance")
+# strings.TrimSpace's set, Unicode White_Space: str.strip() also takes \x1c to \x1f, which Go keeps.
+GO_SPACE = "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a" \
+           "\u2028\u2029\u202f\u205f\u3000"
+TIERS = {"2.0": 2, "2": 2, "3.0": 3, "3.1": 3, "3": 3, "4.0": 4}
+TRIVY_FIELDS = (("V2Vector", "2.0"), ("V3Vector", "3"), ("V40Vector", "4.0"))
+
+# What a CVE's CVSS v3 vectors give the three technical impacts: values, {C, I, A: worst value}, empty without a
+# usable vector; usable, the distinct usable vectors; rejected, (vector, why) per distinct v3 vector refused whole;
+# v4, the distinct v4 vectors, counted, not read.
+Impact = collections.namedtuple("Impact", "values usable rejected v4")
+NO_IMPACT_READ = Impact({}, 0, (), 0)
+
+
+def go_trim(text):
+    return text.strip(GO_SPACE)
+
+
+def prefix_version(vector):
+    """The version a vector's CVSS: prefix states, past surrounding space, the prefix in any case (ASCII: Go compares
+    its first five bytes); None without one. 'CVSS:/...' states ''."""
+    text = go_trim(vector)
+    if text.encode()[:5].lower() != b"cvss:":
+        return None
+    return text[5:].partition("/")[0]
+
+
+def tier(version):
+    return TIERS.get(version, 0)
+
+
+def trivy_vectors(f):
+    """vens's trivyVectors: every vector of a Trivy finding, sources in name order, each source's v2, v3 and v4 in that
+    order, as (source, version, vector); the version is the one its CVSS: prefix states, else its field's."""
+    out = []
+    by_source = f.get("CVSS") or {}
+    for source in sorted(by_source):
+        for field, unprefixed in TRIVY_FIELDS:
+            v = (by_source[source] or {}).get(field)
+            if v:
+                version = prefix_version(v)
+                out.append((source, unprefixed if version is None else version, v))
+    return out
+
+
+def _v3_values(version, vector):
+    """({C, I, A: value}, None) of a v3 vector, or (None, why it is refused whole): pkg/cvss's impactValues and
+    Parse."""
+    if tier(version) != 3:
+        return None, f"CVSS version {version!r} is neither 3.0 nor 3.1"
+    stated = prefix_version(vector)
+    if stated is not None and stated not in ("3.0", "3.1"):
+        return None, f"prefix CVSS:{stated} states neither 3.0 nor 3.1"
+    body = go_trim(vector)
+    if stated is not None:
+        body = body[5:].partition("/")[2]
+    metrics = {}
+    for part in body.split("/"):
+        metric, _, value = part.partition(":")
+        if not metric or not value or ":" in value:
+            return None, f"{part!r} is not a metric:value pair"
+        if metric in metrics:
+            return None, f"metric {metric} given twice"
+        metrics[metric] = value
+    if any(metrics.get(a) not in WORSE for a in AXES):
+        return None, f"{next(a for a in AXES if metrics.get(a) not in WORSE)} is absent or off H, L and N"
+    return {a: metrics[a] for a in AXES}, None
+
+
+def impact(vectors):
+    """cvss.ImpactOf over (source, version, vector): a v3 vector is one whose version reads as 3, or another 3.x,
+    distinct once trimmed; usable when its version is 3.0, 3.1 or 3, a prefix states 3.0 or 3.1, it parses and gives C,
+    I and A on H, L or N; any other v3 vector is refused whole. v2 is not read; v4 is counted."""
+    worst, usable, rejected, seen, seen4 = {}, 0, [], [], []
+    for _, version, vector in vectors:
+        text = go_trim(vector)
+        if tier(version) == 4:
+            seen4 += [] if text in seen4 else [text]
+            continue
+        if (tier(version) != 3 and not version.startswith("3.")) or text in seen:
+            continue
+        seen.append(text)
+        values, why = _v3_values(version, vector)
+        if values is None:
+            rejected.append((vector, why))
+            continue
+        usable += 1
+        for a, x in values.items():
+            if a not in worst or WORSE[x] > WORSE[worst[a]]:
+                worst[a] = x
+    return Impact(worst, usable, tuple(rejected), len(seen4))
+
+
+def cve_impact(findings):
+    """impact() over every vector of every row of one CVE, in row order."""
+    return impact([v for f in findings for v in trivy_vectors(f)])
+
+
+def privacy_floored(imp):
+    """Whether Privacy violation takes its floor: a usable v3 vector, and C:N their worst confidentiality."""
+    return imp.usable > 0 and imp.values["C"] == "N"
+
+
+def _pv_floor(imp):
+    """The floored axes b7c0435's rules read, under C1 + C2: confidentiality's alone, for Privacy violation."""
+    return frozenset("C") if privacy_floored(imp) else frozenset()
+
+
+def impact_level(f, dep, imp):
+    """Loss of confidentiality's, integrity's or availability's level from C2's table, 9 without a usable vector."""
+    if imp.usable == 0:
+        return VECTORLESS_LEVEL
+    value = imp.values[AXIS[f]]
+    if f == "LC":
+        return C2_LC[value][int(CRITICAL_DATA[dep["data_sensitivity"]])]
+    return (C2_LI if f == "LI" else C2_LAV)[value]
+
+
+def c1c2_asked(f, dep, imp, described=True):
+    """Whether a CVE gets factor f's question under C1 + C2: one of the nine, as b7c0435 asks it, Privacy violation
+    floored by the usable vectors' C:N alone."""
+    return f in C1C2_QUESTIONS and asked(f, dep, _pv_floor(imp), described)
+
+
+def c1c2_questions(dep, imp, described=True):
+    return [q for q in C1C2_QUESTIONS if c1c2_asked(q, dep, imp, described)]
+
+
+def c1c2_options(f, dep, imp, described=True):
+    """Factor f's level for each answer its question can get, {None: level} where Go sets it, under C1 + C2."""
+    if f in AXIS:
+        return {None: impact_level(f, dep, imp)}
+    return options(f, dep, _pv_floor(imp), described)
+
+
+def c1c2_source(f, dep, imp, answer=None, described=True):
+    """Where factor f's level comes from under C1 + C2, before any adjustment: cvss for the three technical impacts,
+    floor for a floored Privacy violation, otherwise as under b7c0435."""
+    if f in AXIS:
+        return CVSS_SOURCE
+    return source(f, dep, _pv_floor(imp), answer, described)
+
+
+def adjustment_fields(dep, imp, described=True):
+    """A flagged CVE's adjustment fields: opportunity when it is described, confidentiality when it was asked Privacy
+    violation; none, no call."""
+    return [OPPORTUNITY] * described + [CONFIDENTIALITY] * c1c2_asked("PV", dep, imp, described)
+
+
+def _read(f, opts, answer):
+    """The level an answer, as the reply wrote it, gives an asked factor: one off the list, or of another shape, reads
+    as cannot_tell; Intrusion detection's, a set, takes its lowest channel, empty or holding cannot_tell its worst."""
+    if f != "ID":
+        return answer if isinstance(answer, str) and answer in opts else CANNOT_TELL, None
+    if not isinstance(answer, list) or not answer or any(a not in CHANNELS for a in answer):
+        return CANNOT_TELL, opts[CANNOT_TELL]
+    return answer, min(opts[a] for a in answer)
+
+
+def c1c2_levels(dep, imp, described, answers, adjusted=None):
+    """{factor: (level, source)}, the 16, from a CVE's answers as answers.json writes them ({factor: answer}, an
+    unasked factor absent or None) and, for a flagged CVE, its adjustment ({"O": opportunity's answer, "PV":
+    confidentiality's}): Compute's rules under C1 + C2. No reachability input reaches them."""
+    adjusted = adjusted or {}
+    out = {}
+    for f in FACTORS:
+        opts = c1c2_options(f, dep, imp, described)
+        if None in opts:
+            out[f] = (opts[None], c1c2_source(f, dep, imp, described=described))
+            continue
+        read, level = _read(f, opts, answers.get(f))
+        level = opts[read] if level is None else level
+        out[f] = (level, c1c2_source(f, dep, imp, read if f != "ID" else None, described))
+    lower = adjusted.get("O")
+    if described and lower in ANSWERS["O"] and lower != CANNOT_TELL and ANSWERS["O"][lower] < out["O"][0]:
+        out["O"] = (ANSWERS["O"][lower], ADJUSTMENT_SOURCE)
+    if adjusted.get("PV") == NOT_AFFECTED and c1c2_asked("PV", dep, imp, described) and FLOOR["PV"] < out["PV"][0]:
+        out["PV"] = (FLOOR["PV"], ADJUSTMENT_SOURCE)
+    return out
+
+
+# ---- C1: reachability declared in the config ----
+
+def declarations(config):
+    """The config's reachability entries as vens 2de5d34 keeps them, values trimmed (riskconfig.CheckReachability),
+    each {cve, component, reachable, provenance}; ValueError for one it refuses: not a mapping of the four keys, no
+    selector or two, a selector that is not a string or is blank, reachable not a boolean, an entry asserting
+    unreachability without a provenance, a provenance that is not a string."""
+    if "reachability" not in config:
+        return []
+    entries = config["reachability"]
+    if not isinstance(entries, list):
+        raise ValueError("reachability must be a list of entries")
+    out = []
+    for i, e in enumerate(entries):
+        where = f"reachability[{i}]"
+        if not isinstance(e, dict) or set(e) - set(REACHABILITY_KEYS):
+            raise ValueError(f"{where} must be a mapping of cve or component, reachable and provenance")
+        selectors = [k for k in ("cve", "component") if k in e]
+        if len(selectors) != 1:
+            raise ValueError(f"{where} gives {len(selectors)} selectors, one expected")
+        text = e[selectors[0]]
+        if not isinstance(text, str) or not go_trim(text):
+            raise ValueError(f"{where}.{selectors[0]} must be a string that is not blank")
+        if not isinstance(e.get("reachable"), bool):
+            raise ValueError(f"{where}.reachable must be true or false")
+        provenance = e.get("provenance")
+        if provenance is not None and not isinstance(provenance, str):
+            raise ValueError(f"{where}.provenance must be a string")
+        if not e["reachable"] and not go_trim(provenance or ""):
+            raise ValueError(f"{where}.provenance is required: say where the assertion comes from")
+        out.append({"cve": go_trim(e.get("cve") or ""), "component": go_trim(e.get("component") or ""),
+                    "reachable": e["reachable"], "provenance": go_trim(provenance or "")})
+    return out
+
+
+def fold_equal(a, b):
+    """strings.EqualFold: rune by rune, under simple case folding."""
+    return len(a) == len(b) and all(x == y or x.lower() == y.lower() or x.upper() == y.upper() for x, y in zip(a, b))
+
+
+def hits(entry, vuln_id, packages):
+    """Whether an entry hits a CVE whose rows name packages (the scanner's package names, '' for a row without one):
+    its CVE id; or a component, which, asserting unreachability, every row names, and asserting reachability, any row
+    names. Without regard to case; a row with no name is covered by no component."""
+    if entry.get("cve"):
+        return fold_equal(entry["cve"], vuln_id)
+    named = [bool(p) and fold_equal(entry["component"], p) for p in packages]
+    return any(named) if entry.get("reachable", True) else bool(named) and all(named)
+
+
+def declared(entries, vuln_id, packages):
+    """{unreachable, reachable, unresolved}: the index of each entry that hits the CVE, those asserting unreachability
+    and reachability apart, those of the second without a provenance, which veto all the same."""
+    out = {"unreachable": [], "reachable": [], "unresolved": []}
+    for i, e in enumerate(entries):
+        if not hits(e, vuln_id, packages):
+            continue
+        out["reachable" if e["reachable"] else "unreachable"].append(i)
+        if e["reachable"] and not e["provenance"]:
+            out["unresolved"].append(i)
+    return out
+
+
+def selector(entry):
+    return f"cve: {entry['cve']}" if entry["cve"] else f"component: {entry['component']}"
+
+
+def cite(entries, i):
+    return (f"Declared not reachable by config.yaml reachability[{i}] ({selector(entries[i])}). Provenance: "
+            f"{entries[i]['provenance']}")
+
+
+def status(entries, vuln_id, packages, witnesses=()):
+    """The VEX status the entries publish for a CVE, {state, justification, detail}: not_affected, code_not_reachable,
+    a detail line citing each entry asserting unreachability, when one hits and nothing asserting reachability does,
+    an entry or an executable witness (witnesses: selectors {cve} or {component}, read as entries asserting
+    reachability); None otherwise. It leaves every level as the answers give it."""
+    d = declared(entries, vuln_id, packages)
+    vetoed = d["reachable"] or any(hits({**w, "reachable": True}, vuln_id, packages) for w in witnesses)
+    if not d["unreachable"] or vetoed:
+        return None
+    return {"state": NOT_AFFECTED, "justification": CODE_NOT_REACHABLE,
+            "detail": "\n".join(cite(entries, i) for i in d["unreachable"])}
+
+
+def entry_hits(entries, cves):
+    """The CVEs each entry hits, zeros included, cves {vulnId: [package names]}."""
+    return [sum(hits(e, vid, pkgs) for vid, pkgs in cves.items()) for e in entries]
+
+
+# ---- what C2 reads of a report ----
+
+def report_cves(report_path):
+    """{vulnId: [finding]} of a Trivy report, the ids in first-seen order, each id's findings in report order."""
+    with open(report_path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    out = {}
+    for r in doc.get("Results") or []:
+        for v in r.get("Vulnerabilities") or []:
+            out.setdefault(v["VulnerabilityID"], []).append(v)
+    return out
+
+
+def disagreeing_axes(vectors):
+    """The axes on which a CVE's usable v3 vectors, each read alone, give different values."""
+    alone = [one.values for one in (impact([v]) for v in vectors) if one.usable]
+    return [a for a in AXES if any(x[a] != alone[0][a] for x in alone[1:])]
+
+
+def impact_counts(cves):
+    """What C2 reads of a report's CVEs ({vulnId: [finding]}): those with no usable v3 vector, with a v3 vector
+    refused, whose usable vectors disagree and on how many axes, with a v4 vector beside, and those whose Privacy
+    violation takes its floor."""
+    out = dict.fromkeys(("cves", "vectorless", "rejected", "disagree", "disagree_axes", "v4", "pv_floor"), 0)
+    for findings in cves.values():
+        vectors = [v for f in findings for v in trivy_vectors(f)]
+        imp, axes = impact(vectors), disagreeing_axes(vectors)
+        out["cves"] += 1
+        out["vectorless"] += imp.usable == 0
+        out["rejected"] += bool(imp.rejected)
+        out["disagree"] += bool(axes)
+        out["disagree_axes"] += len(axes)
+        out["v4"] += imp.v4 > 0
+        out["pv_floor"] += privacy_floored(imp)
+    return out
+
+
+def counts_line(name, c):
+    return (f"no usable v3 vector, {name}: {c['vectorless']} of {c['cves']} CVEs (LC, LI, LAV at 9); a rejected v3 "
+            f"vector {c['rejected']} CVEs; usable vectors disagreeing {c['disagree']} CVEs, {c['disagree_axes']} axes "
+            f"(worst value kept); a v4 vector beside {c['v4']} CVEs; Privacy violation at its floor {c['pv_floor']} "
+            f"CVEs")
+
+
+def main(argv=None):
+    import argparse
+    import os
+
+    ap = argparse.ArgumentParser(description="What C2 reads of the demo scan and of the scenarios, each apart.")
+    ap.add_argument("--demo", help="the demo scan, a Trivy report")
+    ap.add_argument("--scenarios", help="the scenario corpus, scenarios/<id>/report.json")
+    a = ap.parse_args(argv)
+    if a.demo:
+        print(counts_line("demo scan", impact_counts(report_cves(a.demo))))
+    if a.scenarios:
+        cves = {}
+        for sid in sorted(os.listdir(a.scenarios)):
+            path = os.path.join(a.scenarios, sid, "report.json")
+            if os.path.isfile(path):
+                cves[sid] = [f for fs in report_cves(path).values() for f in fs]
+        print(counts_line("scenarios", impact_counts(cves)))
+    return 0
+
+
+if __name__ == "__main__":
+    main()

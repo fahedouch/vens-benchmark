@@ -3,15 +3,24 @@ rest)."""
 import collections
 from fractions import Fraction
 
-from chain import families, verdicts
+from chain import contract, families, verdicts
 from chain import cells as cellmod
 from chain.report import NA, num, ordered, table
 
 
 def _v(x):
+    if isinstance(x, bool):
+        return "yes" if x else "no"
     if isinstance(x, tuple):
         return "+".join(x) or "none"
     return num(float(x) if isinstance(x, Fraction) else x, 3)
+
+
+def _show(check, x):
+    """A value as printed: a VEX status by its state and justification (its detail is what the check compares)."""
+    if check.quantity == "status" and isinstance(x, tuple):
+        return "/".join(str(v) for v in x[:2]) or "none"
+    return _v(x)
 
 
 def _tally(items):
@@ -20,14 +29,16 @@ def _tally(items):
 
 def _diffs(row, check):
     if check.pairs():
+        if check.quantity == "status":
+            return _tally(f"{_show(check, p['a'])} / {_show(check, p['b'])}" for p in row["per"])
         if check.quantity.startswith("answer ") or check.quantity == "severity":
             return _tally("same" if p["a"] == p["b"] else "differ" for p in row["per"])
         return "b - a: " + _tally(_v(Fraction(p["b"]) - Fraction(p["a"])) for p in row["per"])
-    return _tally(_v(p["value"]) for p in row["per"])
+    return _tally(_show(check, p["value"]) for p in row["per"])
 
 
 def _medians(row, check):
-    show = lambda x: NA if x is None else _v(x)
+    show = lambda x: NA if x is None else _show(check, x)
     if check.pairs():
         return f"{show(row['median'][0])} -> {show(row['median'][1])}"
     return show(row["median"][0])
@@ -38,6 +49,8 @@ def _verdict(row, kind):
         return "judged by nothing"
     ok = row["median"][-1]
     passed = sum(1 for p in row["per"] if p["ok"])
+    if kind == verdicts.IMPLEMENTATION:
+        return f"every replicate: {families.every_replicate(row)} (pass {passed} of {len(row['per'])})"
     return f"pass {passed} of {len(row['per'])}; on the medians {'missing' if ok is None else 'pass' if ok else 'fail'}"
 
 
@@ -83,9 +96,11 @@ def _check_rows(rows):
     out = []
     for r in rows:
         c, row = r["check"], r["row"]
-        item = " / ".join(row["item"]) if c.pairs() else row["item"]
+        item = (" / ".join(row["item"]) if c.pairs() else row["item"]) + (" [vectorless]" if r.get("vectorless")
+                                                                           else "")
         verdict = _verdict(row, r["kind"])
-        verdict = verdict if r.get("historical", True) else f"not certified, asks R: {verdict}"
+        verdict = verdict if r.get("certified", True) else \
+            f"not certified, a run off {r.get('rules', contract.B7C0435)}'s contract: {verdict}"
         out.append([c.label, r["arm"], r["kind"], r["model"], item, _diffs(row, c), _medians(row, c), verdict,
                     cellmod.replicates(row["missing"]) if row["missing"] else "none",
                     _sources(row) if c.pairs() else _levels(row), _moves(row)])
@@ -101,11 +116,16 @@ def families_section(sc):
            "The move, in the after: none, Go's (levels Go set, or one answer Go crossed with a declared field), the "
            "model's (both runs answered, the answers differ), or mixed (any other mix, a level Go set in one run "
            "and answered in the other among them).", ""]
-    uncertified = sum(1 for r in sc["rows"] if not r.get("historical", True))
+    uncertified = sum(1 for r in sc["rows"] if not r.get("certified", True))
     if uncertified:
-        out += [f"{uncertified} row(s) read runs that ask reachability (R): their kinds come from chain/verdicts.py's "
-                f"b7c0435 rules, which have no R, and certify none of them (\"not certified\" below).", ""]
-    by_family = collections.OrderedDict()
+        out += [f"{uncertified} row(s) read after runs off the contract their kinds come from, such as runs that ask "
+                f"reachability (R) under chain/verdicts.py's b7c0435 rules, which have no R: those rules certify none "
+                f"of them (\"not certified\" below).", ""]
+    if any(r.get("rules") == contract.C1C2 for r in sc["rows"]):
+        out += ["Under C1 + C2 (rules c1c2), a status is Go's, from the scenario's config: an implementation check "
+                "passes where every replicate does (plan Z0's showcase contract). A row tagged [vectorless] reads a "
+                "CVE without a usable CVSS v3 vector, its LC, LI and LAV at 9.", ""]
+    by_family, gated = collections.OrderedDict(), families.gates(sc["rows"])
     for r in sc["rows"]:
         by_family.setdefault(r["check"].family, []).append(r)
     for family, rows in by_family.items():
@@ -114,6 +134,7 @@ def families_section(sc):
             out += ["; ".join(f"{sid}: {text}" for sid, text in (sc.get("headings") or {}).items()) + ".", ""]
         out += table(["check", "arm", "kind", "model", "scenarios", "values", "medians", "verdict", "missing",
                       "sources (after)", "moves"], _check_rows(rows))
+        out += _gates(gated, family)
         for (fam, model), counter in sorted(sc["moves"].items()):
             if fam == family and counter:
                 word = ("all Go's: the after's move here is Go's, not the model's reading"
@@ -121,6 +142,24 @@ def families_section(sc):
                         else "not all Go's")
                 out += [f"After, {model}: moves {_tally(counter.elements())}; {word}.", ""]
     return out
+
+
+def _share(x):
+    return NA if x is None else num(x, 2)
+
+
+def _gates(gated, family):
+    """read5's eligibility rule on the family's items (families.gates): where the before passes in fewer than
+    FAMILY_ROBUST of its replicates, the item is not gated."""
+    found = [(k, v) for k, v in gated.items() if k[0] == family]
+    if not found:
+        return []
+    out = [f"read5's rule (an item gates where the before passes in at least {families.FAMILY_ROBUST} of its "
+           f"replicates):", ""]
+    out += [f"- {label} · {' / '.join(item) if isinstance(item, tuple) else item} · {model}: the before passes "
+            f"{_share(pb)}, the after fails {_share(fa)}: {verdict}." for (_, label, item, model), (pb, fa, verdict)
+            in found]
+    return out + [""]
 
 
 def consistency(sc):
@@ -180,6 +219,16 @@ def null_table(sc):
                      NA if fb is None else _summary(fb)])
     return out + table(["scenario", "null TA/VU/T/B", "null, before's rule", "null, after's rule", "runs",
                         "fallback"], rows)
+
+
+def c2_reads(data):
+    """What C2 reads of the reports scored, printed first, the demo scan and the scenarios apart."""
+    found = data.get("c2") or {}
+    if not found:
+        return []
+    return ["## What C2 reads of the reports", "", "The CVSS v3 vectors C2 gives Loss of confidentiality, integrity "
+            "and availability from (310-c1c2), read by chain/contract.py whatever the after's commit.", ""] + \
+        [f"- {contract.counts_line(name, c)}." for name, c in found.items()] + [""]
 
 
 def scenarios(data):

@@ -396,12 +396,13 @@ class TestTheMeasures(unittest.TestCase):
     def test_the_b7c0435_rules_certify_no_run_that_asks_r(self):
         # families: a row read on runs that ask R is marked, its verdict not certified
         checks = [c for c in verdicts.CHECKS if c.family == "reachability" and c.quantity == "O"]
-        for reach, historical in ((None, True), ("reachable", False)):
+        for reach, certified in ((None, True), ("reachable", False)):
             recs = [self.scen_run(sid, reach, (5, "a5", "answer")) for sid in ("reach_no", "reach_yes")]
             rows = families.evaluate(cellmod.group(recs), {}, checks)
-            self.assertEqual([x["historical"] for x in rows], [historical], reach)
+            self.assertEqual([(x["certified"], x["rules"]) for x in rows], [(certified, contract.B7C0435)], reach)
             text = "\n".join(report_scen.families_section({"rows": rows, "moves": {}}))
-            self.assertEqual(("not certified, asks R" in text, "certify none of them" in text), (not historical,) * 2)
+            self.assertEqual(("not certified, a run off b7c0435's contract" in text, "certify none of them" in text),
+                             (not certified,) * 2)
         # verdicts: a run whose calls ask R is refused
         second = (s.SYSTEM, human(contract.ANSWER_IDS["M"]), s.reply([A]))
         with tempfile.TemporaryDirectory() as tmp:

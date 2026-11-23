@@ -351,6 +351,7 @@ def render(data, reader):
             f"Read by vens-benchmark `{reader}`. A replicate's run is its first complete attempt that is not a stray "
             "run; its scores are read only where the reader found them usable. Measured figures and estimates are "
             "never in one table.", ""]
-    body = (records(data) + targets(data) + demo_scan(data) + report_scen.scenarios(data) + attempts(data)
+    body = (report_scen.c2_reads(data) + records(data) + targets(data) + demo_scan(data) + report_scen.scenarios(data)
+            + attempts(data)
             + measured(data) + estimated(data) + report_scen.kpis(data) + report_scen.scope(data))
     return "\n".join(head + body) + "\n"
