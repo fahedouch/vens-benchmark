@@ -216,7 +216,9 @@ def flat(doc, prefix=""):
 AXIS = {**{p: "context.exposure" for p in verdicts.EXPO}, **{p: "context.data_sensitivity" for p in verdicts.SENS},
         **{p: "context.business_criticality" for p in verdicts.CRIT},
         **{p: "context.compliance_requirements" for p in verdicts.COMP},
-        **{p: "context.controls.waf" for p in verdicts.WAF}, **{p: "context.notes" for p in verdicts.REACH},
+        **{p: "context.controls.waf" for p in verdicts.WAF},
+        # Under C1 the unreachable one also declares it in a config entry.
+        **{p: ("context.notes", "reachability") for p in verdicts.REACH},
         **{p: None for p in verdicts.DOS_TWINS + verdicts.AUDIT_TWINS + verdicts.DOS_COPY_TWINS
            + verdicts.AUDIT_COPY_TWINS}}
 
@@ -228,7 +230,7 @@ class TestOneAxis(unittest.TestCase):
         for (a, b), key in AXIS.items():
             fa, fb = flat(config(a)), flat(config(b))
             diff = {k for k in set(fa) | set(fb) if fa.get(k) != fb.get(k)}
-            self.assertEqual(diff, set() if key is None else {key}, (a, b))
+            self.assertEqual(diff, set() if key is None else set(key) if isinstance(key, tuple) else {key}, (a, b))
             if key is None:
                 self.assertNotEqual(report(a), report(b), (a, b))
             else:

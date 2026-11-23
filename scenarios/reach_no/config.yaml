@@ -15,3 +15,8 @@ context:
   traceability: none
   notes: The vulnerable code path is compiled out / feature-flagged off in this build;
     it is not reachable at runtime.
+reachability:
+- cve: CVE-2099-0001
+  reachable: false
+  provenance: The vulnerable code path is compiled out / feature-flagged off in this
+    build; it is not reachable at runtime.

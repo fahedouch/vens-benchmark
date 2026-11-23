@@ -14,7 +14,8 @@ from chain import attempt, contract, javarun, runvens, verdicts
 from tests import support as s
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCENARIOS = os.path.join(ROOT, "scenarios")
+# The corpus as the binaries before 310-c1c2 read it, which refuse a reachability key.
+SCENARIOS = s.step5_scenarios()
 IDS = sorted(d for d in os.listdir(SCENARIOS) if os.path.isdir(os.path.join(SCENARIOS, d)))
 FIRST = IDS[0]
 SKIPPED = "model returned no answer to Motive (M) for {cve} after asking again; stopping the run"

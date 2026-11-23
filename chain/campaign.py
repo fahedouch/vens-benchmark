@@ -30,8 +30,11 @@ from chain.errors import Refused, load_object
 
 CAMPAIGN, FREEZE, SCENARIOS, SUMS = "campaign.json", "freeze-scenarios.json", "scenarios", "SHA256SUMS"
 FAILURES = "failures.jsonl"
-# freeze-scenarios.json as the corpus was frozen; a corpus regenerated is frozen again and this changes with it
-FROZEN = "4f4b86ade2e1c464142728d5c68a3c86ede2db21c47a4a5b64aadf19c44232a1"
+# freeze-scenarios.json as the corpus was frozen; a corpus regenerated is frozen again and this changes with it. The
+# corpus re-authored for C1 (venslabs/vens#310), its four unreachable scenarios declaring it in their configs; step 5's
+# campaigns hold the one before, FROZEN_STEP5, which chain.read takes with --freeze-sha256.
+FROZEN = "e7948c95d68bbf2bf9110c7d978078081f64126983b7762820572fa47c5a032a"
+FROZEN_STEP5 = "4f4b86ade2e1c464142728d5c68a3c86ede2db21c47a4a5b64aadf19c44232a1"
 ARMS = ("before", "after")
 # what each attempt's record repeats from campaign.json
 SAME = ("llm_batch_size", "retry_cap", "timeout_seconds", "parallelism")
@@ -67,10 +70,11 @@ def done(rj):
     return (rj.get("generate") or {}).get("exit_status") == 0 and (rj.get("record_check") or {}).get("passed") is True
 
 
-def check_corpus(root, frozen=FROZEN):
+def check_corpus(root, frozen=None):
     """({path: sha256} of the corpus's files, the scenario ids) when root holds the frozen corpus:
-    freeze-scenarios.json whose sha256 is frozen, and scenarios/ holding its files and no other, each of its sha256;
-    Refused otherwise."""
+    freeze-scenarios.json whose sha256 is frozen (FROZEN unless given), and scenarios/ holding its files and no other,
+    each of its sha256; Refused otherwise."""
+    frozen = frozen or FROZEN
     path = os.path.join(root, FREEZE)
     if not os.path.isfile(path):
         raise Refused(f"{root}: no {FREEZE}")
@@ -269,14 +273,14 @@ def _read_cell(doc, cell, attempts, ended, commits):
     return [attemptmod.read_attempt(attempts[k][0], commits=commits) for k in ks]
 
 
-def read_campaign(root, commits=None, freeze=FROZEN):
+def read_campaign(root, commits=None, freeze=None):
     """Every attempt of a campaign in its plan's order, the before's then the after's for each unit, failed
     attempts included, and a record for each run the campaign stopped before. Refused when the archive's corpus is
     not freeze's (the frozen corpus unless the caller names another), SHA256SUMS does not match a campaign the
     runner finished, a record contradicts campaign.json, failures.jsonl does not list the failed attempts, or an
     attempt the runner made is missing."""
     doc = _campaign(root)
-    got = doc["corpus"]["freeze_sha256"]
+    got, freeze = doc["corpus"]["freeze_sha256"], freeze or FROZEN
     if got != freeze:
         raise Refused(f"{root}: its corpus's freeze is {got}, not {freeze}; name it to read the archive anyway")
     finished = doc.get("ended_at") is not None

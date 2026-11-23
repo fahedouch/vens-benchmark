@@ -2,7 +2,7 @@
   "showcase_high_to_low": {
     "cve": "CVE-2021-44228",
     "sev": "CRITICAL",
-    "expect": "final risk LOW despite CVSS 10.0 (Log4Shell unreachable + low-value context)"
+    "expect": "declared not reachable in its config: not_affected, code_not_reachable, its detail citing the entry; rated as its answers give, which no reachability input reaches (low no longer expected)"
   },
   "showcase_med_to_high": {
     "cve": "CVE-2023-45857",
@@ -102,7 +102,7 @@
   "reach_no": {
     "cve": "CVE-2099-0001",
     "sev": "CRITICAL",
-    "expect": "unreachable: final < reach_yes"
+    "expect": "declared not reachable in its config: not_affected, code_not_reachable, its detail citing the entry; rated as its answers give, which no reachability input reaches"
   },
   "disc_dos2": {
     "cve": "CVE-2099-0008",
@@ -132,7 +132,7 @@
   "reach2_no": {
     "cve": "CVE-2099-0012",
     "sev": "CRITICAL",
-    "expect": "unreachable: final < reach2_yes"
+    "expect": "declared not reachable in its config: not_affected, code_not_reachable, its detail citing the entry; rated as its answers give, which no reachability input reaches"
   },
   "reach3_yes": {
     "cve": "CVE-2099-0013",
@@ -142,7 +142,7 @@
   "reach3_no": {
     "cve": "CVE-2099-0013",
     "sev": "CRITICAL",
-    "expect": "unreachable: final < reach3_yes"
+    "expect": "declared not reachable in its config: not_affected, code_not_reachable, its detail citing the entry; rated as its answers give, which no reachability input reaches"
   },
   "disc_ctrl_off_local": {
     "cve": "CVE-2099-0007",

@@ -1,7 +1,9 @@
 """Generate Part-B scenarios: each = a Trivy report (1 CVE) + a vens config.yaml.
 
 Contrastive families (vary ONE context axis, expected direction known) + the two
-conference showcases + a wrong-YAML control + a floor. Writes scenarios/<id>/,
+conference showcases + a wrong-YAML control + a floor. The four scenarios whose
+notes say the code is unreachable also declare it in a config reachability entry
+(C1, venslabs/vens#310), every other byte as before. Writes scenarios/<id>/,
 scenarios/manifest.json and, beside scenarios/, freeze-scenarios.json, the
 corpus's freeze manifest. The `expect` field documents the known-direction
 ground truth for analysis.
@@ -313,20 +315,34 @@ def cfg(name, desc, listener, traceability=TRACEABILITY, **ctx):
             "context": context}
 
 
+def unreachable(config, **selector):
+    """The config with C1's declaration (venslabs/vens#310 plan Z0): one reachability entry, scoped to the CVE's id
+    or to the component every row of it names, asserting unreachability with the reason the notes give as its
+    provenance. vens publishes the CVE not_affected, code_not_reachable, and moves no level."""
+    entry = {**selector, "reachable": False, "provenance": config["context"]["notes"]}
+    return {**config, "reachability": [entry]}
+
+
+DECLARED = "declared not reachable in its config: not_affected, code_not_reachable, its detail citing the entry"
+RATED = "; rated as its answers give, which no reachability input reaches"
+
+
 # id -> (cve key, config, expected direction note for analysis)
 SCENARIOS = {
     # ---- SHOWCASE 1: CVSS 10.0 RCE that should end LOW (low-value, internal,
     # controlled, unreachable path). ----
+    # Under C1 its unreachability is declared on the component the notes name; low is no longer expected.
     "showcase_high_to_low": (
         "log4shell",
-        cfg("internal-batch-tool", "Internal-only batch report generator (Java)", "absent",
-            exposure="internal", data_sensitivity="low", business_criticality="low",
-            controls={"segmentation": True, "ids": True},
-            notes="Log4j is present but message-lookup substitution is disabled "
-                  "(log4j2.formatMsgNoLookups=true) and no untrusted/user-controlled input "
-                  "is ever passed to the logger. Internal-only tool with no outbound network "
-                  "to reach an attacker LDAP server; the RCE path is not reachable."),
-        "final risk LOW despite CVSS 10.0 (Log4Shell unreachable + low-value context)"),
+        unreachable(cfg("internal-batch-tool", "Internal-only batch report generator (Java)", "absent",
+                        exposure="internal", data_sensitivity="low", business_criticality="low",
+                        controls={"segmentation": True, "ids": True},
+                        notes="Log4j is present but message-lookup substitution is disabled "
+                              "(log4j2.formatMsgNoLookups=true) and no untrusted/user-controlled input "
+                              "is ever passed to the logger. Internal-only tool with no outbound network "
+                              "to reach an attacker LDAP server; the RCE path is not reachable."),
+                    component=REAL["log4shell"]["pkg"]),
+        f"{DECLARED}{RATED} (low no longer expected)"),
 
     # ---- SHOWCASE 2: CVSS 6.5 info-leak that should rise to HIGH (PII/GDPR,
     # revenue-critical). ----
@@ -432,17 +448,19 @@ SCENARIOS = {
                              "WAF is irrelevant to a local-file exploit: vulnerability should not drop"),
 
     # ---- DISCRIMINATOR (reachability via notes): same RCE + high context; only the
-    # operator's notes differ. The rule ignores notes -> identical; a model should move. ----
+    # operator's notes differ. The rule ignores notes -> identical; a model should move.
+    # Under C1 each unreachable one also declares it in a config entry on its CVE id. ----
     "reach_yes": ("rce", cfg("svc", "service", "present", exposure="internet",
                   data_sensitivity="critical", business_criticality="critical",
                   notes="The vulnerable endpoint is internet-exposed and we have observed "
                         "exploitation attempts in our logs; the code path is reachable."),
                   "reachable: final HIGH"),
-    "reach_no": ("rce", cfg("svc", "service", "present", exposure="internet",
-                 data_sensitivity="critical", business_criticality="critical",
-                 notes="The vulnerable code path is compiled out / feature-flagged off in "
-                       "this build; it is not reachable at runtime."),
-                 "unreachable: final < reach_yes"),
+    "reach_no": ("rce", unreachable(cfg("svc", "service", "present", exposure="internet",
+                             data_sensitivity="critical", business_criticality="critical",
+                             notes="The vulnerable code path is compiled out / feature-flagged off in "
+                                   "this build; it is not reachable at runtime."),
+                             cve=CVES["rce"]["id"]),
+                 DECLARED + RATED),
 
     # ---- Generalize each discriminator to n=3 (3 distinct CVEs) so a finding is a
     # pattern, not a single-CVE anecdote. ----
@@ -469,20 +487,22 @@ SCENARIOS = {
                    notes="The deserialization endpoint is reachable and we see exploitation "
                          "attempts in our logs."),
                    "reachable: final HIGH"),
-    "reach2_no": ("rce2", cfg("svc", "service", "present", exposure="internet",
-                  data_sensitivity="critical", business_criticality="critical",
-                  notes="The deserialization call site is unreachable: the feature is disabled "
-                        "and no untrusted input reaches it."),
-                  "unreachable: final < reach2_yes"),
+    "reach2_no": ("rce2", unreachable(cfg("svc", "service", "present", exposure="internet",
+                                          data_sensitivity="critical", business_criticality="critical",
+                                          notes="The deserialization call site is unreachable: the feature is "
+                                                "disabled and no untrusted input reaches it."),
+                                      cve=CVES["rce2"]["id"]),
+                  DECLARED + RATED),
     "reach3_yes": ("rce3", cfg("svc", "service", "present", exposure="internet",
                    data_sensitivity="critical", business_criticality="critical",
                    notes="User-supplied templates are rendered on this path; it is reachable."),
                    "reachable: final HIGH"),
-    "reach3_no": ("rce3", cfg("svc", "service", "present", exposure="internet",
-                  data_sensitivity="critical", business_criticality="critical",
-                  notes="Templates are never user-supplied in this build; the injection path "
-                        "is not reachable."),
-                  "unreachable: final < reach3_yes"),
+    "reach3_no": ("rce3", unreachable(cfg("svc", "service", "present", exposure="internet",
+                                          data_sensitivity="critical", business_criticality="critical",
+                                          notes="Templates are never user-supplied in this build; the injection "
+                                                "path is not reachable."),
+                                      cve=CVES["rce3"]["id"]),
+                  DECLARED + RATED),
 
     # ---- Fix the irrelevant-control test: same local bug WITHOUT the WAF, to isolate
     # whether the WAF wrongly lowered vulnerability in disc_ctrl_irrelevant. ----

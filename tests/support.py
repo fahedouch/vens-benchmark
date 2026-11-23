@@ -2,6 +2,8 @@
 
     VB_VENS_AFTER, VB_VENS_BEFORE   vens binaries built from 310-step3 b7c0435 and main 43ab10b
     VB_VENS_REACH                   a vens binary built from 310-step3b 5f797bf, which asks reachability first
+    VB_VENS_C1C2                    a vens binary built from 310-c1c2 2de5d34, C1 + C2
+    VB_VENS_C1C2_SRC                vens's source tree at 2de5d34, whose Go tests freeze the demo scan's C2 counts
     VB_DEMO                         a vens-demo tree at 7ab1570 (runs/2026-09-23/scan/scan.json, contexts/)
     VB_QUICKSTART                   vens's examples/quickstart at b7c0435
     VB_JAR, VB_JDK                  the calculator's 1.0.1 JAR and a JDK bin folder (JAVA_HOME/bin otherwise)
@@ -11,15 +13,80 @@
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 
 AFTER_SHA = "b7c0435835447027b04d54d4e6befaaee6b0626b"
 BEFORE_SHA = "43ab10bf980d42b77157e003a27921805a546770"
 REACH_SHA = "5f797bfbd8e3a0ae49200f9d64861558240b8361"
+C1C2_SHA = "2de5d341befb05fb96a648c2bea29132e175a5ce"
 MODEL = "gpt-5.4-mini-2026-03-17"
 VECTOR = "SL:9/M:1/O:7/S:9/ED:9/EE:5/A:9/ID:9/LC:9/LI:9/LAV:7/LAC:9/FD:1/RD:4/NC:2/PV:9"
 SCORE, SEVERITY = 61.625, "critical"
 SYSTEM = "You are a security expert.\n\nDEPLOYMENT\nProject: svc\n"
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# What C1's re-authoring changed in the corpus step 5 ran (its freeze, chain.campaign.FROZEN_STEP5): the four configs,
+# each its step 5 bytes and then its reachability block, their expectations in manifest.json, and the generator.
+STEP5_EXPECT = {"showcase_high_to_low": "final risk LOW despite CVSS 10.0 (Log4Shell unreachable + low-value context)",
+                "reach_no": "unreachable: final < reach_yes", "reach2_no": "unreachable: final < reach2_yes",
+                "reach3_no": "unreachable: final < reach3_yes"}
+STEP5_GENERATOR = "41fdb50e9ce93c36233d0d3f79d73d13158c2c16ba1bcf9e96746c646a5baa0a"
+REACHABILITY_BLOCK = "\nreachability:\n"
+_STEP5 = {}
+
+
+def step5_config(text):
+    """A re-authored config's step 5 bytes: its reachability block cut off; any other config unchanged."""
+    cut = text.find(REACHABILITY_BLOCK)
+    return text if cut < 0 else text[:cut + 1]
+
+
+def _rewrite(path, change):
+    with open(path, encoding="utf-8") as fh:
+        text = change(fh.read())
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def step5_root():
+    """The corpus step 5 ran, as every binary before 310-c1c2 reads it (they refuse a reachability key), restored
+    byte for byte from the repository's: scenarios/ with the four configs' blocks cut off and manifest.json's four
+    expectations put back, and freeze-scenarios.json with their sha256 and the generator's, its own sha256 checked
+    against FROZEN_STEP5. Made once per process; chain.campaign.check_corpus(root, FROZEN_STEP5) accepts it."""
+    if not _STEP5:
+        from chain import campaign  # the tests import support before they import the chain
+        tmp = tempfile.TemporaryDirectory()
+        root = os.path.join(tmp.name, "corpus")
+        shutil.copytree(os.path.join(ROOT, "scenarios"), os.path.join(root, "scenarios"))
+        with open(os.path.join(ROOT, "freeze-scenarios.json"), encoding="utf-8") as fh:
+            freeze = json.load(fh)
+        for sid in STEP5_EXPECT:
+            rel = f"scenarios/{sid}/config.yaml"
+            freeze["files"][rel] = _rewrite(os.path.join(root, rel), step5_config)
+
+        def expectations(text):
+            manifest = json.loads(text)
+            for sid, expect in STEP5_EXPECT.items():
+                manifest[sid]["expect"] = expect
+            return json.dumps(manifest, indent=2)
+        freeze["files"]["scenarios/manifest.json"] = _rewrite(os.path.join(root, "scenarios", "manifest.json"),
+                                                              expectations)
+        freeze["generator"]["make_scenarios.py"] = STEP5_GENERATOR
+        text = json.dumps(freeze, indent=2) + "\n"
+        write(os.path.join(root, "freeze-scenarios.json"), text)
+        got = hashlib.sha256(text.encode()).hexdigest()
+        if got != campaign.FROZEN_STEP5:
+            raise AssertionError(f"the corpus restored has the freeze {got}, not step 5's {campaign.FROZEN_STEP5}")
+        _STEP5.update(tmp=tmp, root=root)
+    return _STEP5["root"]
+
+
+def step5_scenarios():
+    return os.path.join(step5_root(), "scenarios")
 
 
 def env(name):
