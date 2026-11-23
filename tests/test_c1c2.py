@@ -9,7 +9,7 @@ import unittest
 
 import yaml
 
-from chain import answers, cdx, contract, families, report_scen, verdicts
+from chain import answers, attempt, cdx, conform, contract, families, report_scen, verdicts
 from chain import cells as cellmod
 from tests import records as r
 from tests import support as s
@@ -294,16 +294,35 @@ STATUS = {"state": "not_affected", "justification": "code_not_reachable",
 class TestTheRecord(unittest.TestCase):
     """answers.json under C1 + C2 as the reader checks it, and the VEX status against its declared block."""
 
-    def test_the_contract_told_from_the_document(self):
-        old = s.answers_doc([(A, s.VECTOR)])
-        self.assertEqual(answers.rules_of(load(old)), contract.B7C0435)
-        self.assertEqual(answers.rules_of(doc(c1c2_entry())), contract.C1C2)
-        reach = {**old["vulnerabilities"][0], "reachability": {"factor": "R", "answer": "reachable"}}
-        self.assertEqual(answers.rules_of(doc(reach)), contract.REACH_RULES)
-        self.assertIsNone(answers.rules_of(doc(reach, c1c2_entry(B))))
-        self.assertEqual(answers.c1c2(doc(reach, c1c2_entry(B))),
-                         ["answers.json holds reachability records beside C1 + C2's marks"])
-        self.assertEqual(answers.c1c2(load(old)), [])
+    def test_the_contract_shown_and_the_one_pinned(self):
+        raw = s.answers_doc([(A, s.VECTOR)])
+        old, new = load(raw), doc(c1c2_entry())
+        reach = doc({**raw["vulnerabilities"][0], "reachability": {"factor": "R", "answer": "reachable"}})
+        mixed = doc(reach["vulnerabilities"][0], c1c2_entry(B))
+        unrated = doc({"vulnId": B, "unrated": True, "adjustment": "not_asked",
+                       "factors": [{"factor": "M", "answer": "a", "reading": "answered"}]})
+        bare = c1c2_entry()
+        bare["factors"] = [f for f in bare["factors"] if f["factor"] not in contract.AXIS]
+        self.assertEqual([answers.marks(d) for d in (old, new, reach, unrated, doc(bare))],
+                         [{contract.B7C0435}, {contract.C1C2}, {contract.REACH_RULES}, set(), set()])
+        self.assertEqual((answers.rules_of(old), answers.rules_of(new), answers.rules_of(mixed)),
+                         (contract.B7C0435, contract.C1C2, None))
+        # the pinned contract is validated, never downgraded: a record off it, mixed or unknown fails
+        self.assertEqual([answers.validate(d, contract.C1C2) for d in (new, unrated)], [[], []])
+        self.assertEqual(answers.validate(old, contract.C1C2), ["answers.json follows b7c0435, not the pinned c1c2"])
+        self.assertEqual(answers.validate(new, contract.B7C0435), ["answers.json follows c1c2, not the pinned b7c0435"])
+        self.assertEqual(answers.validate(mixed, contract.C1C2), ["answers.json mixes contracts: 5f797bf, c1c2"])
+        self.assertEqual(answers.validate(doc(bare), contract.C1C2)[0], f"{A}: LC not from cvss alone")
+        self.assertEqual(answers.validate(doc(bare), None), [])
+        self.assertEqual((answers.validate(old, None), answers.validate(old, contract.B7C0435)), ([], []))
+        self.assertEqual(answers.c1c2(reach)[:4], [f"{A}: a reachability record under C1 + C2"] + [
+            f"{A}: {f} not from cvss alone" for f in ("LC", "LI", "LAV")])
+
+    def test_the_contract_a_commit_pins(self):
+        self.assertEqual([attempt.pinned_contract({"arm": "after", "vens_commit": sha}) for sha in (
+            s.C1C2_SHA, s.AFTER_SHA, s.REACH_SHA, "e" * 40)], [contract.C1C2, contract.B7C0435, contract.REACH_RULES,
+                                                               None])
+        self.assertIsNone(attempt.pinned_contract({"arm": "before", "vens_commit": s.C1C2_SHA}))
 
     def test_a_record_that_follows_c1_c2(self):
         good = doc(c1c2_entry(A, "H"), c1c2_entry(B, None, counters=["cvss_v3_missing"]),
@@ -416,8 +435,8 @@ class TestTheFamilies(unittest.TestCase):
                 recs.append(scen_run("after", sid, rep, st, c1c2=c1c2))
         return recs
 
-    def rows(self, recs):
-        return families.evaluate(cellmod.group(recs), self.scen)
+    def rows(self, recs, rules=contract.C1C2):
+        return families.evaluate(cellmod.group(recs), self.scen, rules=rules)
 
     def test_the_statuses_and_the_rating(self):
         rows = self.rows(self.runs())
@@ -471,7 +490,8 @@ class TestTheFamilies(unittest.TestCase):
                             MODEL)], (1.0, 0.0, "pass"))
         text = "\n".join(report_scen.families_section({"rows": rows, "moves": {}}))
         self.assertIn(f"- {verdicts.REACH_STATUS} · reach_no / reach_yes · {MODEL}: the before passes 0.00, the "
-                      f"after fails 0.00: not gated.", text)
+                      f"after fails 0.00: not gated; read5's eligibility, printed beside; the every-replicate reading "
+                      f"binds: pass.", text)
         self.assertIn("every replicate: pass (pass 2 of 2)", text)
         self.assertIn("not_affected/code_not_reachable / none x2", text)
         self.assertEqual((families.family_item([True] * 8 + [False] * 2, [False] * 8 + [True] * 2)[2],
@@ -480,10 +500,23 @@ class TestTheFamilies(unittest.TestCase):
                          ("fail", "weakened", "not gated"))
 
     def test_historical_runs_keep_their_rules(self):
-        rows = self.rows(self.runs(after_status=False, c1c2=False))
+        rows = self.rows(self.runs(after_status=False, c1c2=False), contract.B7C0435)
         self.assertEqual({x["rules"] for x in rows}, {contract.B7C0435})
+        self.assertTrue(all(x["certified"] for x in rows))
         self.assertIn("showcase_high_to_low low", {x["check"].label for x in rows})
         self.assertNotIn(verdicts.REACH_STATUS, {x["check"].label for x in rows})
+
+    def test_the_pinned_rules_choose_the_checks_never_the_runs(self):
+        # b7c0435's runs read under C1 + C2 pinned: its checks, every after row not certified
+        rows = self.rows(self.runs(after_status=False, c1c2=False))
+        self.assertIn(verdicts.REACH_STATUS, {x["check"].label for x in rows})
+        self.assertEqual({x["certified"] for x in rows if x["arm"] == "after"}, {False})
+        # C1 + C2's runs read under b7c0435 pinned: not certified either
+        rows = self.rows(self.runs(), contract.B7C0435)
+        self.assertEqual({x["certified"] for x in rows if x["arm"] == "after"}, {False})
+        # no after run read at all: the pinned checks still, not b7c0435's
+        before = [r for r in self.runs() if r["what"]["arm"] == "before"]
+        self.assertNotIn("showcase_high_to_low low", {x["check"].label for x in self.rows(before)})
 
     def test_a_vectorless_scenario_is_tagged(self):
         recs = [scen_run(arm, sid, 1) for arm in ("before", "after") for sid in ("disc_dos", "disc_dos_novec")]
@@ -508,7 +541,8 @@ class TestTheChecks(unittest.TestCase):
                                 + [c.label for c in verdicts.SHOWCASE_STATUS]))
         self.assertEqual({c.kind("after") for c in verdicts.CHECKS_C1C2 if c.family == "reachability"},
                          {verdicts.IMPLEMENTATION, verdicts.DIAGNOSTIC})
-        self.assertTrue(set(verdicts.CHECKS) | set(verdicts.CHECKS_C1C2) == set(verdicts.ALL_CHECKS))
+        self.assertEqual(verdicts.checks_for(contract.C1C2), verdicts.CHECKS_C1C2)
+        self.assertEqual(verdicts.checks_for(contract.REACH_RULES), verdicts.CHECKS)
 
     def test_the_statuses_are_pass_only_on_the_corpus(self):
         scen = verdicts.load(SCENARIOS, contract.C1C2)

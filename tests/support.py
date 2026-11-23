@@ -4,6 +4,7 @@
     VB_VENS_REACH                   a vens binary built from 310-step3b 5f797bf, which asks reachability first
     VB_VENS_C1C2                    a vens binary built from 310-c1c2 2de5d34, C1 + C2
     VB_VENS_C1C2_SRC                vens's source tree at 2de5d34, whose Go tests freeze the demo scan's C2 counts
+    VB_GO                           the go binary vens 2de5d34 builds with (go1.27.0), to write chain/gofold.txt again
     VB_DEMO                         a vens-demo tree at 7ab1570 (runs/2026-09-23/scan/scan.json, contexts/)
     VB_QUICKSTART                   vens's examples/quickstart at b7c0435
     VB_JAR, VB_JDK                  the calculator's 1.0.1 JAR and a JDK bin folder (JAVA_HOME/bin otherwise)

@@ -3,7 +3,7 @@ rest)."""
 import collections
 from fractions import Fraction
 
-from chain import contract, families, verdicts
+from chain import conform, contract, families, verdicts
 from chain import cells as cellmod
 from chain.report import NA, num, ordered, table
 
@@ -121,10 +121,12 @@ def families_section(sc):
         out += [f"{uncertified} row(s) read after runs off the contract their kinds come from, such as runs that ask "
                 f"reachability (R) under chain/verdicts.py's b7c0435 rules, which have no R: those rules certify none "
                 f"of them (\"not certified\" below).", ""]
+    binding = conform.implementation_rows(sc["rows"])
     if any(r.get("rules") == contract.C1C2 for r in sc["rows"]):
         out += ["Under C1 + C2 (rules c1c2), a status is Go's, from the scenario's config: an implementation check "
                 "passes where every replicate does (plan Z0's showcase contract). A row tagged [vectorless] reads a "
                 "CVE without a usable CVSS v3 vector, its LC, LI and LAV at 9.", ""]
+        out += _binding(binding, conform.required(sc["rows"]))
     by_family, gated = collections.OrderedDict(), families.gates(sc["rows"])
     for r in sc["rows"]:
         by_family.setdefault(r["check"].family, []).append(r)
@@ -134,7 +136,7 @@ def families_section(sc):
             out += ["; ".join(f"{sid}: {text}" for sid, text in (sc.get("headings") or {}).items()) + ".", ""]
         out += table(["check", "arm", "kind", "model", "scenarios", "values", "medians", "verdict", "missing",
                       "sources (after)", "moves"], _check_rows(rows))
-        out += _gates(gated, family)
+        out += _gates(gated, family, binding)
         for (fam, model), counter in sorted(sc["moves"].items()):
             if fam == family and counter:
                 word = ("all Go's: the after's move here is Go's, not the model's reading"
@@ -148,17 +150,33 @@ def _share(x):
     return NA if x is None else num(x, 2)
 
 
-def _gates(gated, family):
+def _binding(binding, required):
+    """Plan Z0's every-replicate reading of the implementation checks, which binds: the counts, then each row failing,
+    inconclusive or missing."""
+    counts = collections.Counter(binding.values())
+    out = [f"Implementation checks (plan Z0, every replicate; binding): {counts['pass']} pass, {counts['fail']} fail, "
+           f"{counts['inconclusive']} inconclusive", ""]
+    out += [f"- {label} · {conform.name(item)} · {model}: {verdict}"
+            for (label, item, model), verdict in sorted(binding.items(), key=str) if verdict != "pass"]
+    out += [f"- {label} · {conform.name(item)} · {model}: missing"
+            for label, item, model in sorted(required - set(binding), key=str)]
+    return out + ([""] if out[2:] else [])
+
+
+def _gates(gated, family, binding=None):
     """read5's eligibility rule on the family's items (families.gates): where the before passes in fewer than
-    FAMILY_ROBUST of its replicates, the item is not gated."""
+    FAMILY_ROBUST of its replicates, the item is not gated. Beside an implementation check's, the every-replicate
+    reading that binds."""
     found = [(k, v) for k, v in gated.items() if k[0] == family]
     if not found:
         return []
     out = [f"read5's rule (an item gates where the before passes in at least {families.FAMILY_ROBUST} of its "
            f"replicates):", ""]
-    out += [f"- {label} · {' / '.join(item) if isinstance(item, tuple) else item} · {model}: the before passes "
-            f"{_share(pb)}, the after fails {_share(fa)}: {verdict}." for (_, label, item, model), (pb, fa, verdict)
-            in found]
+    for (_, label, item, model), (pb, fa, verdict) in found:
+        bound = (binding or {}).get((label, item, model))
+        out.append(f"- {label} · {conform.name(item)} · {model}: the before passes {_share(pb)}, the after fails "
+                   f"{_share(fa)}: {verdict}" + ("." if bound is None else f"; read5's eligibility, printed beside; "
+                                                 f"the every-replicate reading binds: {bound}."))
     return out + [""]
 
 
@@ -222,13 +240,34 @@ def null_table(sc):
 
 
 def c2_reads(data):
-    """What C2 reads of the reports scored, printed first, the demo scan and the scenarios apart."""
+    """What C2 reads of the reports scored, printed first, the demo scan and the scenarios apart; then, under C1 + C2
+    pinned, every after run recomputed (chain/conform.py)."""
     found = data.get("c2") or {}
-    if not found:
-        return []
-    return ["## What C2 reads of the reports", "", "The CVSS v3 vectors C2 gives Loss of confidentiality, integrity "
-            "and availability from (310-c1c2), read by chain/contract.py whatever the after's commit.", ""] + \
+    out = [] if not found else ["## What C2 reads of the reports", "", "The CVSS v3 vectors C2 gives Loss of "
+                                "confidentiality, integrity and availability from (310-c1c2), read by "
+                                "chain/contract.py whatever the after's commit.", ""] + \
         [f"- {contract.counts_line(name, c)}." for name, c in found.items()] + [""]
+    return out + _recomputed(data)
+
+
+def _recomputed(data):
+    read = data.get("implementation")
+    if read is None:
+        return []
+    w = data.get("witnesses")
+    out = ["## C1 + C2 recomputed on every after run", "",
+           f"The after's contract pinned: {data.get('rules')}. Each CVE of each complete after run against its frozen "
+           "inputs and its own answers: the VEX status its config's reachability entries and the executable witnesses "
+           f"publish, the declared block's entries and the 16 levels. Executable witnesses: "
+           + (f"{len(w['entries'])} from `{w['name']}` (sha256 {w['sha256']})" if w else "none given") + ". On the "
+           "demo scan no CVE may hold a VEX status or a declared block: its contexts declare no reachability.", ""]
+    for k, c in sorted(read.items(), key=lambda kc: cellmod.label(kc[0])):
+        demo_line = "" if k.corpus == cellmod.SCENARIOS else f"; {len(c['statuses'])} CVE(s) holding a status"
+        out.append(f"- {cellmod.label(k)}: {c['runs']} run(s), {c['cves']} CVE(s), {len(c['problems'])} off their "
+                   f"recomputation{demo_line}" + (f"; not recomputed: {c['unread']}" if c["unread"] else "") + ".")
+    gate = data.get("gate") or []
+    out += ["", f"C1 + C2's implementation gate: {'pass' if not gate else f'{len(gate)} failure(s), no go'}.", ""]
+    return out + [f"- {g}" for g in gate] + ([""] if gate else [])
 
 
 def scenarios(data):

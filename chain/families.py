@@ -22,8 +22,9 @@ its vector, with no source: its moves are not attributed. "answer R" reads the r
 before 19b333a gives. A row read on a run that asks reachability is marked certified False: the checks' kinds come
 from chain/verdicts.py's b7c0435 rules, which certify none of it.
 
-A model whose after runs follow C1 + C2 (310-c1c2 2de5d34) is read on CHECKS_C1C2, each row marked rules c1c2 and
-certified where every after run it reads follows C1 + C2; Go's moves then include source cvss. "status" reads the VEX
+With the after's contract pinned to C1 + C2 (310-c1c2 2de5d34; ctx_analyze --rules c1c2), every model is read on
+CHECKS_C1C2, each row marked rules c1c2 and certified where every after run it reads follows C1 + C2; Go's moves then
+include source cvss. "status" reads the VEX
 status of the run's CVE, () for none, which an implementation check compares with the one the scenario's config
 declares (chain.contract.status); "rating" whether the published levels are those C1 + C2's rules give the run's
 answers, which no reachability input reaches. every_replicate() reads plan Z0's showcase contract on a row, every
@@ -279,8 +280,9 @@ def single(check, arm, sid, model, runs, scen):
 
 
 def run_rules(rec):
-    """The contract an after run's answers.json follows, as chain.answers.rules_of tells it on the record: 5f797bf's
-    (reachability asked), C1 + C2's (a declared block or a level from source cvss), b7c0435's; None without one."""
+    """The contract an after run's answers.json shows, read off the record to certify a row against the pinned one,
+    never to choose the checks: 5f797bf's (reachability asked), C1 + C2's (a declared block or a level from source
+    cvss), b7c0435's; None without one."""
     per = (rec.get("answers") or {}).get("per_cve")
     if not per:
         return None
@@ -290,14 +292,6 @@ def run_rules(rec):
                                                 for x in e["factors"].values()) for e in per.values()):
         return contract.C1C2
     return contract.B7C0435
-
-
-def model_rules(runs, model):
-    """The rules a model's rows are read under: C1 + C2's when one of its after runs follows them, b7c0435's
-    otherwise (a run asking reachability read there, not certified)."""
-    found = {run_rules(x) for (m, _, arm), r in runs.items() if m == model and arm == "after"
-             for x in r["runs"].values()}
-    return contract.C1C2 if contract.C1C2 in found else contract.B7C0435
 
 
 def _sids(item):
@@ -316,26 +310,23 @@ def _vectorless(item, scen):
     return any("impact" in (scen.get(sid) or {}) and scen[sid]["impact"].usable == 0 for sid in _sids(item))
 
 
-def evaluate(cells, scen, checks=None):
+def evaluate(cells, scen, checks=None, rules=contract.B7C0435):
     """[{check, arm, kind, model, row, rules, certified, vectorless}] for every check, arm it reads, model with runs,
-    and pair or scenario: a model's checks are its rules' (verdicts.checks_for), or checks for all; certified False
-    where an after run it reads follows another contract (a run asking reachability among them)."""
+    and pair or scenario. The checks are the pinned after contract's (rules, preregistered, never read off the runs;
+    verdicts.checks_for), or checks; certified False where an after run a row reads follows another contract, a run
+    asking reachability under b7c0435's among them."""
     runs = scenario_runs(cells)
     models = sorted({m for m, _, _ in runs})
-    rules = {m: model_rules(runs, m) for m in models}
     out = []
-    for c in (checks or verdicts.ALL_CHECKS):
+    for c in (checks or verdicts.checks_for(rules)):
         for arm, kind in c.kinds:
             for model in models:
-                if checks is None and c not in verdicts.checks_for(rules[model]):
-                    continue
                 for item in c.scenarios:
                     row = pair(c, arm, *item, model, runs, scen) if c.pairs() else \
                         single(c, arm, item, model, runs, scen)
                     if row is not None:
                         out.append({"check": c, "arm": arm, "kind": kind, "model": model, "row": row,
-                                    "rules": rules[model],
-                                    "certified": _certified(runs, model, item, arm, rules[model]),
+                                    "rules": rules, "certified": _certified(runs, model, item, arm, rules),
                                     "vectorless": _vectorless(item, scen)})
     return out
 

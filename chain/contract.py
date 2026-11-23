@@ -30,6 +30,7 @@ these against the mock of a binary built at 2de5d34 and against its Go counts on
 """
 import collections
 import json
+import os
 
 from chain.cdx import FACTORS
 
@@ -273,6 +274,10 @@ def question_of(human_prompt):
 # ---- C1 + C2, vens 310-c1c2 2de5d34 ----
 
 B7C0435, REACH_RULES, C1C2 = "b7c0435", "5f797bf", "c1c2"
+# The contract each pinned after commit follows; any other commit pins none.
+CONTRACTS = {"b7c0435835447027b04d54d4e6befaaee6b0626b": B7C0435,
+             "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES,
+             "2de5d341befb05fb96a648c2bea29132e175a5ce": C1C2}
 C1C2_QUESTIONS = ("M", "O", "EE", "ID", "LAC", "FD", "RD", "NC", "PV")
 CVSS_SOURCE, FLOOR_SOURCE, ADJUSTMENT_SOURCE = "cvss", "floor", "adjustment"
 VECTOR_MISSING = "cvss_v3_missing"
@@ -502,9 +507,24 @@ def declarations(config):
     return out
 
 
+def _go_orbits():
+    """{rune: its unicode.SimpleFold orbit's index}, from chain/gofold.txt, which go/gofold.go writes from the Go
+    toolchain vens 2de5d34 builds with."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gofold.txt")
+    out = {}
+    with open(path, encoding="ascii") as fh:
+        for n, line in enumerate(ln for ln in fh if not ln.startswith("#")):
+            out.update((chr(int(x, 16)), n) for x in line.split())
+    return out
+
+
+GO_ORBITS = _go_orbits()
+
+
 def fold_equal(a, b):
-    """strings.EqualFold: rune by rune, under simple case folding."""
-    return len(a) == len(b) and all(x == y or x.lower() == y.lower() or x.upper() == y.upper() for x, y in zip(a, b))
+    """strings.EqualFold: rune by rune, two runes equal when one is the other or both lie on one orbit of Go's
+    unicode.SimpleFold ("I" and "ı" do not)."""
+    return len(a) == len(b) and all(x == y or GO_ORBITS.get(x, x) == GO_ORBITS.get(y, y) for x, y in zip(a, b))
 
 
 def hits(entry, vuln_id, packages):
@@ -550,6 +570,36 @@ def status(entries, vuln_id, packages, witnesses=()):
         return None
     return {"state": NOT_AFFECTED, "justification": CODE_NOT_REACHABLE,
             "detail": "\n".join(cite(entries, i) for i in d["unreachable"])}
+
+
+def witnesses(doc):
+    """The executable witnesses a frozen JSON list gives, each {where, cve | component}: the scenario id or demo context
+    it was run in and one selector, asserting reachability there; ValueError for any other shape. None by default."""
+    if not isinstance(doc, list):
+        raise ValueError("the witnesses are a JSON list")
+    out = []
+    for i, w in enumerate(doc):
+        selectors = [k for k in ("cve", "component") if k in (w if isinstance(w, dict) else {})]
+        if not isinstance(w, dict) or set(w) - {"where", "cve", "component"} or len(selectors) != 1 or not all(
+                isinstance(w.get(k), str) and go_trim(w[k]) for k in ("where", selectors[0])):
+            raise ValueError(f"witness {i}: a where and one selector, cve or component, each a string")
+        out.append({"where": w["where"], selectors[0]: go_trim(w[selectors[0]])})
+    return out
+
+
+def witnessed(found, where):
+    """The witnesses run where, a scenario id or a demo context."""
+    return [w for w in found if w["where"] == where]
+
+
+def packages(findings):
+    """The package name of each row of a CVE, '' for a row without one."""
+    return [f.get("PkgName") or "" for f in findings]
+
+
+def described(findings):
+    """Whether a row of the CVE has a description."""
+    return any((f.get("Description") or "").strip() for f in findings)
 
 
 def entry_hits(entries, cves):

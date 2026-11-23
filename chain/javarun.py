@@ -23,7 +23,7 @@ import subprocess
 import sys
 
 from chain import answers as answersmod
-from chain import cdx, javacheck, runvens
+from chain import cdx, contract, javacheck, runvens
 
 DEMO_SCAN = os.path.join("runs", "2026-09-23", "scan", "scan.json")
 CONTEXTS = ("internet-facing", "internal", "internal-api")
@@ -87,8 +87,9 @@ def own_commit():
     return head.stdout.strip() + ("+dirty" if dirty.stdout.strip() else "")
 
 
-def answers_check(folders, out):
-    """answers.json against each after VEX: (runs with answers.json, CVEs checked, problems)."""
+def answers_check(folders, out, commit=None):
+    """answers.json against each after VEX and the contract commit pins: (runs with answers.json, CVEs checked,
+    problems)."""
     present, checked, problems = 0, 0, []
     for folder in folders:
         found = glob.glob(os.path.join(folder, "calls", "run-*", "answers.json"))
@@ -100,7 +101,7 @@ def answers_check(folders, out):
         checked += len(ratings)
         doc = answersmod.load(found[0])
         problems += (answersmod.duplicates(doc) + answersmod.check(doc, ratings) + answersmod.reachability(doc)
-                     + answersmod.c1c2(doc))
+                     + answersmod.validate(doc, contract.CONTRACTS.get(commit)))
     return present, checked, problems
 
 
@@ -185,7 +186,7 @@ def main(argv=None):
     (after_row,) = cdx.vex_rows(vex(scen[0][0]))
     cases = javacheck.run_cases(jdk, a.jar, classes, stub, javacheck.failure_cases(after_row, before_row), expect)
     after_folders = [f for f, _ in scen] + [f for _, f, _ in demo] + [f for _, f, _ in quick]
-    present, checked, problems = answers_check(after_folders, a.out)
+    present, checked, problems = answers_check(after_folders, a.out, a.commit)
     expect("answers.json against the VEX: problems", problems, [])
 
     binaries = {"after": {"commit": a.commit, "binary_sha256": runvens.sha256(a.vens)}}

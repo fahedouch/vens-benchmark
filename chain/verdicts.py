@@ -12,7 +12,7 @@ equal, the idealisation the check rests on: a model that samples can answer it d
 the contrast. The before (vens main) asks one call per CVE for four aggregates of 0 to 9, each copied into its group's
 four levels: two scenarios whose prompts differ can get any two sets, otherwise the same one.
 
-    python3 -m chain.verdicts --after BIN --before BIN --work DIR [--scenarios DIR]
+    python3 -m chain.verdicts --after BIN --before BIN --work DIR [--rules RULES] [--witnesses FILE] [--scenarios DIR]
 
 prints each contrast and check and exits 1 when a check labelled carried or new has one outcome only.
 
@@ -24,11 +24,12 @@ C1 + C2 (310-c1c2 2de5d34) take --rules c1c2 and CHECKS_C1C2: chain.contract's c
 checks on Loss of confidentiality, integrity and availability, which C2 gives Go, and plan Z0's replaced showcase
 contract. showcase_high_to_low publishes, in every replicate, the status its config's reachability entry declares,
 its detail citing the entry, and is rated as its answers give with no reachability input; showcase_med_to_high and the
-three reach*_yes publish no not_affected; low is no longer expected. Each reachability item reads the two statuses: the
-unreachable scenario's declared, the reachable one's no not_affected. The score, O and EE gaps the notes alone may
-still open are printed as diagnostics. A status is Go's, from the config: such a check is labelled implementation and
-must be pass only on the corpus as written; the before reads it too, a diagnostic, so that a reader keeping read5's
-eligibility rule finds the before's outcome (main publishes no status: the reachability items print not gated).
+three reach*_yes publish no not_affected; low is no longer expected, and showcase_med_to_high's high or critical is a
+diagnostic. Each reachability item reads the two statuses: the unreachable scenario's declared, the reachable one's no
+not_affected. The score, O and EE gaps the notes alone may still open are printed as diagnostics. A status is Go's,
+from the config and the executable witnesses given (--witnesses): such a check is labelled implementation and must be
+pass only on the corpus as written; the before reads it too, a diagnostic, so that read5's eligibility rule, printed
+beside, finds the before's outcome (main publishes no status: the reachability items print not gated).
 """
 import argparse
 import functools
@@ -193,8 +194,8 @@ C2_FACTORS = ("LC", "LI", "LAV")
 
 def _c1c2_checks():
     """CHECKS under C1 + C2: a check reading Loss of confidentiality, integrity or availability, or the model's answer
-    to one, dropped; showcase_high_to_low's low replaced by its status and its rating, showcase_med_to_high's status
-    added, and the reachability items replaced by REACH_C1C2."""
+    to one, dropped; showcase_high_to_low's low replaced by its status and its rating, showcase_med_to_high's high or
+    critical made a diagnostic beside its status, and the reachability items replaced by REACH_C1C2."""
     out = []
     for c in CHECKS:
         if c.quantity in C2_FACTORS or c.quantity in tuple(f"answer {f}" for f in C2_FACTORS):
@@ -205,16 +206,17 @@ def _c1c2_checks():
         if c.scenarios == ("showcase_high_to_low",) and c.quantity == "severity":
             out += list(SHOWCASE_STATUS)
             continue
-        out.append(c)
         if c.scenarios == ("showcase_med_to_high",):
-            out.append(Check("showcases", "showcase_med_to_high publishes no not_affected", STATUS_KINDS,
-                             ("showcase_med_to_high",), "status", "none"))
+            # Z0's replaced contract binds the status alone: high or critical is printed, judged by nothing.
+            out += [Check(c.family, c.label, BOTH(DIAGNOSTIC), c.scenarios, c.quantity, c.test, c.target),
+                    Check("showcases", "showcase_med_to_high publishes no not_affected", STATUS_KINDS,
+                          ("showcase_med_to_high",), "status", "none")]
+            continue
+        out.append(c)
     return tuple(out)
 
 
 CHECKS_C1C2 = _c1c2_checks()
-# Every check either contract reads, CHECKS' order first.
-ALL_CHECKS = CHECKS + tuple(c for c in CHECKS_C1C2 if c not in CHECKS)
 
 
 def checks_for(rules):
@@ -506,10 +508,12 @@ def showcase_by_detection(scen):
 
 # ---- the corpus and the runs ----
 
-def load(scenarios, rules=contract.B7C0435):
-    """{id: scenario}: its config, deployment, floored axes (b7c0435), what its CVE's usable v3 vectors give the
-    technical impacts (C2), the VEX status its reachability entries publish (C1; () for none), its finding, whether
-    its CVE has a description, the null model's aggregates, and the rules the static checks read it under."""
+def load(scenarios, rules=contract.B7C0435, witnesses=()):
+    """{id: scenario}: its config, deployment, its one CVE's id, findings and package names, the axes its vectors
+    floor (b7c0435) and what its usable v3 vectors give the technical impacts (C2), all occurrences together, the VEX
+    status its reachability entries publish (C1; () for none) once the executable witnesses given for it veto
+    (contract.witnesses()), whether a finding describes the CVE, the null model's aggregates, and the rules the static
+    checks read it under. ValueError for a report that does not hold exactly one CVE."""
     import baseline  # the frozen null model, at the repository's root
 
     out = {}
@@ -521,13 +525,17 @@ def load(scenarios, rules=contract.B7C0435):
             config = yaml.safe_load(fh)
         with open(os.path.join(d, "report.json"), encoding="utf-8") as fh:
             rep = json.load(fh)
-        f = contract.finding(os.path.join(d, "report.json"))
-        declared = contract.status(contract.declarations(config), f["VulnerabilityID"], [f.get("PkgName") or ""])
-        out[sid] = {"id": sid, "config": config, "dep": contract.deployment(config),
-                    "floors": contract.floors(contract.vectors(f)), "impact": contract.cve_impact([f]),
-                    "status": status_tuple(declared), "finding": f,
-                    "described": bool((f.get("Description") or "").strip()),
-                    "null": baseline.score(config, rep), "rules": rules}
+        cves = contract.report_cves(os.path.join(d, "report.json"))
+        if len(cves) != 1:
+            raise ValueError(f"{sid}: {len(cves)} CVEs in its report, a scenario holds one")
+        ((vid, findings),) = cves.items()
+        packages = contract.packages(findings)
+        vectors = list(dict.fromkeys(v for f in findings for v in contract.vectors(f)))
+        declared = contract.status(contract.declarations(config), vid, packages, contract.witnessed(witnesses, sid))
+        out[sid] = {"id": sid, "config": config, "dep": contract.deployment(config), "vuln_id": vid,
+                    "findings": findings, "packages": packages, "floors": contract.floors(vectors),
+                    "impact": contract.cve_impact(findings), "status": status_tuple(declared),
+                    "described": contract.described(findings), "null": baseline.score(config, rep), "rules": rules}
     return out
 
 
@@ -647,8 +655,7 @@ def report(scen, reach, differs, checks=CHECKS):
     for sid, sc in scen.items():
         entries = contract.declarations(sc["config"]) if "config" in sc else []
         if entries:
-            f = sc["finding"]
-            hit = contract.entry_hits(entries, {f["VulnerabilityID"]: [f.get("PkgName") or ""]})
+            hit = contract.entry_hits(entries, {sc["vuln_id"]: sc["packages"]})
             lines.append(f"  {sid}: " + "; ".join(f"reachability[{i}] ({contract.selector(e)}) {n}"
                                                   for i, (e, n) in enumerate(zip(entries, hit))))
     lines.append("each scenario's levels in the after by source:")
@@ -675,10 +682,15 @@ def main(argv=None):
     ap.add_argument("--before", required=True, help="vens built from main")
     ap.add_argument("--rules", choices=(contract.B7C0435, contract.C1C2), default=contract.B7C0435,
                     help="the after's contract")
+    ap.add_argument("--witnesses", help="the executable witnesses, a frozen JSON list (contract.witnesses)")
     ap.add_argument("--scenarios", default="scenarios")
     ap.add_argument("--work", required=True, help="an empty folder for the mock runs")
     a = ap.parse_args(argv)
-    scen, checks = load(a.scenarios, a.rules), checks_for(a.rules)
+    witnesses = []
+    if a.witnesses:
+        with open(a.witnesses, encoding="utf-8") as fh:
+            witnesses = contract.witnesses(json.load(fh))
+    scen, checks = load(a.scenarios, a.rules, witnesses), checks_for(a.rules)
     ids = needed(checks)
     reach, differs = contrasts(run_mock(a.after, a.scenarios, ids, a.work, "after"),
                                run_mock(a.before, a.scenarios, ids, a.work, "before"), checks)

@@ -36,7 +36,7 @@ import re
 from chain import answers as answersmod
 from chain import dispatch
 from chain import calls as callmod
-from chain import cdx, cost, recovery, venslog
+from chain import cdx, contract, cost, recovery, venslog
 from chain.errors import Refused, load_object
 
 COMPLETE, FAILED = "complete", "failed"
@@ -417,6 +417,11 @@ def check_commits(folder, rj, prov, arm, commits):
             raise Refused(f"{folder}: {src} gives vens {sha}, not the {arm}'s {commits[arm]}")
 
 
+def pinned_contract(what):
+    """The contract the after's vens commit pins (contract.CONTRACTS), None for the before or another commit."""
+    return contract.CONTRACTS.get(what.get("vens_commit")) if what.get("arm") == "after" else None
+
+
 def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, meta=None, commits=None):
     """The record of one attempt. arm: 'before' or 'after' when the caller knows it (the dispatch log's line gives
     it otherwise); line: the dispatch log's line for this attempt; job: its jobs.json entry; failure_line: the
@@ -427,12 +432,12 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
     rated once (vex_problems empty), whose archive check passes restated from its calls and attestation, whose record
     is not incomplete (the after with its answers.json), and whose answers.json, for the after, matches its VEX, the
     VEX status included, with no CVE listed twice and follows its contract: from 19b333a to 5f797bf the reachability
-    rule, from 310-c1c2 C1 + C2's (answers' problems empty). The other problems
-    are reported beside the scores and leave them usable: logs, summaries, counters or defects that disagree, calls
-    out of vens's order, a missing summary. A VEX, an attestation or an answers.json that does not read is a problem
-    of the attempt, its content unknown. Arms that disagree, commits that disagree and a record or provenance.json
-    that does not read are refused. excluded says why an attempt that read is not its replicate's, a stray run of an
-    abandoned dispatch: its calls and cost are still the campaign's."""
+    rule, from 310-c1c2 C1 + C2's, and always the one its vens commit pins (answers.validate; answers' problems
+    empty). The other problems are reported beside the scores and leave them usable: logs, summaries, counters or
+    defects that disagree, calls out of vens's order, a missing summary. A VEX, an attestation or an answers.json
+    that does not read is a problem of the attempt, its content unknown. Arms that disagree, commits that disagree
+    and a record or provenance.json that does not read are refused. excluded says why an attempt that read is not its
+    replicate's, a stray run of an abandoned dispatch: its calls and cost are still the campaign's."""
     files = _files(folder)
     rj = _record(files["record"])
     prov = load_object(files["provenance"]) if files["provenance"] else None
@@ -498,7 +503,7 @@ def read_attempt(folder, *, arm=None, line=None, job=None, failure_line=None, me
         rated, unrated = answersmod.entries(doc)
         found = (answersmod.duplicates(doc) + answersmod.unrated_shape(doc)
                  + (answersmod.check(doc, ratings) if ratings is not None else []) + answersmod.reachability(doc)
-                 + answersmod.c1c2(doc))
+                 + answersmod.validate(doc, pinned_contract(what)))
         answers = {"rated": len(rated), "unrated": len(unrated), "counters": doc["counters"],
                    "defects": doc["defects"], "problems": found,
                    "per_cve": {vid: answersmod.per_cve(e) for vid, e in {**rated, **unrated}.items()}}

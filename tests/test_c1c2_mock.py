@@ -25,7 +25,7 @@ import yaml
 
 import ctx_analyze
 import ctx_runner
-from chain import attempt, calls, cdx, contract, families, read, runvens, verdicts
+from chain import attempt, calls, cdx, conform, contract, families, read, runvens, verdicts
 from chain import cells as cellmod
 from tests import support as s
 
@@ -129,6 +129,24 @@ class TestTheDemoScan(unittest.TestCase):
                 self.assertEqual((len(floors), len(vectorless)), (28, 10), ctx)
                 got = attempt.read_attempt(folder)
                 self.assertEqual((got["scores_usable"], got["problems"], got["answers"]["problems"]), (True, [], []))
+                self.check_recomputed(got, ctx)
+
+    def check_recomputed(self, rec, ctx):
+        """chain/conform.py on the run laid out as baseline.yml's: every CVE as recomputed, no status; one status
+        added, a failure."""
+        what = {**rec["what"], "runner": "baseline.yml", "context": ctx, "corpus": DEMO_SCAN, "replicate": 1,
+                "config": os.path.join("contexts", f"{ctx}.yaml"), "vens_commit": s.C1C2_SHA}
+        demo_rec = {**rec, "what": what}
+        got = conform.read(cellmod.group([demo_rec]), None, self.demo)
+        self.assertEqual([(c["cves"], c["problems"], c["statuses"], c["unread"]) for c in got.values()],
+                         [(74, [], [], None)], ctx)
+        vid = sorted(rec["ratings"])[0]
+        status = {"state": "not_affected", "justification": "code_not_reachable", "detail": "x"}
+        tampered = {**demo_rec, "ratings": {**rec["ratings"], vid: {**rec["ratings"][vid], "analysis": status}}}
+        fails = conform.failures([], conform.read(cellmod.group([tampered]), None, self.demo))
+        self.assertEqual([f.split(": ", 1)[1] for f in fails],
+                         [f"r1 {vid}: VEX status not_affected, the config declares none",
+                          f"r1 {vid} holds a VEX status or a declared block on the demo scan"], ctx)
 
 
 class TestTheScenariosOnTheMock(unittest.TestCase):
@@ -293,12 +311,17 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
             code = ctx_runner.main(argv, environ={"PATH": os.environ.get("PATH", ""), "HOME": cls.tmp.name})
         if code != 0:
             raise AssertionError(f"the runner exited {code}")
+        cls.code, cls.text, cls.err = cls.analyze("--rules", "c1c2")
+        cls.records = list(read.read_any(cls.camp))
+        cls.rows = families.evaluate(cellmod.group(cls.records), verdicts.load(os.path.join(cls.camp, "scenarios")),
+                                     rules=contract.C1C2)
+
+    @classmethod
+    def analyze(cls, *argv):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            cls.code = ctx_analyze.main([cls.camp])
-        cls.text, cls.err = out.getvalue(), err.getvalue()
-        cls.records = list(read.read_any(cls.camp))
-        cls.rows = families.evaluate(cellmod.group(cls.records), verdicts.load(os.path.join(cls.camp, "scenarios")))
+            code = ctx_analyze.main([*argv, cls.camp])
+        return code, out.getvalue(), err.getvalue()
 
     @classmethod
     def tearDownClass(cls):
@@ -308,8 +331,35 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
         (x,) = [r for r in self.rows if (r["check"].label, r["arm"], r["row"]["item"]) == (label, arm, item)]
         return x
 
+    def test_the_pinned_contract(self):
+        code, text, err = self.analyze("--commit", f"after={s.C1C2_SHA}")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("The after's contract pinned: c1c2.", text)
+        # unpinned, b7c0435's checks: every after row not certified, no gate
+        code, text, err = self.analyze()
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("not certified, a run off b7c0435's contract", text)
+        self.assertNotIn("C1 + C2 recomputed on every after run", text)
+        code, _, err = self.analyze("--rules", "c1c2", "--commit", f"after={s.AFTER_SHA}")
+        self.assertEqual(code, 1)
+        self.assertIn("--rules c1c2, but --commit after= pins b7c0435", err)
+
+    def test_a_witness_stops_a_go(self):
+        path = s.write(os.path.join(self.tmp.name, "witnesses.json"), [{"where": "reach_no", "cve": "CVE-2099-0001"}])
+        code, text, err = self.analyze("--rules", "c1c2", "--witnesses", path)
+        self.assertEqual(code, 1)
+        self.assertIn("C1 + C2's implementation gate: 3 failure(s), no go", err)
+        self.assertIn(f"{verdicts.REACH_STATUS} · reach_no / reach_yes · c1c2 · mock/mock: fail", err)
+        self.assertEqual(err.count("CVE-2099-0001: VEX status not_affected, the config declares none"), 2)
+        self.assertIn(f"Executable witnesses: 1 from `witnesses.json` (sha256 {runvens.sha256(path)})", text)
+        self.assertIn("Implementation checks (plan Z0, every replicate; binding): 5 pass, 1 fail, 0 inconclusive", text)
+
     def test_the_report(self):
         self.assertEqual((self.code, self.err), (0, ""))
+        self.assertIn("C1 + C2's implementation gate: pass.", self.text)
+        self.assertIn("Implementation checks (plan Z0, every replicate; binding): 6 pass, 0 fail, 0 inconclusive",
+                      self.text)
+        self.assertEqual(self.text.count(" 2 run(s), 2 CVE(s), 0 off their recomputation."), 8)
         first = self.text.split("\n## ")[1]
         self.assertTrue(first.startswith("What C2 reads of the reports"), first[:80])
         self.assertIn(f"- {contract.counts_line('scenarios', SCENARIO_COUNTS)}.", first)
@@ -319,7 +369,8 @@ class TestTheCampaignOnTheMock(unittest.TestCase):
         self.assertIn("every replicate: pass (pass 2 of 2)", self.text)
         self.assertNotIn("every replicate: fail", self.text)
         self.assertIn(f"- {verdicts.REACH_STATUS} · reach_no / reach_yes · c1c2 · mock/mock: the before passes "
-                      f"0.00, the after fails 0.00: not gated.", self.text)
+                      f"0.00, the after fails 0.00: not gated; read5's eligibility, printed beside; the "
+                      f"every-replicate reading binds: pass.", self.text)
 
     def test_the_rows(self):
         self.assertEqual({r["rules"] for r in self.rows}, {contract.C1C2})

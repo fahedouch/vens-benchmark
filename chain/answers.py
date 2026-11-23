@@ -13,8 +13,9 @@ source cvss and the worst value, H, L or N, the CVE's usable CVSS v3 vectors giv
 usable vector, and no answer or reading; a Privacy violation they floor carries source floor and `cvss` N. A rated CVE
 some config reachability entry hits holds `declared`: the entries' indexes, those asserting unreachability, those
 asserting reachability and those of the second without a provenance (unresolved), and the VEX status they publish,
-`analysis`, absent when an entry asserting reachability vetoes it. rules_of() tells the three contracts apart from the
-document; c1c2() checks C1 + C2's on one.
+`analysis`, absent when an entry asserting reachability vetoes it. marks() lists the contracts a document's entries
+show; validate() checks them against the contract the run's vens commit pins, which they never choose, and c1c2()
+checks C1 + C2's on every entry.
 """
 import collections
 
@@ -156,14 +157,26 @@ def reachability(doc):
     return problems
 
 
+def marks(doc):
+    """The contracts a document's entries show: 5f797bf's (19b333a on) where one holds reachability, C1 + C2's where
+    one holds a declared block or a level from source cvss, b7c0435's where a rated entry has a technical impact from
+    another source and no reachability. A document of unrated entries alone shows none."""
+    vulns, out = doc["vulnerabilities"], set()
+    for e in vulns:
+        sources = {f.get("source") for f in e["factors"] if f.get("factor") in contract.AXIS}
+        if e.get("reachability") is not None:
+            out.add(contract.REACH_RULES)
+        if e.get("declared") is not None or contract.CVSS_SOURCE in sources:
+            out.add(contract.C1C2)
+        if not e.get("unrated") and e.get("reachability") is None and sources - {contract.CVSS_SOURCE}:
+            out.add(contract.B7C0435)
+    return out
+
+
 def rules_of(doc):
-    """Which contract a document's entries follow: 5f797bf's (19b333a on) when one holds reachability, C1 + C2's when
-    one holds a declared block or a level from source cvss, b7c0435's otherwise; None when both marks are there."""
-    vulns = doc["vulnerabilities"]
-    reach = any(e.get("reachability") is not None for e in vulns)
-    c2 = any(e.get("declared") is not None or any(f.get("source") == contract.CVSS_SOURCE for f in e["factors"])
-             for e in vulns)
-    return None if reach and c2 else contract.REACH_RULES if reach else contract.C1C2 if c2 else contract.B7C0435
+    """The one contract a document shows, b7c0435's when it shows none; None when it shows two."""
+    found = marks(doc)
+    return None if len(found) > 1 else found.pop() if found else contract.B7C0435
 
 
 def _ints(x):
@@ -186,15 +199,24 @@ def _declared_problems(vid, d):
     if (a is not None) != (bool(unreachable) and not reachable):
         return problems + [f"{vid}: a declared status {'published' if a is not None else 'missing'}, the entries hit "
                            f"{unreachable} unreachable, {reachable} reachable"]
-    if a is not None:
-        detail = a.get("detail") if isinstance(a, dict) else None
-        lines = detail.split("\n") if isinstance(detail, str) else []
-        cited = all(line.startswith(f"Declared not reachable by config.yaml reachability[{i}] (") and
-                    ". Provenance: " in line for i, line in zip(unreachable, lines))
-        if not isinstance(a, dict) or len(lines) != len(unreachable) or not cited or \
-                (a.get("state"), a.get("justification")) != (contract.NOT_AFFECTED, contract.CODE_NOT_REACHABLE):
-            problems.append(f"{vid}: a declared status that is not not_affected, code_not_reachable, citing each entry")
+    if a is not None and (not isinstance(a, dict) or not _cites(a.get("detail"), unreachable) or (
+            a.get("state"), a.get("justification")) != (contract.NOT_AFFECTED, contract.CODE_NOT_REACHABLE)):
+        problems.append(f"{vid}: a declared status that is not not_affected, code_not_reachable, citing each entry")
     return problems
+
+
+def _cites(detail, unreachable):
+    """Whether a detail opens on the first entry's citation and cites each next one after a line break, in order; a
+    provenance may hold line breaks of its own, so lines are not counted."""
+    prefix = lambda i: f"Declared not reachable by config.yaml reachability[{i}] ("
+    if not isinstance(detail, str) or not unreachable or not detail.startswith(prefix(unreachable[0])):
+        return False
+    at = 0
+    for i in unreachable[1:]:
+        at = detail.find("\n" + prefix(i), at + 1)
+        if at < 0:
+            return False
+    return True
 
 
 def _c2_levels(f, value):
@@ -233,18 +255,25 @@ def _impact_problems(vid, factors, counters):
     return problems
 
 
+def validate(doc, pinned):
+    """The problems of a document against its arm's pinned contract (contract.CONTRACTS of its vens commit; None when
+    the commit pins none): its entries showing two contracts, or one other than the pinned; under C1 + C2 pinned,
+    c1c2()'s on every entry whatever it shows. Without a pinned contract, c1c2() where the document shows C1 + C2."""
+    found = marks(doc)
+    if len(found) > 1:
+        return [f"answers.json mixes contracts: {', '.join(sorted(found))}"]
+    if pinned is not None and found - {pinned}:
+        return [f"answers.json follows {found.pop()}, not the pinned {pinned}"]
+    return c1c2(doc) if contract.C1C2 in found | {pinned} else []
+
+
 def c1c2(doc):
-    """The problems of a document against C1 + C2 (310-c1c2 2de5d34), none when it follows another contract: no
-    reachability record, the three technical impacts and Privacy violation's floor as _impact_problems says on every
-    rated entry, every declared block as _declared_problems says, an unrated entry answering no technical impact and
-    holding no declared block. A document with both contracts' marks is one problem."""
-    rules = rules_of(doc)
-    if rules is None:
-        return ["answers.json holds reachability records beside C1 + C2's marks"]
-    if rules != contract.C1C2:
-        return []
+    """The problems of a document's entries against C1 + C2 (310-c1c2 2de5d34): no reachability record, the three
+    technical impacts and Privacy violation's floor as _impact_problems says on every rated entry, every declared
+    block as _declared_problems says, an unrated entry answering no technical impact and holding no declared block."""
     rated, unrated = entries(doc)
-    problems = []
+    problems = [f"{vid}: a reachability record under C1 + C2" for vid, e in sorted({**rated, **unrated}.items())
+                if e.get("reachability") is not None]
     for vid, e in sorted(rated.items()):
         factors = {f["factor"]: f for f in e["factors"]}
         problems += _impact_problems(vid, factors, e.get("counters") or [])
