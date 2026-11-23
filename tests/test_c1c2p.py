@@ -400,6 +400,10 @@ class TestTheMarker(unittest.TestCase):
         self.assertEqual((len(mark), contract.CONTRACTS[mark]), (40, contract.C1C2P))
         self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": mark}), contract.C1C2P)
         self.assertEqual([contract.marker_commit(x) for x in (mark, contract.C2P_COMMIT, None)], [True, False, False])
+        # 7ce0211, the first marker commit, is still read as one
+        (first,) = contract.EARLIER_MARKERS
+        self.assertEqual((contract.marker_commit(first), contract.CONTRACTS[first]), (True, contract.C1C2P))
+        self.assertNotEqual(first, mark)
         # a run of any other commit, pinned or not, carrying the marker is refused
         for commit in (MARK, contract.C2P_COMMIT):
             self.assertEqual(self.problems(published("reach_yes", self.scen, commit=commit, provenance=[CVSS_V3]),

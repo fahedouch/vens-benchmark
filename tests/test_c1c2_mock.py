@@ -6,10 +6,11 @@ and N (VB_VENS_C1C2, contract.N_COMMIT) beside it, its pinned ancestors and cont
   (VB_VENS_MARKER_SRC). In its three contexts (availability_requirement critical, low, medium) and in internal's with
   the field high and unset, per CVE the levels, sources, CVSS values, Privacy violation's floors, cvss_v3_missing,
   availability_requirement_missing and the vens:impact-provenance marker the marker commit writes (VB_DEMO), every run
-  recomputed by chain/conform.py under c1c2p. The C2' commit's runs equal them but carry no marker: each passes under
-  its own commit and fails under the other's. N's runs equal them but on Loss of availability where C2''s table
-  differs from C2's and on the counter; they pass under c1c2, and fail under c1c2p where the record or the config
-  tells the two apart, as the marker commit's fail under c1c2;
+  recomputed by chain/conform.py under c1c2p, under the first marker commit 7ce0211 too. The C2' commit's runs equal
+  them but carry no marker and count no severity_contested_unavailable (46 CVEs per context at the marker commit):
+  each passes under its own commit and fails under the other's. N's runs equal them but on Loss of availability where
+  C2''s table differs from C2's and on the counters; they pass under c1c2, and fail under c1c2p where the record or
+  the config tells the two apart, as the marker commit's fail under c1c2;
 - every scenario on the marker commit: each call's question, every level, source, counter and marker, a system prompt
   byte for byte the C2' commit's, N's and b7c0435's (VB_VENS_AFTER), every level N's (step 5's corpus reads the
   primary column); no VEX status and no declared block, every run as conform recomputes it under c1c2p; a flagged
@@ -59,6 +60,9 @@ SCENARIO_COUNTS = {"cves": 46, "vectorless": 10, "rejected": 0, "disagree": 0, "
                    "pv_floor": 11}
 AR, VM = contract.AVAILABILITY_MISSING, contract.VECTOR_MISSING
 CVSS_V3, FALLBACK = contract.FROM_CVSS_V3, contract.FALLBACK
+# Counted on both scanners from the marker commit e3007ed on, on Trivy rows whose severity is not NVD's and that give
+# no NVD severity: 46 of the demo scan's 74 CVEs, none of the scenarios'.
+CONTEST = "severity_contested_unavailable"
 # Each demo state: its context, availability_requirement (the context's own where it is the file's), Loss of
 # availability's moves from N to the C2' commit, {(worst A, N's level, C2''s): CVEs}, and the CVEs counted
 # availability_requirement_missing. Z8 printed the moves: internal and internal-api alone, 38 of 74 each.
@@ -106,6 +110,14 @@ def vex_ratings(folder):
 def unmarked(ratings):
     """The ratings without their marker, for two commits that differ by it alone."""
     return {vid: {k: v for k, v in x.items() if k != "provenance"} for vid, x in ratings.items()}
+
+
+def without_contest(doc):
+    """answers.json without severity_contested_unavailable, which only the marker commit counts on Trivy rows."""
+    entries = [{**e, "counters": [c for c in e.get("counters", []) if c != CONTEST]} for e in doc["vulnerabilities"]]
+    return {**doc, "counters": {k: v for k, v in doc["counters"].items() if k != CONTEST},
+            "vulnerabilities": [e if e["counters"] else {k: v for k, v in e.items() if k != "counters"}
+                                for e in entries]}
 
 
 def marker_of(imp):
@@ -220,6 +232,8 @@ class TestTheDemoScan(unittest.TestCase):
             self.assertEqual((len(floors), len(vectorless), len(missing)), (28, 10, counted), state)
             totals = answers_doc(folder)["counters"]
             self.assertEqual((totals.get(VM), totals.get(AR)), (10, counted or None), state)
+            self.assertEqual((totals.get(CONTEST), sum(e.get("counters", []).count(CONTEST) for e in entries.values())),
+                             (46, 46), state)
             fallbacks[state] = sum(x["provenance"] == [FALLBACK] for x in ratings.values())
             self.assertEqual(sum(x["provenance"] == [CVSS_V3] for x in ratings.values()), 64, state)
             for rules in (None, contract.C1C2P):
@@ -227,6 +241,8 @@ class TestTheDemoScan(unittest.TestCase):
                 self.assertEqual((got["scores_usable"], got["problems"], got["answers"]["problems"]), (True, [], []),
                                  (state, rules))
             self.check_recomputed(got, state, contract.C1C2P, contract.MARKER_COMMIT)
+            # 7ce0211, the first marker commit, reads the same
+            self.check_recomputed(got, state, contract.C1C2P, contract.EARLIER_MARKERS[0])
         self.assertEqual(fallbacks, dict.fromkeys(STATES, 10))
         self.assertEqual(sum(fallbacks[ctx] for ctx in ("internet-facing", "internal", "internal-api")), 30)
 
@@ -235,7 +251,8 @@ class TestTheDemoScan(unittest.TestCase):
         for state in STATES:
             (marker, _, _), (c2p, code, _) = self.runs[("marker", state)], self.runs[("c2p", state)]
             self.assertEqual(code, 0, state)
-            self.assertEqual(answers_doc(c2p), answers_doc(marker), state)
+            self.assertEqual(answers_doc(c2p)["counters"].get(CONTEST), None, state)
+            self.assertEqual(without_contest(answers_doc(c2p)), without_contest(answers_doc(marker)), state)
             ours, theirs = vex_ratings(marker), vex_ratings(c2p)
             self.assertEqual(unmarked(ours), unmarked(theirs), state)
             self.assertEqual({x["provenance"] == [] for x in theirs.values()}, {True}, state)
@@ -257,7 +274,8 @@ class TestTheDemoScan(unittest.TestCase):
                 self.assertEqual({f for f in now if now[f] != was[f]} - {"LAV"}, set(), (state, vid))
                 if now["LAV"] != was["LAV"]:
                     got[(contract.cve_impact(self.cves[vid]).values["A"], was["LAV"][0], now["LAV"][0])] += 1
-                self.assertEqual([c for c in e.get("counters", []) if c != AR], theirs[vid].get("counters", []),
+                self.assertEqual([c for c in e.get("counters", []) if c not in (AR, CONTEST)],
+                                 theirs[vid].get("counters", []),
                                  (state, vid))
             self.assertEqual(dict(got), moves, state)
             # N's runs follow C1 + C2; each commit's runs fail under the other's contract where the two differ
@@ -401,6 +419,7 @@ class TestTheScenariosOnTheMock(unittest.TestCase):
         for sid in IDS:
             ours, theirs = self.runs[("after", sid)][0], self.runs[("c2p", sid)][0]
             self.assertEqual(answers_doc(theirs), answers_doc(ours), sid)
+            self.assertNotIn(CONTEST, answers_doc(ours)["counters"], sid)
             self.assertEqual(unmarked(vex_ratings(theirs)), unmarked(vex_ratings(ours)), sid)
             self.assertEqual(self.vex("c2p", sid)["provenance"], [], sid)
 
