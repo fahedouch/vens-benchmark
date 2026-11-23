@@ -9,8 +9,8 @@ campaign.json, chain/campaign.py). With --dispatch-log, every artefact is mapped
 own included; without it, a download's campaign replicate is its artefacts' r<n>. A scenario campaign's records name
 their arm and replicate: no dispatch log, --arm or --failures applies to it, and one whose corpus is not the frozen
 one (chain/campaign.py, FROZEN) is refused unless --freeze-sha256 names its freeze. --commit refuses an attempt whose
-vens commit is not its arm's. --rules pins the after's contract (b7c0435, 5f797bf or c1c2), which its answers.json
-must follow; without it, the one its commit pins (chain/contract.py, CONTRACTS), if any.
+vens commit is not its arm's. --rules pins the after's contract (b7c0435, 5f797bf, c1c2 or c1c2p), which its
+answers.json must follow; without it, the one its commit pins (chain/contract.py, CONTRACTS), if any.
 """
 import argparse
 import glob
@@ -60,7 +60,7 @@ def main(argv=None):
     ap.add_argument("--arm", choices=dispatch.ARMS)
     ap.add_argument("--failures", action="append", default=[])
     ap.add_argument("--freeze-sha256", help="read a scenario campaign whose corpus has this freeze, not the frozen one")
-    ap.add_argument("--rules", choices=(contract.B7C0435, contract.REACH_RULES, contract.C1C2),
+    ap.add_argument("--rules", choices=(contract.B7C0435, contract.REACH_RULES) + contract.C1C2_RULES,
                     help="the after's preregistered contract, which its answers.json must follow")
     ap.add_argument("dirs", nargs="+")
     a = ap.parse_args(argv)

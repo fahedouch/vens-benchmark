@@ -2,9 +2,10 @@
 
     VB_VENS_AFTER, VB_VENS_BEFORE   vens binaries built from 310-step3 b7c0435 and main 43ab10b
     VB_VENS_REACH                   a vens binary built from 310-step3b 5f797bf, which asks reachability first
-    VB_VENS_C1C2                    a vens binary built from 310-c1c2: N, the no-relay commit, once it exists;
-                                    2de5d34 until then, read on step 5's corpus, which declares no reachability
-    VB_VENS_C1C2_SRC                vens's source tree at 2de5d34, whose Go tests freeze the demo scan's C2 counts
+    VB_VENS_C1C2                    a vens binary built from 310-c1c2 at N, the no-relay commit (C1 + C2)
+    VB_VENS_C1C2P                   a vens binary built from 310-c1c2 at the C2' commit, N plus C2' (C1 + C2')
+    VB_VENS_C1C2P_SRC               vens's source tree at the C2' commit, whose Go tests freeze the demo scan's C2
+                                    counts
     VB_DEMO                         a vens-demo tree at 7ab1570 (runs/2026-09-23/scan/scan.json, contexts/)
     VB_QUICKSTART                   vens's examples/quickstart at b7c0435
     VB_JAR, VB_JDK                  the calculator's 1.0.1 JAR and a JDK bin folder (JAVA_HOME/bin otherwise)
@@ -15,11 +16,15 @@ import hashlib
 import json
 import os
 
+from chain import contract
+
 AFTER_SHA = "b7c0435835447027b04d54d4e6befaaee6b0626b"
 BEFORE_SHA = "43ab10bf980d42b77157e003a27921805a546770"
 REACH_SHA = "5f797bfbd8e3a0ae49200f9d64861558240b8361"
-# VB_VENS_C1C2's commit: 2de5d34 until N's binary exists, then N.
-C1C2_SHA = "2de5d341befb05fb96a648c2bea29132e175a5ce"
+# 2de5d34 relayed declared reachability: it pins no contract. VB_VENS_C1C2's commit is N, VB_VENS_C1C2P's the C2'
+# commit, each pinned once, in chain/contract.py.
+RELAY_SHA = "2de5d341befb05fb96a648c2bea29132e175a5ce"
+C1C2_SHA, C1C2P_SHA = contract.N_COMMIT, contract.C2P_COMMIT
 MODEL = "gpt-5.4-mini-2026-03-17"
 VECTOR = "SL:9/M:1/O:7/S:9/ED:9/EE:5/A:9/ID:9/LC:9/LI:9/LAV:7/LAC:9/FD:1/RD:4/NC:2/PV:9"
 SCORE, SEVERITY = 61.625, "critical"

@@ -119,9 +119,12 @@ def families_section(sc):
         out += [f"{uncertified} row(s) read after runs off the contract their kinds come from, such as runs that ask "
                 f"reachability (R) under chain/verdicts.py's b7c0435 rules, which have no R: those rules certify none "
                 f"of them (\"not certified\" below).", ""]
-    c1c2 = sc.get("rules") == contract.C1C2 or any(r.get("rules") == contract.C1C2 for r in sc["rows"])
+    rules = next((x for x in [sc.get("rules")] + [r.get("rules") for r in sc["rows"]] if x in contract.C1C2_RULES),
+                 None)
+    c1c2 = rules is not None
     if c1c2:
-        out += ["Under C1 + C2 (rules c1c2, no reachability relay), each after scenario of each model is an "
+        out += [f"Under {contract.NAMES[rules]} (rules {rules}, no reachability relay), each after scenario of each "
+                "model is an "
                 "implementation item, binding on every replicate: no VEX status, no declared block, and the levels, "
                 "vector, severity and score its own answers give under the pinned rules (chain/conform.py). A row "
                 "tagged [vectorless] reads a CVE without a usable CVSS v3 vector, its LC, LI and LAV at 9.", ""]
@@ -250,7 +253,8 @@ def _recomputed(data):
     read = data.get("implementation")
     if read is None:
         return []
-    out = ["## C1 + C2 recomputed on every after run", "",
+    name = contract.NAMES.get(data.get("rules"), contract.NAMES[contract.C1C2])
+    out = [f"## {name} recomputed on every after run", "",
            f"The after's contract pinned: {data.get('rules')}, no reachability relay. Each after cell is an "
            "implementation item, binding on every expected replicate: no CVE holds a VEX status or a declared block, "
            "and each CVE's 16 levels, vector, severity and score are what the pinned rules give its own answers on "
@@ -261,7 +265,7 @@ def _recomputed(data):
                    f"holding a status or a declared block" + (f"; not recomputed: {c['unread']}" if c["unread"] else "")
                    + ".")
     gate = data.get("gate") or []
-    out += ["", f"C1 + C2's implementation gate: {'pass' if not gate else f'{len(gate)} failure(s), no go'}.", ""]
+    out += ["", f"{name}'s implementation gate: {'pass' if not gate else f'{len(gate)} failure(s), no go'}.", ""]
     return out + [f"- {g}" for g in gate] + ([""] if gate else [])
 
 

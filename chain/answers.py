@@ -15,6 +15,11 @@ removed (plan Z0d, N) no entry holds `declared` and the VEX publishes no status:
 validate() any `declared` block, whatever the contract, none relaying. marks() lists the contracts a document's
 entries show; validate() checks them against the pinned contract, which they never choose, and c1c2() checks C1 +
 C2's on every entry.
+
+At the C2' commit (C1 + C2') Loss of availability is read in availability_requirement's column, the CVE counting
+availability_requirement_missing where the field is unset: an entry counting it, or whose Loss of availability takes
+the secondary column's level where C2's differs, shows C1 + C2'; any other C1 + C2 entry is one C1 + C2' also writes,
+where the field is high or critical. Which column applies is the config's: chain/conform.py recomputes it.
 """
 import collections
 
@@ -150,19 +155,21 @@ def reachability(doc):
 
 
 def marks(doc):
-    """The contracts a document's entries show: 5f797bf's (19b333a on) where one holds reachability, C1 + C2's where
-    one has a level from source cvss, b7c0435's where a rated entry has a technical impact from another source and no
-    reachability. A document of unrated entries alone shows none."""
+    """The contracts a document's entries show: 5f797bf's (19b333a on) where one holds reachability, C1 + C2''s where
+    one has a level from source cvss and shows C2' (contract.c2p_shown), C1 + C2's where entries have one and none
+    shows C2', b7c0435's where a rated entry has a technical impact from another source and no reachability. A
+    document of unrated entries alone shows none."""
     vulns, out = doc["vulnerabilities"], set()
     for e in vulns:
-        sources = {f.get("source") for f in e["factors"] if f.get("factor") in contract.AXIS}
+        axes = {f.get("factor"): f for f in e["factors"] if f.get("factor") in contract.AXIS}
+        sources = {f.get("source") for f in axes.values()}
         if e.get("reachability") is not None:
             out.add(contract.REACH_RULES)
         if contract.CVSS_SOURCE in sources:
-            out.add(contract.C1C2)
+            out.add(contract.C1C2P if contract.c2p_shown(axes.get("LAV"), e.get("counters")) else contract.C1C2)
         if not e.get("unrated") and e.get("reachability") is None and sources - {contract.CVSS_SOURCE}:
             out.add(contract.B7C0435)
-    return out
+    return out - {contract.C1C2} if contract.C1C2P in out else out
 
 
 def rules_of(doc):
@@ -171,20 +178,42 @@ def rules_of(doc):
     return None if len(found) > 1 else found.pop() if found else contract.B7C0435
 
 
-def _c2_levels(f, value):
-    """The levels C2's table can give factor f from the worst value written, both columns for confidentiality, 9
-    without one; none for a value off H, L and N."""
+def _c2_levels(f, value, rules=contract.C1C2):
+    """The levels C2's table can give factor f from the worst value written, both columns for confidentiality and,
+    under C1 + C2', for availability, 9 without one; none for a value off H, L and N."""
     if value is None:
         return {contract.VECTORLESS_LEVEL}
     if value not in contract.WORSE:
         return set()
+    if f == "LAV" and rules == contract.C1C2P:
+        return set(contract.C2P_LAV[value])
     return set(contract.C2_LC[value]) if f == "LC" else {(contract.C2_LI if f == "LI" else contract.C2_LAV)[value]}
 
 
-def _impact_problems(vid, factors, counters):
-    """Loss of confidentiality, integrity and availability under C2: source cvss, no answer or reading, their level
-    the table's for their worst value, 9 for all three without one, the CVE then counted cvss_v3_missing; Privacy
-    violation from source floor exactly where confidentiality's worst value is N, at 3 with it."""
+def _availability_problems(vid, lav, counters, rules):
+    """availability_requirement_missing: never under C1 + C2; under C1 + C2' at most once, on a CVE with a usable
+    vector whose Loss of availability is in the primary column, which an unset field reads."""
+    n = counters.count(contract.AVAILABILITY_MISSING)
+    name = contract.AVAILABILITY_MISSING
+    if n == 0:
+        return []
+    if rules != contract.C1C2P:
+        return [f"{vid}: {name} counted, C2 reads no availability_requirement"]
+    value = lav.get("cvss")
+    if n > 1:
+        return [f"{vid}: {name} counted {n} times"]
+    if value is None:
+        return [f"{vid}: {name} counted without a usable vector"]
+    if value in contract.C2P_LAV and lav.get("level") != contract.C2P_LAV[value][1]:
+        return [f"{vid}: {name} counted, LAV at {lav.get('level')} off the primary column"]
+    return []
+
+
+def _impact_problems(vid, factors, counters, rules=contract.C1C2):
+    """Loss of confidentiality, integrity and availability under C2 (rules C1C2P: C2'): source cvss, no answer or
+    reading, their level the table's for their worst value, 9 for all three without one, the CVE then counted
+    cvss_v3_missing; availability_requirement_missing as _availability_problems says; Privacy violation from source
+    floor exactly where confidentiality's worst value is N, at 3 with it."""
     x = {f: factors.get(f) or {} for f in contract.AXIS}
     problems = []
     for f, rec in x.items():
@@ -192,8 +221,10 @@ def _impact_problems(vid, factors, counters):
             problems.append(f"{vid}: {f} not from cvss alone")
             continue
         value = rec.get("cvss")
-        if rec.get("level") not in _c2_levels(f, value):
+        if rec.get("level") not in _c2_levels(f, value, rules):
             problems.append(f"{vid}: {f} at {rec.get('level')} from cvss {value!r}")
+        elif f == "LAV":
+            problems += _availability_problems(vid, rec, counters, rules)
     vectorless = {x[f].get("cvss") is None for f in x}
     if len(vectorless) > 1:
         problems.append(f"{vid}: a usable vector for some technical impacts and not for others")
@@ -209,28 +240,30 @@ def _impact_problems(vid, factors, counters):
 
 def validate(doc, pinned):
     """The problems of a document against its arm's pinned contract (contract.CONTRACTS of its vens commit; None when
-    the commit pins none): its entries showing two contracts, or one other than the pinned; under C1 + C2 pinned,
-    c1c2()'s on every entry whatever it shows. Without a pinned contract, c1c2() where the document shows C1 + C2."""
+    the commit pins none): its entries showing two contracts, or one the pinned does not accept (contract.accepted:
+    C1 + C2' accepts what C1 + C2 shows); under C1 + C2 or C1 + C2' pinned, c1c2()'s under it on every entry whatever
+    it shows. Without a pinned contract, c1c2() under the one the document shows, if either."""
     found = marks(doc)
     relayed = [f"{e['vulnId']}: a declared block, no contract relaying reachability" for e in doc["vulnerabilities"]
                if "declared" in e]
     if len(found) > 1:
         return relayed + [f"answers.json mixes contracts: {', '.join(sorted(found))}"]
-    if pinned is not None and found - {pinned}:
+    if pinned is not None and found - contract.accepted(pinned):
         return relayed + [f"answers.json follows {found.pop()}, not the pinned {pinned}"]
-    return relayed + (c1c2(doc) if contract.C1C2 in found | {pinned} else [])
+    rules = pinned if pinned in contract.C1C2_RULES else next(iter(found & set(contract.C1C2_RULES)), None)
+    return relayed + (c1c2(doc, rules) if rules else [])
 
 
-def c1c2(doc):
-    """The problems of a document's entries against C1 + C2: no reachability record, the three technical impacts and
-    Privacy violation's floor as _impact_problems says on every rated entry, an unrated entry answering no technical
-    impact. A declared block is validate()'s, under any contract."""
+def c1c2(doc, rules=contract.C1C2):
+    """The problems of a document's entries against C1 + C2 (rules C1C2P: C1 + C2'): no reachability record, the three
+    technical impacts, their counters and Privacy violation's floor as _impact_problems says on every rated entry, an
+    unrated entry answering no technical impact. A declared block is validate()'s, under any contract."""
     rated, unrated = entries(doc)
     problems = [f"{vid}: a reachability record under C1 + C2" for vid, e in sorted({**rated, **unrated}.items())
                 if e.get("reachability") is not None]
     for vid, e in sorted(rated.items()):
         factors = {f["factor"]: f for f in e["factors"]}
-        problems += _impact_problems(vid, factors, e.get("counters") or [])
+        problems += _impact_problems(vid, factors, e.get("counters") or [], rules)
     for vid, e in sorted(unrated.items()):
         if any(f["factor"] in contract.AXIS for f in e["factors"]):
             problems.append(f"{vid}: an unrated entry answering a technical impact")

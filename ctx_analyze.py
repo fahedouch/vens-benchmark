@@ -24,15 +24,15 @@ section names each replicate's attempt, and the measured cost never mixes with t
 CVEs with no usable CVSS v3 vector, with one refused, whose usable vectors disagree and on how many axes, with a v4
 vector beside, and with Privacy violation at its floor.
 
---rules pins the after's contract, which picks the scenario checks: b7c0435, 5f797bf or c1c2; by default the one
+--rules pins the after's contract, which picks the scenario checks: b7c0435, 5f797bf, c1c2 or c1c2p; by default the one
 --commit after= pins (chain/contract.py, CONTRACTS). The runs never choose it: a run off it is marked not certified,
 and the reader refuses its answers.json where the pinned contract, or its own commit's, is another. Nothing pinned,
 the scenarios are read on b7c0435's checks, the historical default, and each run against its commit's contract.
-Under c1c2 (no reachability relay, plan Z0d) every after cell is an implementation item recomputed from its frozen
-inputs (chain/conform.py; --demo for the demo scan), and the report opens on it. Exit 0 once written, 1 when a reader
-refuses an input or an input is wrong, or, the report written all the same, when C1 + C2's implementation gate stops
-a go: an after cell failing or inconclusive, a run off its recomputation, a VEX status or a declared block anywhere.
-2 on a usage error.
+Under c1c2 or c1c2p (no reachability relay, plan Z0d; c1c2p with C2''s Loss of availability) every after cell is an
+implementation item recomputed from its frozen inputs (chain/conform.py; --demo for the demo scan), and the report
+opens on it. Exit 0 once written, 1 when a reader refuses an input or an input is wrong, or, the report written all the
+same, when the implementation gate stops a go: an after cell failing or inconclusive, a run off its recomputation, a
+VEX status or a declared block anywhere. 2 on a usage error.
 """
 import argparse
 import collections
@@ -283,8 +283,8 @@ def compute(inputs, reports, jar=None, fallback=None, usage=None, draws=None, li
                    "failures": kpi.failures(cells), "cost": kpi.cost(cells)}}
     scen = scenario_info(inputs)
     out.update(rules=rules, implementation=None, gate=[])
-    if rules == contract.C1C2:
-        out["implementation"] = conform.read(cells, scen, reports.demo_root)
+    if rules in contract.C1C2_RULES:
+        out["implementation"] = conform.read(cells, scen, reports.demo_root, rules)
         out["gate"] = conform.failures(out["implementation"])
     if scen is not None:
         rows = families.evaluate(cells, scen, rules=rules)
@@ -319,7 +319,7 @@ def parse(argv):
                                     "campaign (chain/usage.py)")
     ap.add_argument("--draw-list", help="the CVE ids earlier draws used")
     ap.add_argument("--jar", help="the OWASP calculator's 1.0.1 JAR, for target (i)")
-    ap.add_argument("--rules", choices=(contract.B7C0435, contract.REACH_RULES, contract.C1C2),
+    ap.add_argument("--rules", choices=(contract.B7C0435, contract.REACH_RULES) + contract.C1C2_RULES,
                     help="the after's preregistered contract; by default the one --commit after= pins, else b7c0435")
     ap.add_argument("--out")
     ap.add_argument("dirs", nargs="+")
@@ -360,13 +360,13 @@ def run(a):
                                      scen and scen[1]) if a.fallback else None,
                    usage={"rows": usage.load(a.usage), **named(a.usage)} if a.usage else None,
                    draws={"ids": draw_list(a.draw_list), **named(a.draw_list)} if a.draw_list else None)
-    return report.render(data, reader=own_commit()), data["gate"]
+    return report.render(data, reader=own_commit()), data["gate"], data["rules"]
 
 
 def main(argv=None):
     a = parse(argv)
     try:
-        text, gate = run(a)
+        text, gate, rules = run(a)
     except (Refused, dispatch.DispatchError, InputError, usage.UsageError, legal.LegalError, javacheck.JarError,
             OSError) as e:
         print(f"refused: {e}", file=sys.stderr)
@@ -377,7 +377,7 @@ def main(argv=None):
     else:
         sys.stdout.write(text)
     if gate:
-        print(f"C1 + C2's implementation gate: {len(gate)} failure(s), no go:", file=sys.stderr)
+        print(f"{contract.NAMES[rules]}'s implementation gate: {len(gate)} failure(s), no go:", file=sys.stderr)
         print("\n".join(f"  {g}" for g in gate), file=sys.stderr)
         return 1
     return 0

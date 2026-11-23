@@ -78,6 +78,7 @@ def published(sid, scen, replicate=1, change=None, status=None, declared=None):
     given = {f: (GIVEN.get(f), "answer") for f in cdx.FACTORS}
     rec = r.record("after", sid, replicate, {sc["vuln_id"]: rating}, scenario=True,
                    answers={sc["vuln_id"]: r.factors(vec, **given)}, commit=s.C1C2_SHA)
+    rec["answers"]["per_cve"][sc["vuln_id"]]["counters"] = contract.c1c2_counters(sc["dep"], sc["impact"])
     if declared is not None:
         rec["answers"]["per_cve"][sc["vuln_id"]]["declared"] = declared
     return rec
@@ -188,7 +189,7 @@ class TestTheGate(unittest.TestCase):
 
 
 class TestThePinnedRules(unittest.TestCase):
-    """ctx_analyze's --rules, never read off the runs; N's commit a parameter until it is known."""
+    """ctx_analyze's --rules, never read off the runs, else the one the after's commit pins: N pins C1 + C2."""
 
     def rules(self, *argv):
         return ctx_analyze.pinned_rules(ctx_analyze.parse(list(argv) + ["dir"]))
@@ -197,7 +198,8 @@ class TestThePinnedRules(unittest.TestCase):
         self.assertIsNone(self.rules())
         self.assertEqual(self.rules("--rules", "c1c2"), contract.C1C2)
         self.assertEqual(self.rules("--commit", f"after={s.REACH_SHA}"), contract.REACH_RULES)
-        self.assertIsNone(self.rules("--commit", f"after={s.C1C2_SHA}"))
+        self.assertEqual(self.rules("--commit", f"after={s.C1C2_SHA}"), contract.C1C2)
+        self.assertIsNone(self.rules("--commit", f"after={s.RELAY_SHA}"))
         self.assertEqual(self.rules("--rules", "c1c2", "--commit", f"after={'e' * 40}"), contract.C1C2)
         with self.assertRaisesRegex(ctx_analyze.InputError, "--rules c1c2, but --commit after= pins b7c0435"):
             self.rules("--rules", "c1c2", "--commit", f"after={s.AFTER_SHA}")

@@ -9,6 +9,10 @@ its scanner report (a demo scan's under --demo). The item fails on any replicate
 refused for its answers.json included; it is inconclusive where an expected replicate has no complete run or its inputs
 cannot be read. Any CVE of an after run holding a status or a declared block is also counted per cell (BD1, widened to
 every after run). failures() lists every fail and inconclusive: any of them stops a go.
+
+Under C1 + C2' (rules c1c2p) the rules are C2''s, Loss of availability in the column its config's
+availability_requirement gives. Under either, each CVE also counts cvss_v3_missing and availability_requirement_missing
+as Go does (contract.c1c2_counters), the latter never under C1 + C2.
 """
 import os
 from fractions import Fraction
@@ -31,9 +35,18 @@ def rating(levels):
     return vector, verdicts.SEVERITY[verdicts.band(likelihood)][verdicts.band(impact)], float(likelihood * impact)
 
 
-def cve_problems(vid, entry, published, dep, findings):
-    """What differs, for one CVE of a run, from C1 + C2 on its own answers: entry, its answers.json entry as
-    answers.per_cve reads it; published, its VEX rating; findings, the report's rows of the CVE."""
+def _counter_problems(vid, entry, dep, imp, rules):
+    """The C2 counters an entry holds against what Go counts for its CVE."""
+    want = contract.c1c2_counters(dep, imp, rules)
+    got = entry.get("counters") or []
+    return [f"{vid}: {name} counted {got.count(name)} times, not {want.count(name)}"
+            for name in (contract.VECTOR_MISSING, contract.AVAILABILITY_MISSING) if got.count(name) != want.count(name)]
+
+
+def cve_problems(vid, entry, published, dep, findings, rules=contract.C1C2):
+    """What differs, for one CVE of a run, from the pinned rules (C1 + C2, or C1 + C2' with rules C1C2P) on its own
+    answers: entry, its answers.json entry as answers.per_cve reads it; published, its VEX rating; findings, the
+    report's rows of the CVE."""
     if entry is None or entry["unrated"]:
         return [f"{vid}: no rated answers.json entry"]
     problems = [f"{vid}: the VEX publishes a status, {published['analysis'].get('state')}"] \
@@ -42,16 +55,17 @@ def cve_problems(vid, entry, published, dep, findings):
     fs = entry["factors"]
     answers = {f: x["answer"] for f, x in fs.items() if x.get("answer") is not None}
     adjusted = {f: (fs.get(f) or {}).get("adjusted") for f in ("O", "PV")}
-    got = contract.c1c2_levels(dep, contract.cve_impact(findings), contract.described(findings), answers, adjusted)
+    imp = contract.cve_impact(findings)
+    got = contract.c1c2_levels(dep, imp, contract.described(findings), answers, adjusted, rules)
     levels = {f: lv for f, (lv, _) in got.items()}
     off = [f"{f} {published['levels'][f]} not {levels[f]}" for f in cdx.FACTORS if published["levels"][f] != levels[f]]
     vector, severity, score = rating(levels)
     off += [f"{name} {published.get(name)!r} not {want!r}" for name, want in (
         ("vector", vector), ("severity", severity), ("score", score)) if published.get(name) != want]
-    return problems + ([f"{vid}: " + ", ".join(off)] if off else [])
+    return problems + ([f"{vid}: " + ", ".join(off)] if off else []) + _counter_problems(vid, entry, dep, imp, rules)
 
 
-def run_problems(rec, config, cves):
+def run_problems(rec, config, cves, rules=contract.C1C2):
     """cve_problems() over every CVE the run's VEX rates; cves, the report's {vulnId: [finding]}."""
     per = (rec.get("answers") or {}).get("per_cve") or {}
     dep, out = contract.deployment(config), []
@@ -59,7 +73,7 @@ def run_problems(rec, config, cves):
         if vid not in cves:
             out.append(f"{vid}: rated, not in the report")
             continue
-        out += cve_problems(vid, per.get(vid), published, dep, cves[vid])
+        out += cve_problems(vid, per.get(vid), published, dep, cves[vid], rules)
     return out
 
 
@@ -97,11 +111,11 @@ def expected(c):
     return sorted({x for x in attempted if isinstance(x, int)} | set(c["runs"]) | set(c["unusable"]))
 
 
-def read(cells, scen, demo_root):
+def read(cells, scen, demo_root, rules=contract.C1C2):
     """{cell: {verdict, replicates, runs, cves, problems, statuses, unread, missing}} for every after cell: each
-    complete run recomputed, each one the reader found unusable for its answers.json failing, each expected replicate
-    without a complete run missing; statuses, every CVE holding a status or a declared block, unusable runs'
-    included."""
+    complete run recomputed under the pinned rules, each one the reader found unusable for its answers.json failing,
+    each expected replicate without a complete run missing; statuses, every CVE holding a status or a declared block,
+    unusable runs' included."""
     out = {}
     for k, c in cells.items():
         if k.arm != "after":
@@ -115,7 +129,7 @@ def read(cells, scen, demo_root):
             if inputs is None:
                 got["unread"] = why
                 continue
-            got["problems"] += [f"r{rep} {p}" for p in run_problems(rec, *inputs)]
+            got["problems"] += [f"r{rep} {p}" for p in run_problems(rec, *inputs, rules)]
         for rep, (rec, why) in sorted(c["unusable"].items()):
             got["statuses"] += [f"r{rep} {vid}" for vid in statuses(rec)] if rec["ratings"] else []
             found = (rec.get("answers") or {}).get("problems")

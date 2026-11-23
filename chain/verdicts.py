@@ -25,7 +25,8 @@ chain.contract's c1c2_ rules, the same families but the checks on Loss of confid
 which C2 gives Go. showcase_med_to_high's high or critical stays carried, read by read5's eligibility rule as #310 wrote
 it; showcase_high_to_low's severity and the reach pairs' score gaps and O and EE contrasts are diagnostics labelled the
 notes alone, #333's expected low and step 1's reachability contract withdrawn, not met. No status is published: no
-check reads one here; chain/conform.py binds every after run to its own answers and fails any status.
+check reads one here; chain/conform.py binds every after run to its own answers and fails any status. C1 + C2' (vens
+310-c1c2 at the C2' commit) takes --rules c1c2p: the same checks, Loss of availability by C2''s table.
 """
 import argparse
 import functools
@@ -196,7 +197,7 @@ CHECKS_C1C2 = _c1c2_checks()
 
 
 def checks_for(rules):
-    return CHECKS_C1C2 if rules == contract.C1C2 else CHECKS
+    return CHECKS_C1C2 if rules in contract.C1C2_RULES else CHECKS
 
 
 @dataclass(frozen=True)
@@ -230,13 +231,13 @@ def band(x):
 
 def _levels(f, s, g=None):
     dep = dict(s["dep"], **(g or {}))
-    if s.get("rules") == contract.C1C2:
-        return contract.c1c2_options(f, dep, s["impact"], s["described"])
+    if s.get("rules") in contract.C1C2_RULES:
+        return contract.c1c2_options(f, dep, s["impact"], s["described"], s["rules"])
     return contract.options(f, dep, s["floors"], s["described"])
 
 
 def _source(f, s):
-    if s.get("rules") == contract.C1C2:
+    if s.get("rules") in contract.C1C2_RULES:
         return contract.c1c2_source(f, s["dep"], s["impact"], described=s["described"])
     return contract.source(f, s["dep"], s["floors"], described=s["described"])
 
@@ -607,9 +608,10 @@ def report(scen, reach, differs, checks=CHECKS):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--after", required=True, help="vens built from 310-step3, or from 310-c1c2 with --rules c1c2")
+    ap.add_argument("--after", required=True,
+                    help="vens built from 310-step3, or from 310-c1c2 with --rules c1c2 (N) or c1c2p (the C2' commit)")
     ap.add_argument("--before", required=True, help="vens built from main")
-    ap.add_argument("--rules", choices=(contract.B7C0435, contract.C1C2), default=contract.B7C0435,
+    ap.add_argument("--rules", choices=(contract.B7C0435,) + contract.C1C2_RULES, default=contract.B7C0435,
                     help="the after's contract")
     ap.add_argument("--scenarios", default="scenarios")
     ap.add_argument("--work", required=True, help="an empty folder for the mock runs")

@@ -24,10 +24,12 @@ from chain/verdicts.py's b7c0435 rules, which certify none of it.
 
 With the after's contract pinned to C1 + C2 (no relay, plan Z0d; ctx_analyze --rules c1c2), every model is read on
 CHECKS_C1C2, each row marked rules c1c2 and certified where every after run it reads follows C1 + C2; Go's moves then
-include source cvss. gates() keeps read5's eligibility rule on every carried or new check, an item the before does not
-pass in FAMILY_ROBUST of its replicates printing not gated; the binding implementation reading of every after run is
-chain/conform.py's. A row whose scenarios hold a CVE without a usable v3 vector, LC, LI and LAV at 9 under C2, is
-tagged vectorless, so that a regression there is reported apart.
+include source cvss. C1 + C2' (--rules c1c2p) reads the same checks, a row certified where every after run it reads
+shows C1 + C2' or what C1 + C2' also gives, C1 + C2's record (contract.accepted). gates() keeps read5's eligibility
+rule on every carried or new check, an item the before does not pass in FAMILY_ROBUST of its replicates printing not
+gated; the binding implementation reading of every after run is chain/conform.py's. A row whose scenarios hold a CVE
+without a usable v3 vector, LC, LI and LAV at 9 under C2, is tagged vectorless, so that a regression there is reported
+apart.
 """
 import collections
 import statistics
@@ -255,15 +257,16 @@ def single(check, arm, sid, model, runs, scen):
 
 def run_rules(rec):
     """The contract an after run's answers.json shows, read off the record to certify a row against the pinned one,
-    never to choose the checks: 5f797bf's (reachability asked), C1 + C2's (a level from source cvss), b7c0435's;
-    None without one."""
+    never to choose the checks: 5f797bf's (reachability asked), C1 + C2''s (a level from source cvss and one CVE
+    showing C2', contract.c2p_shown), C1 + C2's (a level from source cvss), b7c0435's; None without one."""
     per = (rec.get("answers") or {}).get("per_cve")
     if not per:
         return None
     if verdicts.asks_reachability(rec):
         return contract.REACH_RULES
     if any((x or {}).get("source") == contract.CVSS_SOURCE for e in per.values() for x in e["factors"].values()):
-        return contract.C1C2
+        shown = any(contract.c2p_shown(e["factors"].get("LAV"), e.get("counters")) for e in per.values())
+        return contract.C1C2P if shown else contract.C1C2
     return contract.B7C0435
 
 
@@ -276,7 +279,7 @@ def _certified(runs, model, item, arm, rules):
     if arm != "after":
         return True
     found = {run_rules(x) for sid in _sids(item) for x in (runs.get((model, sid, arm)) or EMPTY)["runs"].values()}
-    return found - {None} <= {rules}
+    return found - {None} <= contract.accepted(rules)
 
 
 def _vectorless(item, scen):

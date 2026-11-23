@@ -17,7 +17,7 @@ the mock of a binary built at 5f797bf. reach=None is b7c0435's contract, which a
 for historical runs alone.
 
 C1 + C2, the candidate of venslabs/vens#310's plans Z0 and Z0d (no reachability relay), as vens 310-c1c2 builds it at
-N (N_COMMIT; 2de5d34 before the relay was removed), take the c1c2_ functions. No R and no reachability input at all: a
+N (N_COMMIT; 2de5d34 relayed and pins nothing), take the c1c2_ functions. No R and no reachability input at all: a
 CVE gets at most nine questions, M, O, EE, ID, LAC, FD, RD, NC and PV, under b7c0435's rules. Loss of confidentiality,
 integrity and availability are Go's, source cvss: the worst value each axis takes over the CVE's usable CVSS v3
 vectors (impact(), pkg/cvss/impact.go) through C2's table, confidentiality crossed with data_sensitivity; with none
@@ -25,8 +25,15 @@ usable, each at 9 and the CVE counted cvss_v3_missing. Privacy violation keeps a
 asked, where usable vectors exist and their worst C is N; a flagged CVE's adjustment asks opportunity when it is
 described and confidentiality when Privacy violation was asked, and lowers Privacy violation alone. The system prompt
 is b7c0435's byte for byte. vens publishes no VEX status: chain/conform.py fails any run holding one, or a declared
-block. tests/test_c1c2.py checks these rules, tests/test_c1c2_mock.py against the mock of a binary built at 2de5d34 on
-step 5's corpus, which declares no reachability, and against its Go counts on the demo scan, until N's binary exists.
+block. tests/test_c1c2.py checks these rules, tests/test_c1c2_mock.py against N's mock.
+
+C1 + C2', the candidate since C2''s one-shot screen (plan Z0d section 2), as vens 310-c1c2 builds it at the C2' commit
+(C2P_COMMIT, N plus C2'), take the same functions with rules=C1C2P: C1 + C2 but Loss of availability, read in
+availability_requirement's column, OWASP's secondary then primary services, C2P_LAV, z8_replay.py's table; low and
+medium are secondary, high and critical primary; unset reads primary and the CVE, one with a usable v3 vector, counts
+availability_requirement_missing once. The field is read as vens loads it: absent or null unset, any other value
+trimmed and lowercased as Go does, refused off the four. tests/test_c1c2p.py checks these rules,
+tests/test_c1c2_mock.py against the C2' commit's mock and its Go counts on the demo scan.
 """
 import collections
 import json
@@ -149,12 +156,13 @@ def floors(vecs):
 
 
 def deployment(config):
-    """What the rules read from a schema-2 config: exposure, data sensitivity, frameworks and G2 to G4, None where
-    undeclared."""
+    """What the rules read from a schema-2 config: exposure, data sensitivity, frameworks, G2 to G4 and
+    availability_requirement, None where undeclared."""
     ctx = config["context"]
     return {"exposure": ctx["exposure"], "data_sensitivity": ctx["data_sensitivity"],
             "frameworks": tuple(ctx.get("compliance_requirements") or ()), "detection": ctx.get("detection"),
-            "traceability": ctx.get("traceability"), "data_subjects": ctx.get("data_subjects")}
+            "traceability": ctx.get("traceability"), "data_subjects": ctx.get("data_subjects"),
+            "availability_requirement": availability_requirement(ctx)}
 
 
 def asked(f, dep, floored, described=True, *, reach=None):
@@ -270,16 +278,20 @@ def question_of(human_prompt):
     return next(iter(found)) if len(found) == 1 else None
 
 
-# ---- C1 + C2, no reachability relay: vens 310-c1c2 at N ----
+# ---- C1 + C2 and C1 + C2', no reachability relay: vens 310-c1c2 at N and at the C2' commit ----
 
-B7C0435, REACH_RULES, C1C2 = "b7c0435", "5f797bf", "c1c2"
-# N, the commit on 310-c1c2 over 2de5d34 that removes the reachability relay (plan Z0d section 1), whose sha is not
-# known yet: once it is, it goes here. Until then a reading pins N's contract itself (ctx_analyze.py --rules c1c2).
-N_COMMIT = None
+B7C0435, REACH_RULES, C1C2, C1C2P = "b7c0435", "5f797bf", "c1c2", "c1c2p"
+# N, the commit on 310-c1c2 over 2de5d34 that removes the reachability relay (plan Z0d section 1).
+N_COMMIT = "33a5dbf2ae8d7a6522874058de659e1b58f422aa"
+# The C2' commit, N plus C2' (plan Z0d section 2), S2's after: re-pinned here alone if it is amended.
+C2P_COMMIT = "861017143dec63e24097c8979ffd02bc9efff27b"
 # The contract each pinned after commit follows; any other commit pins none. 2de5d34 relays declared reachability,
 # which C1 no longer allows: S1's frozen reader reads it, this chain pins it to nothing.
 CONTRACTS = {"b7c0435835447027b04d54d4e6befaaee6b0626b": B7C0435,
-             "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES, **({N_COMMIT: C1C2} if N_COMMIT else {})}
+             "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES, N_COMMIT: C1C2, C2P_COMMIT: C1C2P}
+# The no-relay contracts, whose technical impacts are Go's, from the CVSS v3 vectors.
+C1C2_RULES = (C1C2, C1C2P)
+NAMES = {C1C2: "C1 + C2", C1C2P: "C1 + C2'"}
 C1C2_QUESTIONS = ("M", "O", "EE", "ID", "LAC", "FD", "RD", "NC", "PV")
 CVSS_SOURCE, FLOOR_SOURCE, ADJUSTMENT_SOURCE = "cvss", "floor", "adjustment"
 VECTOR_MISSING = "cvss_v3_missing"
@@ -288,6 +300,11 @@ C2_LC = {"N": (2, 2), "L": (2, 6), "H": (6, 7)}
 C2_LI = {"N": 1, "L": 3, "H": 7}
 C2_LAV = {"N": 1, "L": 5, "H": 7}
 VECTORLESS_LEVEL = 9
+# C2''s Loss of availability, (secondary, primary) services per worst A; availability_requirement's cut; the counter of
+# a CVE read in the primary column for want of the field.
+C2P_LAV = {"N": (1, 1), "L": (1, 5), "H": (5, 7)}
+PRIMARY_SERVICES = {"low": False, "medium": False, "high": True, "critical": True}
+AVAILABILITY_MISSING = "availability_requirement_missing"
 # H over L over N.
 WORSE = {"N": 0, "L": 1, "H": 2}
 # The adjustment's fields.
@@ -309,6 +326,30 @@ NO_IMPACT_READ = Impact({}, 0, (), 0)
 
 def go_trim(text):
     return text.strip(GO_SPACE)
+
+
+def go_lower(text):
+    """strings.ToLower: each rune's simple lowercase, which str.lower() gives but for U+0130, made i."""
+    return "".join("i" if c == "\u0130" else c.lower() for c in text)
+
+
+def availability_requirement(ctx):
+    """A config context's availability_requirement as vens loads it: None when absent or null, else trimmed and
+    lowercased; ValueError off low, medium, high and critical."""
+    value = (ctx or {}).get("availability_requirement")
+    if value is None:
+        return None
+    norm = go_lower(go_trim(value)) if isinstance(value, str) else None
+    if norm not in PRIMARY_SERVICES:
+        raise ValueError(f"availability_requirement {value!r} is not low, medium, high or critical")
+    return norm
+
+
+def primary_services(dep):
+    """Whether Loss of availability reads the primary services column: availability_requirement high or critical,
+    or unset."""
+    value = dep.get("availability_requirement")
+    return value is None or PRIMARY_SERVICES[value]
 
 
 def prefix_version(vector):
@@ -401,14 +442,41 @@ def _pv_floor(imp):
     return frozenset("C") if privacy_floored(imp) else frozenset()
 
 
-def impact_level(f, dep, imp):
-    """Loss of confidentiality's, integrity's or availability's level from C2's table, 9 without a usable vector."""
+def impact_level(f, dep, imp, rules=C1C2):
+    """Loss of confidentiality's, integrity's or availability's level from C2's table, availability's from C2''s under
+    rules C1C2P, 9 without a usable vector."""
     if imp.usable == 0:
         return VECTORLESS_LEVEL
     value = imp.values[AXIS[f]]
     if f == "LC":
         return C2_LC[value][int(CRITICAL_DATA[dep["data_sensitivity"]])]
+    if f == "LAV" and rules == C1C2P:
+        return C2P_LAV[value][int(primary_services(dep))]
     return (C2_LI if f == "LI" else C2_LAV)[value]
+
+
+def c1c2_counters(dep, imp, rules=C1C2):
+    """The counters Go adds for the three technical impacts: cvss_v3_missing without a usable vector; under C1 + C2',
+    availability_requirement_missing with one, the field unset."""
+    if imp.usable == 0:
+        return [VECTOR_MISSING]
+    return [AVAILABILITY_MISSING] if rules == C1C2P and dep.get("availability_requirement") is None else []
+
+
+def c2p_shown(lav, counters):
+    """Whether a CVE's record shows C1 + C2' rather than C1 + C2: availability_requirement_missing counted, or Loss of
+    availability from cvss at the secondary column's level where C2's differs. A record C2 gives shows nothing: C2'
+    gives the same where availability_requirement is high or critical."""
+    lav, value = lav or {}, (lav or {}).get("cvss")
+    secondary = lav.get("source") == CVSS_SOURCE and value in C2P_LAV and C2P_LAV[value][0] != C2_LAV[value] \
+        and lav.get("level") == C2P_LAV[value][0]
+    return AVAILABILITY_MISSING in (counters or ()) or secondary
+
+
+def accepted(pinned):
+    """The contracts a record may show under the pinned one: C1 + C2's under C1 + C2' too, which gives the same
+    record where availability_requirement is high or critical."""
+    return {C1C2, C1C2P} if pinned == C1C2P else {pinned}
 
 
 def c1c2_asked(f, dep, imp, described=True):
@@ -421,10 +489,11 @@ def c1c2_questions(dep, imp, described=True):
     return [q for q in C1C2_QUESTIONS if c1c2_asked(q, dep, imp, described)]
 
 
-def c1c2_options(f, dep, imp, described=True):
-    """Factor f's level for each answer its question can get, {None: level} where Go sets it, under C1 + C2."""
+def c1c2_options(f, dep, imp, described=True, rules=C1C2):
+    """Factor f's level for each answer its question can get, {None: level} where Go sets it, under C1 + C2 or, rules
+    C1C2P, C1 + C2'."""
     if f in AXIS:
-        return {None: impact_level(f, dep, imp)}
+        return {None: impact_level(f, dep, imp, rules)}
     return options(f, dep, _pv_floor(imp), described)
 
 
@@ -452,14 +521,15 @@ def _read(f, opts, answer):
     return answer, min(opts[a] for a in answer)
 
 
-def c1c2_levels(dep, imp, described, answers, adjusted=None):
+def c1c2_levels(dep, imp, described, answers, adjusted=None, rules=C1C2):
     """{factor: (level, source)}, the 16, from a CVE's answers as answers.json writes them ({factor: answer}, an
     unasked factor absent or None) and, for a flagged CVE, its adjustment ({"O": opportunity's answer, "PV":
-    confidentiality's}): Compute's rules under C1 + C2. No reachability input reaches them."""
+    confidentiality's}): Compute's rules under C1 + C2 or, rules C1C2P, C1 + C2'. No reachability input reaches
+    them."""
     adjusted = adjusted or {}
     out = {}
     for f in FACTORS:
-        opts = c1c2_options(f, dep, imp, described)
+        opts = c1c2_options(f, dep, imp, described, rules)
         if None in opts:
             out[f] = (opts[None], c1c2_source(f, dep, imp, described=described))
             continue

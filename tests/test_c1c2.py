@@ -2,7 +2,7 @@
 inputs: the usable v3 vector rule, C2's table, the nine questions, Privacy violation's floor and the adjustment,
 answers.json's C1 + C2 record against the pinned contract, no declared block and no VEX status, the families under the
 no-relay checks with read5's eligibility rule, and step 5's corpus. No vens is run: tests/test_c1c2_mock.py runs the
-rules against vens 2de5d34's mock and its Go counts, tests/test_c1c2_gate.py the implementation gate."""
+rules against N's mock, tests/test_c1c2_gate.py the implementation gate, tests/test_c1c2p.py C1 + C2'."""
 import os
 import tempfile
 import unittest
@@ -257,15 +257,15 @@ class TestTheRecord(unittest.TestCase):
 
     def test_the_contract_a_commit_or_the_reading_pins(self):
         self.assertEqual([attempt.pinned_contract({"arm": "after", "vens_commit": sha}) for sha in (
-            s.AFTER_SHA, s.REACH_SHA, s.C1C2_SHA, "e" * 40)], [contract.B7C0435, contract.REACH_RULES, None, None])
-        self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": s.C1C2_SHA}, contract.C1C2),
+            s.AFTER_SHA, s.REACH_SHA, s.C1C2_SHA, s.RELAY_SHA, "e" * 40)],
+            [contract.B7C0435, contract.REACH_RULES, contract.C1C2, None, None])
+        self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": s.RELAY_SHA}, contract.C1C2),
                          contract.C1C2)
         self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": s.AFTER_SHA}, contract.C1C2),
                          contract.C1C2)
         self.assertIsNone(attempt.pinned_contract({"arm": "before", "vens_commit": s.AFTER_SHA}, contract.C1C2))
-        # N, the no-relay commit, is not known yet: no commit pins C1 + C2
-        self.assertIsNone(contract.N_COMMIT)
-        self.assertNotIn(contract.C1C2, contract.CONTRACTS.values())
+        # N, the no-relay commit, pins C1 + C2; 2de5d34, which relayed, nothing
+        self.assertEqual([sha for sha, rules in contract.CONTRACTS.items() if rules == contract.C1C2], [s.C1C2_SHA])
 
     def test_a_record_that_follows_c1_c2(self):
         good = doc(c1c2_entry(A, "H"), c1c2_entry(B, None, counters=["cvss_v3_missing"]),
