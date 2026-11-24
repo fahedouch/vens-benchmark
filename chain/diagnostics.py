@@ -8,7 +8,9 @@ model with the after's conservative fallback. Each is printed and judged by noth
 - The wrong YAML: the runs of wrong_yaml, whose context contradicts its CVE's text, as published.
 - The table against the null model (baseline.py, frozen): per scenario, its four aggregates scored under each arm's
   own rule, the before's ((TA + VU) / 2) x ((T + B) / 2) and its 60/40/20/5 thresholds, the after's L x max(T, B)
-  with L = (TA + VU) / 2 and OWASP's matrix; beside them each arm's median score and most common severity per model,
+  with L = (TA + VU) / 2 and OWASP's matrix, under c1c2b L x the impact the scenario's config gives (contract.
+  impact_basis: B where it declares data_subjects, T otherwise); beside them each arm's median score and most common
+  severity per model,
   over the runs that give one, and the after's fallback: the after's own binary with every answer forced to
   cannot_tell (vens's mock with VENS_MOCK_LLM_CANNOT_TELL), every model-answered factor at its worst case. The
   fallback is not a null model and measures no benefit of the model's answers.
@@ -24,14 +26,16 @@ from chain import cells as cellmod
 WRONG_YAML = "wrong_yaml"
 
 
-def null_rules(null):
-    """{before: (score, severity), after: (score, severity)} of the null model's four aggregates."""
+def null_rules(null, basis=None):
+    """{before: (score, severity), after: (score, severity)} of the null model's four aggregates; the after's impact
+    max(T, B), or, basis technical or business (c1c2b), that aggregate."""
     ta, vu, ti, bi = (null[k] for k in ("threat_agent", "vulnerability", "technical_impact", "business_impact"))
     lik = Fraction(ta + vu, 2)
     before = lik * Fraction(ti + bi, 2)
-    after = lik * max(ti, bi)
+    impact = {None: max(ti, bi), contract.TECHNICAL: ti, contract.BUSINESS: bi}[basis]
+    after = lik * impact
     return {"before": (before, cdx.main_severity(float(before))),
-            "after": (after, demo.MATRIX[demo.band(lik)][demo.band(max(ti, bi))])}
+            "after": (after, demo.MATRIX[demo.band(lik)][demo.band(impact)])}
 
 
 def _sd(values):
@@ -101,16 +105,18 @@ def summary(recs):
     return (statistics.median(scores) if scores else None), mode, len(scores), len(recs)
 
 
-def null_table(cells, scen, fallback=None):
+def null_table(cells, scen, fallback=None, rules=None):
     """[{scenario, null, rules, arms: {(model, arm): summary}, fallback: summary or None}] in scenario order;
-    fallback: the cells of a fallback campaign."""
+    fallback: the cells of a fallback campaign; rules, the after's pinned contract: under c1c2b the after's rule reads
+    the impact each scenario's config gives."""
     runs = families.scenario_runs(cells)
     fb = families.scenario_runs(fallback or {})
     out = []
     for sid in sorted(scen):
         arms = {(m, a): summary(_runs(r)) for (m, s, a), r in sorted(runs.items()) if s == sid and r["runs"]}
         found = [summary(_runs(r)) for (m, s, a), r in sorted(fb.items()) if s == sid and a == "after" and r["runs"]]
-        out.append({"scenario": sid, "null": scen[sid]["null"], "rules": null_rules(scen[sid]["null"]),
+        basis = contract.impact_basis(scen[sid]["dep"]) if rules == contract.C1C2B else None
+        out.append({"scenario": sid, "null": scen[sid]["null"], "rules": null_rules(scen[sid]["null"], basis),
                     "arms": arms, "fallback": found[0] if found else None})
     return out
 

@@ -121,24 +121,35 @@ def analysis(vuln):
     return {k: a.get(k) for k in ANALYSIS_FIELDS}
 
 
-def provenance(vuln):
-    """The values of a vulnerability's vens:impact-provenance properties, in order, [] without one. ValueError for
-    properties that are not a list of objects."""
+def property_values(vuln, name):
+    """The values of a vulnerability's properties named name, in order, [] without one. ValueError for properties
+    that are not a list of objects."""
     props = vuln.get("properties")
     if props is None:
         return []
     if not isinstance(props, list) or not all(isinstance(p, dict) for p in props):
         raise ValueError(f"properties {props!r} is not a list of objects")
-    return [p.get("value") for p in props if p.get("name") == "vens:impact-provenance"]
+    return [p.get("value") for p in props if p.get("name") == name]
+
+
+def provenance(vuln):
+    """The values of a vulnerability's vens:impact-provenance properties (property_values())."""
+    return property_values(vuln, "vens:impact-provenance")
+
+
+def basis(vuln):
+    """The values of a vulnerability's vens:impact-basis properties (property_values()), which c1c2b's commit writes:
+    the impact its severity and score are read on."""
+    return property_values(vuln, "vens:impact-basis")
 
 
 def ratings(path):
     """{vulnId: rating} for each CVE listed and rated once whose vector reads, with its published vector, severity
     and score, a score missing or not a number kept as None, the sub-scores its vector gives, its VEX status
-    (analysis(), None without one) and its vens:impact-provenance values (provenance()); and the problems: a CVE
-    listed twice, listed without an OWASP rating, rated twice, a vector missing, null or not 16 levels, a score
-    missing, null or not a number, a status that is not an object, or properties that are not a list of objects.
-    Refused when the file is no VEX."""
+    (analysis(), None without one), its vens:impact-provenance values (provenance()) and its vens:impact-basis values
+    (basis()); and the problems: a CVE listed twice, listed without an OWASP rating, rated twice, a vector missing,
+    null or not 16 levels, a score missing, null or not a number, a status that is not an object, or properties that
+    are not a list of objects. Refused when the file is no VEX."""
     out, problems = {}, []
     vulns = _vulns(path)
     listed = collections.Counter(v["id"] for v in vulns)
@@ -164,12 +175,12 @@ def ratings(path):
             problems.append(f"{vid}: {e}")
             status = None
         try:
-            marked = provenance(v)
+            marked, based = provenance(v), basis(v)
         except ValueError as e:
             problems.append(f"{vid}: {e}")
-            marked = []
+            marked, based = [], []
         out[vid] = {"vector": r["vector"], "severity": r.get("severity"), "score": score_of(r), "levels": lv,
-                    **subscores(lv), "analysis": status, "provenance": marked}
+                    **subscores(lv), "analysis": status, "provenance": marked, "basis": based}
     return out, problems
 
 

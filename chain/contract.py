@@ -39,6 +39,13 @@ The marker commit (MARKER_COMMIT; EARLIER_MARKERS, read the same; agreed.md item
 levels C2''s, and writes on each VEX vulnerability one property vens:impact-provenance: missing-cvss-v3-fallback where
 no usable v3 vector gave the three impacts, cvss-v3 otherwise. chain/conform.py requires it of those commits' runs,
 keyed on the run's commit, and fails it on any other's.
+
+The policy commit (POLICY_COMMIT, the marker commit plus the rating-policy fix, decisions.md 24/11/2026) pins c1c2b:
+C1 + C2''s levels and marker, Skill level from source worst_case, and the severity and score read on one impact, the
+business impact when the config declares data_subjects, the technical impact otherwise (impact_basis()), never max(T,
+B). It writes that basis on each VEX vulnerability, one property vens:impact-basis, technical or business:
+chain/conform.py requires it of that commit's runs, keyed on the run's commit, equal to the config's, recomputes the
+rating on it, and fails it on any other commit's runs. tests/test_c1c2b.py checks these rules.
 """
 import collections
 import json
@@ -285,7 +292,7 @@ def question_of(human_prompt):
 
 # ---- C1 + C2 and C1 + C2', no reachability relay: vens 310-c1c2 at N and at the C2' commit ----
 
-B7C0435, REACH_RULES, C1C2, C1C2P = "b7c0435", "5f797bf", "c1c2", "c1c2p"
+B7C0435, REACH_RULES, C1C2, C1C2P, C1C2B = "b7c0435", "5f797bf", "c1c2", "c1c2p", "c1c2b"
 # N, the commit on 310-c1c2 over 2de5d34 that removes the reachability relay (plan Z0d section 1).
 N_COMMIT = "33a5dbf2ae8d7a6522874058de659e1b58f422aa"
 # The C2' commit, N plus C2' (plan Z0d section 2), S2's after: re-pinned here alone if it is amended.
@@ -295,14 +302,23 @@ C2P_COMMIT = "861017143dec63e24097c8979ffd02bc9efff27b"
 MARKER_COMMIT = "e3007ed5db9cce0e9810a466d17cee5880b29bd4"
 # Earlier marker commits, still read as such: 7ce0211, the first to write the property.
 EARLIER_MARKERS = ("7ce0211bb3abef311bc3dd29be23b9ecdb4a861c",)
+# The policy commit, the marker commit plus the rating-policy fix (310-policy): one impact basis per config, published
+# as vens:impact-basis; re-pinned here alone.
+POLICY_COMMIT = "301c00efef965d1ab9b044326a4e90e04389ca22"
 # The contract each pinned after commit follows; any other commit pins none. 2de5d34 relays declared reachability,
 # which C1 no longer allows: S1's frozen reader reads it, this chain pins it to nothing.
 CONTRACTS = {"b7c0435835447027b04d54d4e6befaaee6b0626b": B7C0435,
              "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES, N_COMMIT: C1C2, C2P_COMMIT: C1C2P,
-             **dict.fromkeys(EARLIER_MARKERS + ((MARKER_COMMIT,) if MARKER_COMMIT else ()), C1C2P)}
-# The no-relay contracts, whose technical impacts are Go's, from the CVSS v3 vectors.
-C1C2_RULES = (C1C2, C1C2P)
-NAMES = {C1C2: "C1 + C2", C1C2P: "C1 + C2'"}
+             **dict.fromkeys(EARLIER_MARKERS + ((MARKER_COMMIT,) if MARKER_COMMIT else ()), C1C2P),
+             POLICY_COMMIT: C1C2B}
+# The no-relay contracts, whose technical impacts are Go's, from the CVSS v3 vectors; those whose Loss of
+# availability is C2''s.
+C1C2_RULES = (C1C2, C1C2P, C1C2B)
+C2P_RULES = (C1C2P, C1C2B)
+NAMES = {C1C2: "C1 + C2", C1C2P: "C1 + C2'", C1C2B: "C1 + C2' on one impact basis"}
+# The policy commit's VEX property, its two values, and the source it gives Skill level.
+BASIS, TECHNICAL, BUSINESS = "vens:impact-basis", "technical", "business"
+WORST_CASE_SOURCE = "worst_case"
 C1C2_QUESTIONS = ("M", "O", "EE", "ID", "LAC", "FD", "RD", "NC", "PV")
 CVSS_SOURCE, FLOOR_SOURCE, ADJUSTMENT_SOURCE = "cvss", "floor", "adjustment"
 VECTOR_MISSING = "cvss_v3_missing"
@@ -457,23 +473,23 @@ def _pv_floor(imp):
 
 def impact_level(f, dep, imp, rules=C1C2):
     """Loss of confidentiality's, integrity's or availability's level from C2's table, availability's from C2''s under
-    rules C1C2P, 9 without a usable vector."""
+    rules C1C2P or C1C2B, 9 without a usable vector."""
     if imp.usable == 0:
         return VECTORLESS_LEVEL
     value = imp.values[AXIS[f]]
     if f == "LC":
         return C2_LC[value][int(CRITICAL_DATA[dep["data_sensitivity"]])]
-    if f == "LAV" and rules == C1C2P:
+    if f == "LAV" and rules in C2P_RULES:
         return C2P_LAV[value][int(primary_services(dep))]
     return (C2_LI if f == "LI" else C2_LAV)[value]
 
 
 def c1c2_counters(dep, imp, rules=C1C2):
-    """The counters Go adds for the three technical impacts: cvss_v3_missing without a usable vector; under C1 + C2',
-    availability_requirement_missing with one, the field unset."""
+    """The counters Go adds for the three technical impacts: cvss_v3_missing without a usable vector; under C1 + C2'
+    (c1c2p, c1c2b), availability_requirement_missing with one, the field unset."""
     if imp.usable == 0:
         return [VECTOR_MISSING]
-    return [AVAILABILITY_MISSING] if rules == C1C2P and dep.get("availability_requirement") is None else []
+    return [AVAILABILITY_MISSING] if rules in C2P_RULES and dep.get("availability_requirement") is None else []
 
 
 def c2p_shown(lav, counters):
@@ -487,14 +503,27 @@ def c2p_shown(lav, counters):
 
 
 def marker_commit(commit):
-    """Whether a run's vens commit is the marker commit or an earlier one, which alone write vens:impact-provenance."""
-    return commit is not None and commit in (MARKER_COMMIT,) + EARLIER_MARKERS
+    """Whether a run's vens commit is the marker commit, an earlier one or the policy commit, which alone write
+    vens:impact-provenance."""
+    return commit is not None and commit in (MARKER_COMMIT, POLICY_COMMIT) + EARLIER_MARKERS
+
+
+def basis_commit(commit):
+    """Whether a run's vens commit is the policy commit, which alone writes vens:impact-basis."""
+    return commit is not None and commit == POLICY_COMMIT
+
+
+def impact_basis(dep):
+    """The impact the policy commit rates a deployment on: business when its config declares data_subjects (any band,
+    none included), technical otherwise (contract.Deployment.ImpactBasis at POLICY_COMMIT)."""
+    return BUSINESS if dep.get("data_subjects") is not None else TECHNICAL
 
 
 def accepted(pinned):
     """The contracts a record may show under the pinned one: C1 + C2's under C1 + C2' too, which gives the same
-    record where availability_requirement is high or critical."""
-    return {C1C2, C1C2P} if pinned == C1C2P else {pinned}
+    record where availability_requirement is high or critical; c1c2b's records show what C1 + C2''s do, their levels
+    C2''s."""
+    return {C1C2, C1C2P} if pinned in C2P_RULES else {pinned}
 
 
 def c1c2_asked(f, dep, imp, described=True):
@@ -515,11 +544,14 @@ def c1c2_options(f, dep, imp, described=True, rules=C1C2):
     return options(f, dep, _pv_floor(imp), described)
 
 
-def c1c2_source(f, dep, imp, answer=None, described=True):
+def c1c2_source(f, dep, imp, answer=None, described=True, rules=C1C2):
     """Where factor f's level comes from under C1 + C2, before any adjustment: cvss for the three technical impacts,
-    floor for a floored Privacy violation, otherwise as under b7c0435."""
+    floor for a floored Privacy violation, otherwise as under b7c0435; under c1c2b Skill level's is worst_case, its
+    level unchanged."""
     if f in AXIS:
         return CVSS_SOURCE
+    if f == "SL" and rules == C1C2B:
+        return WORST_CASE_SOURCE
     return source(f, dep, _pv_floor(imp), answer, described)
 
 
@@ -542,18 +574,18 @@ def _read(f, opts, answer):
 def c1c2_levels(dep, imp, described, answers, adjusted=None, rules=C1C2):
     """{factor: (level, source)}, the 16, from a CVE's answers as answers.json writes them ({factor: answer}, an
     unasked factor absent or None) and, for a flagged CVE, its adjustment ({"O": opportunity's answer, "PV":
-    confidentiality's}): Compute's rules under C1 + C2 or, rules C1C2P, C1 + C2'. No reachability input reaches
-    them."""
+    confidentiality's}): Compute's rules under C1 + C2 or, rules C1C2P, C1 + C2' (rules C1C2B: C1 + C2''s levels,
+    Skill level from source worst_case). No reachability input reaches them."""
     adjusted = adjusted or {}
     out = {}
     for f in FACTORS:
         opts = c1c2_options(f, dep, imp, described, rules)
         if None in opts:
-            out[f] = (opts[None], c1c2_source(f, dep, imp, described=described))
+            out[f] = (opts[None], c1c2_source(f, dep, imp, described=described, rules=rules))
             continue
         read, level = _read(f, opts, answers.get(f))
         level = opts[read] if level is None else level
-        out[f] = (level, c1c2_source(f, dep, imp, read if f != "ID" else None, described))
+        out[f] = (level, c1c2_source(f, dep, imp, read if f != "ID" else None, described, rules))
     lower = adjusted.get("O")
     if described and lower in ANSWERS["O"] and lower != CANNOT_TELL and ANSWERS["O"][lower] < out["O"][0]:
         out["O"] = (ANSWERS["O"][lower], ADJUSTMENT_SOURCE)

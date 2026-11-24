@@ -17,6 +17,12 @@ as Go does (contract.c1c2_counters), the latter never under C1 + C2.
 A run of the marker commit (contract.MARKER_COMMIT; the mirror review's M3 and M3+), keyed on the run's own commit,
 carries on each CVE exactly one vens:impact-provenance property, missing-cvss-v3-fallback where its report gives no
 usable v3 vector and where its entry counts cvss_v3_missing, cvss-v3 otherwise; a run of any other commit carries none.
+
+Under c1c2b (contract.POLICY_COMMIT) the levels are C1 + C2''s and the rating is recomputed on the run's own published
+vens:impact-basis: the business impact where it says business, the technical impact where it says technical. A run of
+that commit carries on each CVE exactly one such property, its value the one the config gives (business iff it
+declares data_subjects, contract.impact_basis): one missing, two, another value or one off the config refuses the run.
+A run of any other commit carries none, and its rating is recomputed on max(T, B).
 """
 import os
 from fractions import Fraction
@@ -29,14 +35,35 @@ from chain import cells as cellmod
 PASS, FAIL, INCONCLUSIVE = "pass", "fail", "inconclusive"
 
 
-def rating(levels):
-    """(vector, severity, score) the 16 levels give: OWASP's likelihood and impact, max(T, B), the matrix on the
-    calculator's bands, the score their product, as vens rates."""
+def rating(levels, basis=None):
+    """(vector, severity, score) the 16 levels give: OWASP's likelihood and impact, the matrix on the calculator's
+    bands, the score their product, as vens rates; the impact max(T, B), or, basis business or technical (c1c2b), that
+    impact alone."""
     total = lambda names: sum(levels[f] for f in names)
     likelihood = Fraction(total(cdx.FACTORS[:8]), 8)
-    impact = max(Fraction(total(cdx.FACTORS[8:12]), 4), Fraction(total(cdx.FACTORS[12:]), 4))
+    technical, business = Fraction(total(cdx.FACTORS[8:12]), 4), Fraction(total(cdx.FACTORS[12:]), 4)
+    impact = {None: max(technical, business), contract.TECHNICAL: technical, contract.BUSINESS: business}[basis]
     vector = "/".join(f"{f}:{levels[f]}" for f in cdx.FACTORS)
     return vector, verdicts.SEVERITY[verdicts.band(likelihood)][verdicts.band(impact)], float(likelihood * impact)
+
+
+def published_basis(published):
+    """The one vens:impact-basis value a VEX rating carries, technical or business; None for none, two or another."""
+    values = published.get("basis") or []
+    return values[0] if len(values) == 1 and values[0] in (contract.TECHNICAL, contract.BUSINESS) else None
+
+
+def _basis_problems(vid, published, dep, commit):
+    """The vens:impact-basis values published for a CVE against the run's commit and its config."""
+    values = published.get("basis") or []
+    if not contract.basis_commit(commit):
+        return [f"{vid}: {contract.BASIS} published, vens {str(commit)[:12]} writes no basis"] if values else []
+    if len(values) != 1:
+        return [f"{vid}: {len(values)} {contract.BASIS} properties, not one"]
+    value, want = values[0], contract.impact_basis(dep)
+    if value not in (contract.TECHNICAL, contract.BUSINESS):
+        return [f"{vid}: {contract.BASIS} {value!r} is not {contract.TECHNICAL} or {contract.BUSINESS}"]
+    return [f"{vid}: {contract.BASIS} {value!r}, its config gives {want!r}"] if value != want else []
 
 
 def _counter_problems(vid, entry, dep, imp, rules):
@@ -63,9 +90,11 @@ def _marker_problems(vid, entry, published, imp, commit):
 
 
 def cve_problems(vid, entry, published, dep, findings, rules=contract.C1C2, commit=None):
-    """What differs, for one CVE of a run, from the pinned rules (C1 + C2, or C1 + C2' with rules C1C2P) on its own
-    answers: entry, its answers.json entry as answers.per_cve reads it; published, its VEX rating; findings, the
-    report's rows of the CVE; commit, the run's vens commit, which decides the marker."""
+    """What differs, for one CVE of a run, from the pinned rules (C1 + C2, C1 + C2' with rules C1C2P, or c1c2b) on its
+    own answers: entry, its answers.json entry as answers.per_cve reads it; published, its VEX rating; findings, the
+    report's rows of the CVE; commit, the run's vens commit, which decides the marker and the basis. Under c1c2b the
+    rating is recomputed on the published basis, and a rating without one valid basis is not recomputed: its basis
+    problem refuses the run."""
     if entry is None or entry["unrated"]:
         return [f"{vid}: no rated answers.json entry"]
     problems = [f"{vid}: the VEX publishes a status, {published['analysis'].get('state')}"] \
@@ -78,11 +107,13 @@ def cve_problems(vid, entry, published, dep, findings, rules=contract.C1C2, comm
     got = contract.c1c2_levels(dep, imp, contract.described(findings), answers, adjusted, rules)
     levels = {f: lv for f, (lv, _) in got.items()}
     off = [f"{f} {published['levels'][f]} not {levels[f]}" for f in cdx.FACTORS if published["levels"][f] != levels[f]]
-    vector, severity, score = rating(levels)
-    off += [f"{name} {published.get(name)!r} not {want!r}" for name, want in (
-        ("vector", vector), ("severity", severity), ("score", score)) if published.get(name) != want]
+    basis = published_basis(published) if rules == contract.C1C2B else None
+    if rules != contract.C1C2B or basis is not None:
+        vector, severity, score = rating(levels, basis)
+        off += [f"{name} {published.get(name)!r} not {want!r}" for name, want in (
+            ("vector", vector), ("severity", severity), ("score", score)) if published.get(name) != want]
     return problems + ([f"{vid}: " + ", ".join(off)] if off else []) + _counter_problems(vid, entry, dep, imp, rules) \
-        + _marker_problems(vid, entry, published, imp, commit)
+        + _marker_problems(vid, entry, published, imp, commit) + _basis_problems(vid, published, dep, commit)
 
 
 def run_problems(rec, config, cves, rules=contract.C1C2):

@@ -6,8 +6,9 @@ spreads, the cross-model figures, the floor and #340's report on the demo scan.
 - Recomputable-score share, target (ii): per run, the report's CVEs whose published score equals exactly the score
   the arm's own formula gives from the vector, over those CVEs; beside it, the severity's agreement with the arm's
   own rule. The after: L x max(T, B), and OWASP's matrix on the likelihood band and the band of max(T, B), Note
-  written info. The before (vens main): ((TA + VU) / 2) x ((T + B) / 2) on its group levels, and its 60/40/20/5
-  thresholds on that score.
+  written info; a rating carrying one vens:impact-basis (c1c2b, the policy commit) on that impact alone, B where it
+  says business, T where it says technical. The before (vens main): ((TA + VU) / 2) x ((T + B) / 2) on its group
+  levels, and its 60/40/20/5 thresholds on that score.
 - Within-project spread and ranking entropy: per run, W and H (chain/stats.py); per model and context, the after
   against the before by the non-inferiority bound on mean(after) / mean(before). The two arms score with two formulas
   over two level grids, so beside it, a diagnostic: W and H of the before rescored under L x max(T, B) from its own
@@ -45,11 +46,20 @@ def _mean(levels, names):
     return Fraction(sum(levels[f] for f in names), len(names))
 
 
+BASIS_IMPACT = {"technical": TECHNICAL, "business": BUSINESS}
+
+
 def own_rule(rating, arm):
-    """(score, severity) the arm's own rule gives from the rating's vector, the score as an exact fraction."""
+    """(score, severity) the arm's own rule gives from the rating's vector, the score as an exact fraction; the after's
+    impact max(T, B), or the one its single published vens:impact-basis names (c1c2b)."""
     lv = rating["levels"]
     if arm == "after":
-        lik, impact = _mean(lv, LIKELIHOOD), max(_mean(lv, TECHNICAL), _mean(lv, BUSINESS))
+        basis = rating.get("basis") or []
+        lik = _mean(lv, LIKELIHOOD)
+        if len(basis) == 1 and basis[0] in BASIS_IMPACT:
+            impact = _mean(lv, BASIS_IMPACT[basis[0]])
+        else:
+            impact = max(_mean(lv, TECHNICAL), _mean(lv, BUSINESS))
         return lik * impact, MATRIX[band(lik)][band(impact)]
     ta, vu, t, b = (_mean(lv, cdx.FACTORS[i:i + 4]) for i in (0, 4, 8, 12))
     score = (ta + vu) / 2 * ((t + b) / 2)

@@ -22,7 +22,8 @@ the secondary column's level where C2's differs, shows C1 + C2'; any other C1 + 
 where the field is high or critical. Which column applies is the config's: chain/conform.py recomputes it. Under
 either, no unrated entry counts cvss_v3_missing or availability_requirement_missing, each counter's total in the
 document is the sum of its entries' occurrences, an omitted total read as zero, and under C1 + C2
-availability_requirement_missing is nowhere, entry or total.
+availability_requirement_missing is nowhere, entry or total. Pinned c1c2b (the policy commit) reads the entries as C1 +
+C2' does: its levels are C2''s, its records show what C1 + C2''s show.
 """
 import collections
 
@@ -188,7 +189,7 @@ def _c2_levels(f, value, rules=contract.C1C2):
         return {contract.VECTORLESS_LEVEL}
     if value not in contract.WORSE:
         return set()
-    if f == "LAV" and rules == contract.C1C2P:
+    if f == "LAV" and rules in contract.C2P_RULES:
         return set(contract.C2P_LAV[value])
     return set(contract.C2_LC[value]) if f == "LC" else {(contract.C2_LI if f == "LI" else contract.C2_LAV)[value]}
 
@@ -200,7 +201,7 @@ def _availability_problems(vid, lav, counters, rules):
     name = contract.AVAILABILITY_MISSING
     if n == 0:
         return []
-    if rules != contract.C1C2P:
+    if rules not in contract.C2P_RULES:
         return [f"{vid}: {name} counted, C2 reads no availability_requirement"]
     value = lav.get("cvss")
     if n > 1:
@@ -266,7 +267,7 @@ def _total_problems(doc, rules):
         counted = sum((e.get("counters") or []).count(name) for e in doc["vulnerabilities"])
         if total != counted:
             problems.append(f"{name} totals {total}, its entries count {counted}")
-    if rules != contract.C1C2P and doc["counters"].get(contract.AVAILABILITY_MISSING, 0):
+    if rules not in contract.C2P_RULES and doc["counters"].get(contract.AVAILABILITY_MISSING, 0):
         problems.append(f"{contract.AVAILABILITY_MISSING} in the totals, C2 reads no availability_requirement")
     return problems
 
