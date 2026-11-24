@@ -94,6 +94,17 @@ class TestThePin(unittest.TestCase):
         self.assertEqual([contract.marker_commit(x) for x in (REPAIR, POLICY, MARKER, contract.C2P_COMMIT)],
                          [True, True, True, False])
 
+    def test_the_docs_commit_and_ed1ed1c(self):
+        # a475b2a, review B's docs and comments over ed1ed1c, is the repair commit; ed1ed1c is still read as one
+        (first,) = contract.EARLIER_REPAIRS
+        self.assertEqual((REPAIR, first), ("a475b2a5d3499e86680ba366b505da770b6fbb96",
+                                           "ed1ed1c6eac749976e8d3be16aa409fa8870ede3"))
+        self.assertEqual(sorted(x for x, rules in contract.CONTRACTS.items() if rules == contract.C1C2R),
+                         sorted((REPAIR, first)))
+        for commit in (REPAIR, first):
+            self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": commit}), contract.C1C2R)
+            self.assertEqual((contract.basis_commit(commit), contract.marker_commit(commit)), (True, True))
+
 
 class TestTheTable(unittest.TestCase):
     """contract.damage over 4 criticalities x 4 sensitivities x 4 availability requirements x (27 C/I/A + none)."""
@@ -198,6 +209,8 @@ class TestTheGate(unittest.TestCase):
 
     def test_a_run_on_the_table_passes(self):
         self.assertEqual(self.problems(published("reach_yes", self.scen), "reach_yes"), [])
+        for commit in contract.EARLIER_REPAIRS:
+            self.assertEqual(self.problems(published("reach_yes", self.scen, commit=commit), "reach_yes"), [], commit)
         rec = published("reach_no", self.scen, basis=("technical",), rate_on="technical")
         self.assertEqual(self.problems(rec, "reach_no"), [])
         cells = conform.read(cellmod.group([published("reach_yes", self.scen)]), self.scen, None, contract.C1C2R)

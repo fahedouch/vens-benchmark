@@ -54,7 +54,7 @@ so t high), on the decided table (DAMAGE, OWASP_Risk_Rating_Methodology.md:178, 
 reading, no cannot_tell counter. Its VEX metadata carries one property vens:rating-policy, 2. chain/conform.py
 recomputes Financial and Reputation damage from the table, then the rating on the published basis, and requires the
 rating policy, under c1c2r whatever the run's commit; under c1c2b and c1c2r a rating without one valid basis is refused
-whatever the commit. tests/test_c1c2r.py checks these rules.
+whatever the commit. tests/test_c1c2r.py checks these rules. EARLIER_REPAIRS are read the same.
 """
 import collections
 import json
@@ -321,14 +321,17 @@ EARLIER_MARKERS = ("7ce0211bb3abef311bc3dd29be23b9ecdb4a861c",)
 # as vens:impact-basis; re-pinned here alone.
 POLICY_COMMIT = "301c00efef965d1ab9b044326a4e90e04389ca22"
 # The repair commit, the policy commit plus Financial and Reputation damage from the declared business_criticality and
-# vens:rating-policy 2 in the VEX metadata (310-policy ed1ed1c, over d1604bc and 73dd103); re-pinned here alone.
-REPAIR_COMMIT = "ed1ed1c6eac749976e8d3be16aa409fa8870ede3"
+# vens:rating-policy 2 in the VEX metadata (310-policy ed1ed1c, over d1604bc and 73dd103), with a475b2a's docs and
+# comments over it (review B); re-pinned here alone.
+REPAIR_COMMIT = "a475b2a5d3499e86680ba366b505da770b6fbb96"
+# Earlier repair commits, still read as such: ed1ed1c, which a475b2a changes in docs and comments alone.
+EARLIER_REPAIRS = ("ed1ed1c6eac749976e8d3be16aa409fa8870ede3",)
 # The contract each pinned after commit follows; any other commit pins none. 2de5d34 relays declared reachability,
 # which C1 no longer allows: S1's frozen reader reads it, this chain pins it to nothing.
 CONTRACTS = {"b7c0435835447027b04d54d4e6befaaee6b0626b": B7C0435,
              "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES, N_COMMIT: C1C2, C2P_COMMIT: C1C2P,
              **dict.fromkeys(EARLIER_MARKERS + ((MARKER_COMMIT,) if MARKER_COMMIT else ()), C1C2P),
-             POLICY_COMMIT: C1C2B, REPAIR_COMMIT: C1C2R}
+             POLICY_COMMIT: C1C2B, **dict.fromkeys((REPAIR_COMMIT,) + EARLIER_REPAIRS, C1C2R)}
 # The no-relay contracts, whose technical impacts are Go's, from the CVSS v3 vectors; those whose Loss of
 # availability is C2''s.
 C1C2_RULES = (C1C2, C1C2P, C1C2B, C1C2R)
@@ -531,14 +534,15 @@ def c2p_shown(lav, counters):
 
 
 def marker_commit(commit):
-    """Whether a run's vens commit is the marker commit, an earlier one, the policy commit or the repair commit, which
+    """Whether a run's vens commit is the marker commit, an earlier one, the policy commit or a repair commit, which
     alone write vens:impact-provenance."""
-    return commit is not None and commit in (MARKER_COMMIT, POLICY_COMMIT, REPAIR_COMMIT) + EARLIER_MARKERS
+    return commit is not None and commit in (MARKER_COMMIT, POLICY_COMMIT, REPAIR_COMMIT) + EARLIER_MARKERS + \
+        EARLIER_REPAIRS
 
 
 def basis_commit(commit):
-    """Whether a run's vens commit is the policy commit or the repair commit, which alone write vens:impact-basis."""
-    return commit is not None and commit in (POLICY_COMMIT, REPAIR_COMMIT)
+    """Whether a run's vens commit is the policy commit or a repair commit, which alone write vens:impact-basis."""
+    return commit is not None and commit in (POLICY_COMMIT, REPAIR_COMMIT) + EARLIER_REPAIRS
 
 
 def technical_band(dep, imp, rules=C1C2R):
