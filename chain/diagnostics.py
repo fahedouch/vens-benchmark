@@ -8,12 +8,11 @@ model with the after's conservative fallback. Each is printed and judged by noth
 - The wrong YAML: the runs of wrong_yaml, whose context contradicts its CVE's text, as published.
 - The table against the null model (baseline.py, frozen): per scenario, its four aggregates scored under each arm's
   own rule, the before's ((TA + VU) / 2) x ((T + B) / 2) and its 60/40/20/5 thresholds, the after's L x max(T, B)
-  with L = (TA + VU) / 2 and OWASP's matrix, under c1c2b L x the impact the scenario's config gives (contract.
-  impact_basis: B where it declares data_subjects, T otherwise); beside them each arm's median score and most common
-  severity per model,
-  over the runs that give one, and the after's fallback: the after's own binary with every answer forced to
-  cannot_tell (vens's mock with VENS_MOCK_LLM_CANNOT_TELL), every model-answered factor at its worst case. The
-  fallback is not a null model and measures no benefit of the model's answers.
+  with L = (TA + VU) / 2 and OWASP's matrix, under c1c2b and c1c2r L x the impact the scenario's config gives
+  (contract.impact_basis: B where it declares data_subjects, T otherwise); beside them each arm's median score and most
+  common severity per model, over the runs that give one, and the after's fallback: the after's own binary with every
+  answer forced to cannot_tell (vens's mock with VENS_MOCK_LLM_CANNOT_TELL), every model-answered factor at its worst
+  case. The fallback is not a null model and measures no benefit of the model's answers.
 """
 import collections
 import itertools
@@ -115,7 +114,7 @@ def null_table(cells, scen, fallback=None, rules=None):
     for sid in sorted(scen):
         arms = {(m, a): summary(_runs(r)) for (m, s, a), r in sorted(runs.items()) if s == sid and r["runs"]}
         found = [summary(_runs(r)) for (m, s, a), r in sorted(fb.items()) if s == sid and a == "after" and r["runs"]]
-        basis = contract.impact_basis(scen[sid]["dep"]) if rules == contract.C1C2B else None
+        basis = contract.impact_basis(scen[sid]["dep"]) if rules in contract.BASIS_RULES else None
         out.append({"scenario": sid, "null": scen[sid]["null"], "rules": null_rules(scen[sid]["null"], basis),
                     "arms": arms, "fallback": found[0] if found else None})
     return out

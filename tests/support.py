@@ -8,6 +8,8 @@
                                     vens:impact-provenance property (C1 + C2'), S2's after
     VB_VENS_MARKER_SRC              vens's source tree at the marker commit, whose Go tests freeze the demo scan's C2
                                     counts
+    VB_VENS_POLICY                  a vens binary built from 310-policy at the policy commit 301c00e (c1c2b)
+    VB_VENS_REPAIR                  a vens binary built from 310-policy at the repair commit ed1ed1c (c1c2r)
     VB_DEMO                         a vens-demo tree at 7ab1570 (runs/2026-09-23/scan/scan.json, contexts/)
     VB_QUICKSTART                   vens's examples/quickstart at b7c0435
     VB_JAR, VB_JDK                  the calculator's 1.0.1 JAR and a JDK bin folder (JAVA_HOME/bin otherwise)

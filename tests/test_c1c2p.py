@@ -320,8 +320,10 @@ class TestTheCounterTotals(unittest.TestCase):
         self.assertEqual(answers.validate(bypass, contract.C1C2P), [f"{AR} totals 1, its entries count 0"])
 
     def test_a_c2_counter_on_an_unrated_entry(self):
+        # c1c2r also reads Skill level's and the declared damages' sources, which c1c2_entry does not give: its counters
+        # are tests/test_c1c2r.py's
         for name in (AR, VM):
-            for pinned in contract.C1C2_RULES:
+            for pinned in (contract.C1C2, contract.C1C2P, contract.C1C2B):
                 totals = [f"{AR} in the totals, C2 reads no availability_requirement"] \
                     if (name, pinned) == (AR, contract.C1C2) else []
                 self.assertEqual(answers.validate(doc(c1c2_entry(A, "H"), unrated(counters=[name])), pinned),
@@ -332,7 +334,7 @@ class TestTheCounterTotals(unittest.TestCase):
 
     def test_each_total_against_its_entries(self):
         vectorless, counted = c1c2_entry(A, None, counters=[VM]), c1c2_entry(B, "H", counters=[AR])
-        for pinned in contract.C1C2_RULES:
+        for pinned in (contract.C1C2, contract.C1C2P, contract.C1C2B):
             self.assertEqual(answers.validate(doc(vectorless), pinned), [])
             self.assertEqual(answers.validate(doc(vectorless, counters={}), pinned),
                              [f"{VM} totals 0, its entries count 1"])

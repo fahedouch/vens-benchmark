@@ -68,7 +68,7 @@ class TestThePin(unittest.TestCase):
         self.assertEqual((len(POLICY), contract.CONTRACTS[POLICY]), (40, contract.C1C2B))
         self.assertEqual(attempt.pinned_contract({"arm": "after", "vens_commit": POLICY}), contract.C1C2B)
         self.assertIn(contract.C1C2B, contract.C1C2_RULES)
-        self.assertEqual(contract.C2P_RULES, (contract.C1C2P, contract.C1C2B))
+        self.assertEqual(contract.C2P_RULES, (contract.C1C2P, contract.C1C2B, contract.C1C2R))
         self.assertEqual(contract.accepted(contract.C1C2B), {contract.C1C2, contract.C1C2P})
         self.assertEqual(contract.accepted(contract.C1C2P), {contract.C1C2, contract.C1C2P})
         self.assertEqual(contract.accepted(contract.C1C2), {contract.C1C2})
@@ -89,7 +89,7 @@ class TestThePin(unittest.TestCase):
                              contract.c1c2_counters(sc["dep"], sc["impact"], contract.C1C2P), sid)
         low = dict(DEP, availability_requirement="low")
         vectored = contract.impact([("nvd", "3.1", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L")])
-        self.assertEqual([contract.impact_level("LAV", low, vectored, x) for x in contract.C1C2_RULES], [5, 1, 1])
+        self.assertEqual([contract.impact_level("LAV", low, vectored, x) for x in contract.C1C2_RULES], [5, 1, 1, 1])
         self.assertEqual(contract.impact_level("LAV", DEP, contract.NO_IMPACT_READ, contract.C1C2B), 9)
         self.assertEqual(contract.c1c2_source("SL", DEP, vectored), "constant")
 

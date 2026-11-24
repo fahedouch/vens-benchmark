@@ -23,6 +23,12 @@ vens:impact-basis: the business impact where it says business, the technical imp
 that commit carries on each CVE exactly one such property, its value the one the config gives (business iff it
 declares data_subjects, contract.impact_basis): one missing, two, another value or one off the config refuses the run.
 A run of any other commit carries none, and its rating is recomputed on max(T, B).
+
+Under c1c2b and c1c2r a rating without one valid basis is refused whatever the run's commit (the review's M1): it is
+not recomputed, and its basis problem refuses the run. Under c1c2r (contract.REPAIR_COMMIT) Financial damage and
+Reputation damage are recomputed from the config's business_criticality at t, the band of max(LC, LI, LAV), on the
+decided table (contract.damage), the rating on the published basis, and the VEX metadata must carry one
+vens:rating-policy, 2, whatever the run's commit: one missing, two or another value refuses the run, once.
 """
 import os
 from fractions import Fraction
@@ -53,10 +59,11 @@ def published_basis(published):
     return values[0] if len(values) == 1 and values[0] in (contract.TECHNICAL, contract.BUSINESS) else None
 
 
-def _basis_problems(vid, published, dep, commit):
-    """The vens:impact-basis values published for a CVE against the run's commit and its config."""
+def _basis_problems(vid, published, dep, commit, rules=contract.C1C2):
+    """The vens:impact-basis values published for a CVE against the run's commit and its config; under c1c2b and
+    c1c2r one valid basis is required whatever the commit."""
     values = published.get("basis") or []
-    if not contract.basis_commit(commit):
+    if not contract.basis_commit(commit) and (values or rules not in contract.BASIS_RULES):
         return [f"{vid}: {contract.BASIS} published, vens {str(commit)[:12]} writes no basis"] if values else []
     if len(values) != 1:
         return [f"{vid}: {len(values)} {contract.BASIS} properties, not one"]
@@ -90,11 +97,11 @@ def _marker_problems(vid, entry, published, imp, commit):
 
 
 def cve_problems(vid, entry, published, dep, findings, rules=contract.C1C2, commit=None):
-    """What differs, for one CVE of a run, from the pinned rules (C1 + C2, C1 + C2' with rules C1C2P, or c1c2b) on its
-    own answers: entry, its answers.json entry as answers.per_cve reads it; published, its VEX rating; findings, the
-    report's rows of the CVE; commit, the run's vens commit, which decides the marker and the basis. Under c1c2b the
-    rating is recomputed on the published basis, and a rating without one valid basis is not recomputed: its basis
-    problem refuses the run."""
+    """What differs, for one CVE of a run, from the pinned rules (C1 + C2, C1 + C2' with rules C1C2P, c1c2b or c1c2r) on
+    its own answers: entry, its answers.json entry as answers.per_cve reads it; published, its VEX rating; findings, the
+    report's rows of the CVE; commit, the run's vens commit, which decides the marker and the basis. Under c1c2b and
+    c1c2r the rating is recomputed on the published basis, and a rating without one valid basis is not recomputed: its
+    basis problem refuses the run, whatever the commit."""
     if entry is None or entry["unrated"]:
         return [f"{vid}: no rated answers.json entry"]
     problems = [f"{vid}: the VEX publishes a status, {published['analysis'].get('state')}"] \
@@ -107,19 +114,32 @@ def cve_problems(vid, entry, published, dep, findings, rules=contract.C1C2, comm
     got = contract.c1c2_levels(dep, imp, contract.described(findings), answers, adjusted, rules)
     levels = {f: lv for f, (lv, _) in got.items()}
     off = [f"{f} {published['levels'][f]} not {levels[f]}" for f in cdx.FACTORS if published["levels"][f] != levels[f]]
-    basis = published_basis(published) if rules == contract.C1C2B else None
-    if rules != contract.C1C2B or basis is not None:
+    basis = published_basis(published) if rules in contract.BASIS_RULES else None
+    if rules not in contract.BASIS_RULES or basis is not None:
         vector, severity, score = rating(levels, basis)
         off += [f"{name} {published.get(name)!r} not {want!r}" for name, want in (
             ("vector", vector), ("severity", severity), ("score", score)) if published.get(name) != want]
     return problems + ([f"{vid}: " + ", ".join(off)] if off else []) + _counter_problems(vid, entry, dep, imp, rules) \
-        + _marker_problems(vid, entry, published, imp, commit) + _basis_problems(vid, published, dep, commit)
+        + _marker_problems(vid, entry, published, imp, commit) + _basis_problems(vid, published, dep, commit, rules)
+
+
+def _policy_problems(rec):
+    """c1c2r: the VEX metadata's vens:rating-policy values (cdx.ratings carries them on each rating), one 2 required;
+    one problem per run."""
+    found = {tuple(r["policy"]) if isinstance(r.get("policy"), list) else None for r in (rec["ratings"] or {}).values()}
+    want = (contract.RATING_POLICY_VERSION,)
+    if not found or found == {want}:
+        return []
+    shown = ", ".join("metadata unread" if x is None else repr(list(x)) for x in sorted(found, key=str))
+    return [f"{contract.RATING_POLICY} {shown}, not one {want[0]!r}"]
 
 
 def run_problems(rec, config, cves, rules=contract.C1C2):
-    """cve_problems() over every CVE the run's VEX rates; cves, the report's {vulnId: [finding]}."""
+    """cve_problems() over every CVE the run's VEX rates; cves, the report's {vulnId: [finding]}; under c1c2r the
+    rating policy (_policy_problems)."""
     per = (rec.get("answers") or {}).get("per_cve") or {}
-    dep, out = contract.deployment(config), []
+    dep = contract.deployment(config)
+    out = _policy_problems(rec) if rules == contract.C1C2R else []
     for vid, published in sorted((rec["ratings"] or {}).items()):
         if vid not in cves:
             out.append(f"{vid}: rated, not in the report")

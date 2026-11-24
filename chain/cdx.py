@@ -137,6 +137,17 @@ def provenance(vuln):
     return property_values(vuln, "vens:impact-provenance")
 
 
+def rating_policy(doc):
+    """The values of the VEX metadata's vens:rating-policy properties (property_values()), which c1c2r's commit
+    writes once, 2. ValueError for metadata that is not an object."""
+    meta = doc.get("metadata") if isinstance(doc, dict) else None
+    if meta is None:
+        return []
+    if not isinstance(meta, dict):
+        raise ValueError(f"metadata {meta!r} is not an object")
+    return property_values(meta, "vens:rating-policy")
+
+
 def basis(vuln):
     """The values of a vulnerability's vens:impact-basis properties (property_values()), which c1c2b's commit writes:
     the impact its severity and score are read on."""
@@ -147,11 +158,16 @@ def ratings(path):
     """{vulnId: rating} for each CVE listed and rated once whose vector reads, with its published vector, severity
     and score, a score missing or not a number kept as None, the sub-scores its vector gives, its VEX status
     (analysis(), None without one), its vens:impact-provenance values (provenance()) and its vens:impact-basis values
-    (basis()); and the problems: a CVE listed twice, listed without an OWASP rating, rated twice, a vector missing,
-    null or not 16 levels, a score missing, null or not a number, a status that is not an object, or properties that
-    are not a list of objects. Refused when the file is no VEX."""
+    (basis()), and the VEX metadata's vens:rating-policy values (rating_policy(), None when the metadata does not read,
+    which only c1c2r reads); and the problems: a CVE listed twice, listed without an OWASP rating, rated twice, a vector
+    missing, null or not 16 levels, a score missing, null or not a number, a status that is not an object, or
+    properties that are not a list of objects. Refused when the file is no VEX."""
     out, problems = {}, []
     vulns = _vulns(path)
+    try:
+        policy = rating_policy(_load(path))
+    except ValueError:
+        policy = None
     listed = collections.Counter(v["id"] for v in vulns)
     problems += [f"{vid}: listed {n} times in the VEX" for vid, n in sorted(listed.items()) if n > 1]
     for v in vulns:
@@ -180,7 +196,8 @@ def ratings(path):
             problems.append(f"{vid}: {e}")
             marked, based = [], []
         out[vid] = {"vector": r["vector"], "severity": r.get("severity"), "score": score_of(r), "levels": lv,
-                    **subscores(lv), "analysis": status, "provenance": marked, "basis": based}
+                    **subscores(lv), "analysis": status, "provenance": marked, "basis": based,
+                    "policy": None if policy is None else list(policy)}
     return out, problems
 
 

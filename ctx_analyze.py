@@ -24,15 +24,17 @@ section names each replicate's attempt, and the measured cost never mixes with t
 CVEs with no usable CVSS v3 vector, with one refused, whose usable vectors disagree and on how many axes, with a v4
 vector beside, and with Privacy violation at its floor.
 
---rules pins the after's contract, which picks the scenario checks: b7c0435, 5f797bf, c1c2, c1c2p or c1c2b; by default
-the one --commit after= pins (chain/contract.py, CONTRACTS). The runs never choose it: a run off it is marked not
-certified, and the reader refuses its answers.json where the pinned contract, or its own commit's, is another. Nothing
-pinned, the scenarios are read on b7c0435's checks, the historical default, and each run against its commit's contract.
-Under c1c2, c1c2p or c1c2b (no reachability relay, plan Z0d; c1c2p with C2''s Loss of availability; c1c2b with it, on
-the one impact basis each config gives, published as vens:impact-basis) every after cell is an implementation item
-recomputed from its frozen inputs (chain/conform.py; --demo for the demo scan), and the report opens on it. Exit 0 once written, 1 when a reader refuses an input or an input is wrong, or, the report written all the
-same, when the implementation gate stops a go: an after cell failing or inconclusive, a run off its recomputation, a
-VEX status or a declared block anywhere. 2 on a usage error.
+--rules pins the after's contract, which picks the scenario checks: b7c0435, 5f797bf, c1c2, c1c2p, c1c2b or c1c2r;
+by default the one --commit after= pins (chain/contract.py, CONTRACTS). The runs never choose it: a run off it is marked
+not certified, and the reader refuses its answers.json where the pinned contract, or its own commit's, is another.
+Nothing pinned, the scenarios are read on b7c0435's checks, the historical default, and each run against its commit's
+contract. Under c1c2, c1c2p, c1c2b or c1c2r (no reachability relay, plan Z0d; c1c2p with C2''s Loss of availability;
+c1c2b with it, on the one impact basis each config gives, published as vens:impact-basis; c1c2r with Financial and
+Reputation damage from the declared business_criticality and vens:rating-policy 2) every after cell is an
+implementation item recomputed from its frozen inputs (chain/conform.py; --demo for the demo scan), and the report opens
+on it. Exit 0 once written, 1 when a reader refuses an input or an input is wrong, or, the report written all the same,
+when the implementation gate stops a go: an after cell failing or inconclusive, a run off its recomputation, a VEX
+status or a declared block anywhere. 2 on a usage error.
 """
 import argparse
 import collections

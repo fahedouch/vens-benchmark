@@ -23,7 +23,9 @@ where the field is high or critical. Which column applies is the config's: chain
 either, no unrated entry counts cvss_v3_missing or availability_requirement_missing, each counter's total in the
 document is the sum of its entries' occurrences, an omitted total read as zero, and under C1 + C2
 availability_requirement_missing is nowhere, entry or total. Pinned c1c2b (the policy commit) reads the entries as C1 +
-C2' does: its levels are C2''s, its records show what C1 + C2''s show.
+C2' does: its levels are C2''s, its records show what C1 + C2''s show. Pinned c1c2r (the repair commit) reads them the
+same way and also requires, on every rated entry, Skill level from source worst_case and Financial damage and
+Reputation damage from source criticality with no answer and no reading (their levels are chain/conform.py's).
 """
 import collections
 
@@ -272,6 +274,18 @@ def _total_problems(doc, rules):
     return problems
 
 
+def _declared_problems(vid, factors):
+    """c1c2r: Skill level from source worst_case; Financial and Reputation damage from source criticality, never
+    answered or read."""
+    problems = [] if (factors.get("SL") or {}).get("source") == contract.WORST_CASE_SOURCE else \
+        [f"{vid}: SL not from {contract.WORST_CASE_SOURCE}"]
+    for f in contract.DECLARED:
+        x = factors.get(f) or {}
+        if x.get("source") != contract.CRITICALITY_SOURCE or x.get("answer") is not None or x.get("reading"):
+            problems.append(f"{vid}: {f} not from {contract.CRITICALITY_SOURCE} alone")
+    return problems
+
+
 def c1c2(doc, rules=contract.C1C2):
     """The problems of a document's entries against C1 + C2 (rules C1C2P: C1 + C2'): no reachability record, the three
     technical impacts, their counters and Privacy violation's floor as _impact_problems says on every rated entry, an
@@ -283,6 +297,7 @@ def c1c2(doc, rules=contract.C1C2):
     for vid, e in sorted(rated.items()):
         factors = {f["factor"]: f for f in e["factors"]}
         problems += _impact_problems(vid, factors, e.get("counters") or [], rules)
+        problems += _declared_problems(vid, factors) if rules == contract.C1C2R else []
     for vid, e in sorted(unrated.items()):
         if any(f["factor"] in contract.AXIS for f in e["factors"]):
             problems.append(f"{vid}: an unrated entry answering a technical impact")

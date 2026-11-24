@@ -46,6 +46,15 @@ business impact when the config declares data_subjects, the technical impact oth
 B). It writes that basis on each VEX vulnerability, one property vens:impact-basis, technical or business:
 chain/conform.py requires it of that commit's runs, keyed on the run's commit, equal to the config's, recomputes the
 rating on it, and fails it on any other commit's runs. tests/test_c1c2b.py checks these rules.
+
+The repair commit (REPAIR_COMMIT, the policy commit plus Financial damage and Reputation damage set by Go, decisions.md
+24/11/2026, and the rating-policy version) pins c1c2r: c1c2b's rules but for those two factors, no longer asked: Go sets
+each from the config's business_criticality at t, OWASP's band of max(LC, LI, LAV) (9 each without a usable v3 vector,
+so t high), on the decided table (DAMAGE, OWASP_Risk_Rating_Methodology.md:178, :180), source criticality, no answer, no
+reading, no cannot_tell counter. Its VEX metadata carries one property vens:rating-policy, 2. chain/conform.py
+recomputes Financial and Reputation damage from the table, then the rating on the published basis, and requires the
+rating policy, under c1c2r whatever the run's commit; under c1c2b and c1c2r a rating without one valid basis is refused
+whatever the commit. tests/test_c1c2r.py checks these rules.
 """
 import collections
 import json
@@ -174,7 +183,13 @@ def deployment(config):
     return {"exposure": ctx["exposure"], "data_sensitivity": ctx["data_sensitivity"],
             "frameworks": tuple(ctx.get("compliance_requirements") or ()), "detection": ctx.get("detection"),
             "traceability": ctx.get("traceability"), "data_subjects": ctx.get("data_subjects"),
-            "availability_requirement": availability_requirement(ctx)}
+            "availability_requirement": availability_requirement(ctx),
+            "business_criticality": _criticality(ctx.get("business_criticality"))}
+
+
+def _criticality(value):
+    """business_criticality as vens loads it, trimmed and lowercased; None when absent; read by c1c2r alone."""
+    return go_lower(go_trim(value)) if isinstance(value, str) else value
 
 
 def asked(f, dep, floored, described=True, *, reach=None):
@@ -292,7 +307,7 @@ def question_of(human_prompt):
 
 # ---- C1 + C2 and C1 + C2', no reachability relay: vens 310-c1c2 at N and at the C2' commit ----
 
-B7C0435, REACH_RULES, C1C2, C1C2P, C1C2B = "b7c0435", "5f797bf", "c1c2", "c1c2p", "c1c2b"
+B7C0435, REACH_RULES, C1C2, C1C2P, C1C2B, C1C2R = "b7c0435", "5f797bf", "c1c2", "c1c2p", "c1c2b", "c1c2r"
 # N, the commit on 310-c1c2 over 2de5d34 that removes the reachability relay (plan Z0d section 1).
 N_COMMIT = "33a5dbf2ae8d7a6522874058de659e1b58f422aa"
 # The C2' commit, N plus C2' (plan Z0d section 2), S2's after: re-pinned here alone if it is amended.
@@ -305,20 +320,33 @@ EARLIER_MARKERS = ("7ce0211bb3abef311bc3dd29be23b9ecdb4a861c",)
 # The policy commit, the marker commit plus the rating-policy fix (310-policy): one impact basis per config, published
 # as vens:impact-basis; re-pinned here alone.
 POLICY_COMMIT = "301c00efef965d1ab9b044326a4e90e04389ca22"
+# The repair commit, the policy commit plus Financial and Reputation damage from the declared business_criticality and
+# vens:rating-policy 2 in the VEX metadata (310-policy ed1ed1c, over d1604bc and 73dd103); re-pinned here alone.
+REPAIR_COMMIT = "ed1ed1c6eac749976e8d3be16aa409fa8870ede3"
 # The contract each pinned after commit follows; any other commit pins none. 2de5d34 relays declared reachability,
 # which C1 no longer allows: S1's frozen reader reads it, this chain pins it to nothing.
 CONTRACTS = {"b7c0435835447027b04d54d4e6befaaee6b0626b": B7C0435,
              "5f797bfbd8e3a0ae49200f9d64861558240b8361": REACH_RULES, N_COMMIT: C1C2, C2P_COMMIT: C1C2P,
              **dict.fromkeys(EARLIER_MARKERS + ((MARKER_COMMIT,) if MARKER_COMMIT else ()), C1C2P),
-             POLICY_COMMIT: C1C2B}
+             POLICY_COMMIT: C1C2B, REPAIR_COMMIT: C1C2R}
 # The no-relay contracts, whose technical impacts are Go's, from the CVSS v3 vectors; those whose Loss of
 # availability is C2''s.
-C1C2_RULES = (C1C2, C1C2P, C1C2B)
-C2P_RULES = (C1C2P, C1C2B)
-NAMES = {C1C2: "C1 + C2", C1C2P: "C1 + C2'", C1C2B: "C1 + C2' on one impact basis"}
+C1C2_RULES = (C1C2, C1C2P, C1C2B, C1C2R)
+C2P_RULES = (C1C2P, C1C2B, C1C2R)
+# The contracts that rate on one published impact basis.
+BASIS_RULES = (C1C2B, C1C2R)
+NAMES = {C1C2: "C1 + C2", C1C2P: "C1 + C2'", C1C2B: "C1 + C2' on one impact basis",
+         C1C2R: "C1 + C2' on one impact basis, Financial and Reputation damage declared"}
 # The policy commit's VEX property, its two values, and the source it gives Skill level.
 BASIS, TECHNICAL, BUSINESS = "vens:impact-basis", "technical", "business"
 WORST_CASE_SOURCE = "worst_case"
+# c1c2r: (Financial damage, Reputation damage) by business_criticality, each at t low, medium and high (decisions.md
+# 24/11/2026); their source; the repair commit's VEX metadata property and its one value.
+DAMAGE = {"low": ((1, 1, 1), (1, 1, 1)), "medium": ((1, 1, 3), (1, 1, 4)), "high": ((1, 3, 7), (1, 4, 5)),
+          "critical": ((3, 7, 9), (4, 5, 9))}
+DECLARED = ("FD", "RD")
+CRITICALITY_SOURCE = "criticality"
+RATING_POLICY, RATING_POLICY_VERSION = "vens:rating-policy", "2"
 C1C2_QUESTIONS = ("M", "O", "EE", "ID", "LAC", "FD", "RD", "NC", "PV")
 CVSS_SOURCE, FLOOR_SOURCE, ADJUSTMENT_SOURCE = "cvss", "floor", "adjustment"
 VECTOR_MISSING = "cvss_v3_missing"
@@ -503,14 +531,31 @@ def c2p_shown(lav, counters):
 
 
 def marker_commit(commit):
-    """Whether a run's vens commit is the marker commit, an earlier one or the policy commit, which alone write
-    vens:impact-provenance."""
-    return commit is not None and commit in (MARKER_COMMIT, POLICY_COMMIT) + EARLIER_MARKERS
+    """Whether a run's vens commit is the marker commit, an earlier one, the policy commit or the repair commit, which
+    alone write vens:impact-provenance."""
+    return commit is not None and commit in (MARKER_COMMIT, POLICY_COMMIT, REPAIR_COMMIT) + EARLIER_MARKERS
 
 
 def basis_commit(commit):
-    """Whether a run's vens commit is the policy commit, which alone writes vens:impact-basis."""
-    return commit is not None and commit == POLICY_COMMIT
+    """Whether a run's vens commit is the policy commit or the repair commit, which alone write vens:impact-basis."""
+    return commit is not None and commit in (POLICY_COMMIT, REPAIR_COMMIT)
+
+
+def technical_band(dep, imp, rules=C1C2R):
+    """t, OWASP's band of max(LC, LI, LAV) as the rules read them, high without a usable v3 vector (their 9s)."""
+    worst = max(impact_level(f, dep, imp, rules) for f in AXIS)
+    return 0 if worst < 3 else 1 if worst < 6 else 2
+
+
+def damage(dep, imp, rules=C1C2R):
+    """(Financial damage, Reputation damage) under c1c2r: what the config's business_criticality declares at t;
+    ValueError for a value off low, medium, high and critical."""
+    row = DAMAGE.get(dep.get("business_criticality"))
+    if row is None:
+        raise ValueError(f"business_criticality {dep.get('business_criticality')!r} is not low, medium, high or "
+                         "critical")
+    t = technical_band(dep, imp, rules)
+    return row[0][t], row[1][t]
 
 
 def impact_basis(dep):
@@ -526,21 +571,25 @@ def accepted(pinned):
     return {C1C2, C1C2P} if pinned in C2P_RULES else {pinned}
 
 
-def c1c2_asked(f, dep, imp, described=True):
+def c1c2_asked(f, dep, imp, described=True, rules=C1C2):
     """Whether a CVE gets factor f's question under C1 + C2: one of the nine, as b7c0435 asks it, Privacy violation
-    floored by the usable vectors' C:N alone."""
+    floored by the usable vectors' C:N alone; under c1c2r Financial and Reputation damage never."""
+    if rules == C1C2R and f in DECLARED:
+        return False
     return f in C1C2_QUESTIONS and asked(f, dep, _pv_floor(imp), described)
 
 
-def c1c2_questions(dep, imp, described=True):
-    return [q for q in C1C2_QUESTIONS if c1c2_asked(q, dep, imp, described)]
+def c1c2_questions(dep, imp, described=True, rules=C1C2):
+    return [q for q in C1C2_QUESTIONS if c1c2_asked(q, dep, imp, described, rules)]
 
 
 def c1c2_options(f, dep, imp, described=True, rules=C1C2):
     """Factor f's level for each answer its question can get, {None: level} where Go sets it, under C1 + C2 or, rules
-    C1C2P, C1 + C2'."""
+    C1C2P, C1 + C2'; under c1c2r Financial and Reputation damage the declared table's (damage())."""
     if f in AXIS:
         return {None: impact_level(f, dep, imp, rules)}
+    if rules == C1C2R and f in DECLARED:
+        return {None: damage(dep, imp, rules)[DECLARED.index(f)]}
     return options(f, dep, _pv_floor(imp), described)
 
 
@@ -550,8 +599,10 @@ def c1c2_source(f, dep, imp, answer=None, described=True, rules=C1C2):
     level unchanged."""
     if f in AXIS:
         return CVSS_SOURCE
-    if f == "SL" and rules == C1C2B:
+    if f == "SL" and rules in BASIS_RULES:
         return WORST_CASE_SOURCE
+    if f in DECLARED and rules == C1C2R:
+        return CRITICALITY_SOURCE
     return source(f, dep, _pv_floor(imp), answer, described)
 
 
@@ -575,7 +626,8 @@ def c1c2_levels(dep, imp, described, answers, adjusted=None, rules=C1C2):
     """{factor: (level, source)}, the 16, from a CVE's answers as answers.json writes them ({factor: answer}, an
     unasked factor absent or None) and, for a flagged CVE, its adjustment ({"O": opportunity's answer, "PV":
     confidentiality's}): Compute's rules under C1 + C2 or, rules C1C2P, C1 + C2' (rules C1C2B: C1 + C2''s levels,
-    Skill level from source worst_case). No reachability input reaches them."""
+    Skill level from source worst_case; rules C1C2R: c1c2b's, Financial and Reputation damage from damage()). No
+    reachability input reaches them."""
     adjusted = adjusted or {}
     out = {}
     for f in FACTORS:
